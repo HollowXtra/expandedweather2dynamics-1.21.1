@@ -1,0 +1,20 @@
+{
+  "parent": "expandedweather2dynamics:use_radar",
+  "display": {
+    "icon": {
+      "id": "minecraft:compass"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.detect_tornado.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.detect_tornado.description"
+    },
+    "frame": "goal"
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

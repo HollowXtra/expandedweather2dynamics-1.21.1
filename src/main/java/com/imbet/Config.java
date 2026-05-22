@@ -31,6 +31,11 @@ public final class Config {
     public static final ModConfigSpec.IntValue ENVIRONMENT_SCAN_INTERVAL_TICKS;
     public static final ModConfigSpec.DoubleValue ENVIRONMENT_REINTENSIFY_THRESHOLD;
     public static final ModConfigSpec.DoubleValue ENVIRONMENT_DEINTENSIFY_THRESHOLD;
+    public static final ModConfigSpec.BooleanValue RAPID_INTENSIFICATION_ENABLED;
+    public static final ModConfigSpec.DoubleValue RAPID_INTENSIFICATION_THRESHOLD;
+    public static final ModConfigSpec.DoubleValue RAPID_INTENSIFICATION_PULSE;
+    public static final ModConfigSpec.IntValue RAPID_INTENSIFICATION_COOLDOWN_TICKS;
+    public static final ModConfigSpec.IntValue RAPID_INTENSIFICATION_MAX_STAGE;
     public static final ModConfigSpec.BooleanValue TORNADO_WIND_SPEED_SPIN_ENABLED;
     public static final ModConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_MIN;
     public static final ModConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_MAX;
@@ -263,6 +268,16 @@ public final class Config {
         ENVIRONMENT_SCAN_INTERVAL_TICKS = BUILDER.defineInRange("environmentScanIntervalTicks", 100, 20, 20 * 60 * 5);
         ENVIRONMENT_REINTENSIFY_THRESHOLD = BUILDER.defineInRange("environmentReintensifyThreshold", 0.68D, 0.0D, 1.0D);
         ENVIRONMENT_DEINTENSIFY_THRESHOLD = BUILDER.defineInRange("environmentDeintensifyThreshold", 0.28D, 0.0D, 1.0D);
+        RAPID_INTENSIFICATION_ENABLED = BUILDER.comment("Allows very favorable environments to rapidly intensify a real Weather2 severe/tornadic storm through the normal Weather2 stage path.")
+                .define("rapidIntensification", true);
+        RAPID_INTENSIFICATION_THRESHOLD = BUILDER.comment("Environment score required for rapid intensification. Higher values make rapid intensification rarer.")
+                .defineInRange("rapidIntensificationThreshold", 0.86D, 0.0D, 1.0D);
+        RAPID_INTENSIFICATION_PULSE = BUILDER.comment("Stage-progress pulse added during rapid intensification. At most one stage is gained per evaluation.")
+                .defineInRange("rapidIntensificationPulse", 0.46D, 0.0D, 1.0D);
+        RAPID_INTENSIFICATION_COOLDOWN_TICKS = BUILDER.comment("Minimum ticks between rapid intensification pulses for one storm.")
+                .defineInRange("rapidIntensificationCooldownTicks", 600, 20, 20 * 60 * 20);
+        RAPID_INTENSIFICATION_MAX_STAGE = BUILDER.comment("Highest Weather2 intensity stage that rapid intensification may push toward.")
+                .defineInRange("rapidIntensificationMaxStage", 9, 1, 9);
         TORNADO_WIND_SPEED_SPIN_ENABLED = BUILDER.comment("Scales Weather2 tornado visual spin speed from the addon tornado windfield mph.")
                 .define("windSpeedSpin", true);
         TORNADO_WIND_SPEED_SPIN_MIN = BUILDER.defineInRange("windSpeedSpinMin", 0.055D, 0.0D, 2.0D);
@@ -540,7 +555,7 @@ public final class Config {
         TORNADO_IMMERSION_INSIDE_CORE_EFFECTS = BUILDER.comment("Enables extra client-only effects when the player is inside a tornado damage path/core.")
                 .define("insideCoreEffects", true);
         TORNADO_IMMERSION_INFLOW_SHADER_OVERLAY = BUILDER.comment("Draws a shader-style screen overlay with inflow streaks, dust veil, and tornado-eye ring when inside the tornado.")
-                .define("inflowShaderOverlay", true);
+                .define("inflowShaderOverlay", false);
         TORNADO_IMMERSION_EYE_EFFECT = BUILDER.comment("Adds a brief calm hollow visual/audio pocket in the innermost tornado core.")
                 .define("eyeEffect", true);
         TORNADO_IMMERSION_BLOWOUT_AUDIO = BUILDER.comment("Saturates and wobbles tornado roar audio near/inside the core.")

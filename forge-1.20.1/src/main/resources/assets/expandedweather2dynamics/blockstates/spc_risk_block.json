@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "expandedweather2dynamics:block/spc_risk_block"
+    }
+  }
+}

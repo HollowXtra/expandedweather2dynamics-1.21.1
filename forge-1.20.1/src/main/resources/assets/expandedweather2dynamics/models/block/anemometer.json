@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:block/iron_bars_post",
+  "textures": {
+    "bars": "expandedweather2dynamics:block/anemometer",
+    "edge": "expandedweather2dynamics:block/anemometer"
+  }
+}

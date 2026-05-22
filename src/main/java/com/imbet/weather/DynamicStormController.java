@@ -487,7 +487,16 @@ public final class DynamicStormController {
         }
 
         double score = environmentScore(level, storm);
-        if (score >= Config.ENVIRONMENT_REINTENSIFY_THRESHOLD.get() && storm.levelCurIntensityStage < Math.min(storm.maxIntensityStage, StormObject.STATE_STAGE5)) {
+        int maximumStage = Math.min(storm.maxIntensityStage, Math.min(StormObject.STATE_STAGE5, Config.RAPID_INTENSIFICATION_MAX_STAGE.get()));
+        boolean canStrengthen = storm.levelCurIntensityStage < maximumStage;
+        if (Config.RAPID_INTENSIFICATION_ENABLED.get() && score >= Config.RAPID_INTENSIFICATION_THRESHOLD.get() && canStrengthen && state.canRapidIntensify(gameTime)) {
+            storm.hasStormPeaked = false;
+            storm.levelCurStagesIntensity = Math.min(1.05F, storm.levelCurStagesIntensity + Config.RAPID_INTENSIFICATION_PULSE.get().floatValue());
+            if (storm.levelCurStagesIntensity >= 1.0F) {
+                storm.stageNext();
+                state.markRapidIntensityChanged(gameTime);
+            }
+        } else if (score >= Config.ENVIRONMENT_REINTENSIFY_THRESHOLD.get() && canStrengthen) {
             storm.hasStormPeaked = false;
             storm.levelCurStagesIntensity = Math.min(1.05F, storm.levelCurStagesIntensity + 0.22F);
             if (storm.levelCurStagesIntensity >= 1.0F) {
