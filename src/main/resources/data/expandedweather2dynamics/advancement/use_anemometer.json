@@ -2,7 +2,7 @@
   "parent": "expandedweather2dynamics:use_radar",
   "display": {
     "icon": {
-      "id": "expandedweather2dynamics:anemometer"
+      "item": "expandedweather2dynamics:anemometer"
     },
     "title": {
       "translate": "advancements.expandedweather2dynamics.use_anemometer.title"

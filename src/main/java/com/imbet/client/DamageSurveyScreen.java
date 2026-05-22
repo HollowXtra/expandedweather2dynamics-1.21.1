@@ -18,7 +18,7 @@ public class DamageSurveyScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderTransparentBackground(graphics);
+        renderBackground(graphics);
         int panelWidth = Math.min(440, width - 20);
         int panelHeight = Math.min(282, height - 20);
         int x = (width - panelWidth) / 2;

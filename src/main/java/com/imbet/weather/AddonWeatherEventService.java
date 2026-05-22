@@ -17,7 +17,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.network.PacketDistributor;
+import com.imbet.network.ModNetworking;
 import weather2.ServerTickHandler;
 import weather2.weathersystem.WeatherManagerServer;
 import weather2.weathersystem.storm.StormObject;
@@ -603,7 +603,7 @@ public final class AddonWeatherEventService {
             List<AddonWeatherEvent> nearby = events.stream()
                     .filter(event -> event.position().distanceTo(player.position()) <= Config.MULTIPLAYER_SYNC_RANGE_BLOCKS.get())
                     .toList();
-            PacketDistributor.sendToPlayer(player, new AddonWeatherEventSyncPayload(nearby));
+            ModNetworking.sendToPlayer(player, new AddonWeatherEventSyncPayload(nearby));
         }
     }
 }

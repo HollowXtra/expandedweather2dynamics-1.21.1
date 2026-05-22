@@ -12,10 +12,10 @@ final class RenderQuads {
         int r = color >>> 16 & 255;
         int g = color >>> 8 & 255;
         int b = color & 255;
-        consumer.addVertex(pose, x1, y1, z1).setColor(r, g, b, a);
-        consumer.addVertex(pose, x2, y1, z1).setColor(r, g, b, a);
-        consumer.addVertex(pose, x2, y2, z2).setColor(r, g, b, a);
-        consumer.addVertex(pose, x1, y2, z2).setColor(r, g, b, a);
+        consumer.vertex(pose.pose(), x1, y1, z1).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), x2, y1, z1).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), x2, y2, z2).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), x1, y2, z2).color(r, g, b, a).endVertex();
     }
 
     static void topQuad(VertexConsumer consumer, PoseStack.Pose pose, float minX, float minZ, float maxX, float maxZ, float y, int color) {
@@ -23,10 +23,10 @@ final class RenderQuads {
         int r = color >>> 16 & 255;
         int g = color >>> 8 & 255;
         int b = color & 255;
-        consumer.addVertex(pose, minX, y, minZ).setColor(r, g, b, a);
-        consumer.addVertex(pose, maxX, y, minZ).setColor(r, g, b, a);
-        consumer.addVertex(pose, maxX, y, maxZ).setColor(r, g, b, a);
-        consumer.addVertex(pose, minX, y, maxZ).setColor(r, g, b, a);
+        consumer.vertex(pose.pose(), minX, y, minZ).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), maxX, y, minZ).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), maxX, y, maxZ).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), minX, y, maxZ).color(r, g, b, a).endVertex();
     }
 
     static void topQuadUv(VertexConsumer consumer, PoseStack.Pose pose, float minX, float minZ, float maxX, float maxZ, float y, int color) {
@@ -34,10 +34,10 @@ final class RenderQuads {
         int r = color >>> 16 & 255;
         int g = color >>> 8 & 255;
         int b = color & 255;
-        consumer.addVertex(pose, minX, y, minZ).setUv(0.0F, 0.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, maxX, y, minZ).setUv(1.0F, 0.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, maxX, y, maxZ).setUv(1.0F, 1.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, minX, y, maxZ).setUv(0.0F, 1.0F).setColor(r, g, b, a);
+        consumer.vertex(pose.pose(), minX, y, minZ).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), maxX, y, minZ).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), maxX, y, maxZ).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), minX, y, maxZ).color(r, g, b, a).endVertex();
     }
 
     static void topLineUv(VertexConsumer consumer, PoseStack.Pose pose, float x1, float z1, float x2, float z2, float halfWidth, float y, int color) {
@@ -54,10 +54,10 @@ final class RenderQuads {
         int r = color >>> 16 & 255;
         int g = color >>> 8 & 255;
         int b = color & 255;
-        consumer.addVertex(pose, x1 + px, y, z1 + pz).setUv(0.0F, 0.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, x1 - px, y, z1 - pz).setUv(0.0F, 1.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, x2 - px, y, z2 - pz).setUv(1.0F, 1.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, x2 + px, y, z2 + pz).setUv(1.0F, 0.0F).setColor(r, g, b, a);
+        consumer.vertex(pose.pose(), x1 + px, y, z1 + pz).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), x1 - px, y, z1 - pz).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), x2 - px, y, z2 - pz).color(r, g, b, a).endVertex();
+        consumer.vertex(pose.pose(), x2 + px, y, z2 + pz).color(r, g, b, a).endVertex();
     }
 
     static void topRotatedQuadUv(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float halfX, float halfZ, float angle, float y, int color) {
@@ -76,6 +76,6 @@ final class RenderQuads {
         int b = color & 255;
         float x = centerX + localX * cos - localZ * sin;
         float z = centerZ + localX * sin + localZ * cos;
-        consumer.addVertex(pose, x, y, z).setUv(u, v).setColor(r, g, b, a);
+        consumer.vertex(pose.pose(), x, y, z).color(r, g, b, a).endVertex();
     }
 }

@@ -11,7 +11,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.neoforged.neoforge.network.PacketDistributor;
+import com.imbet.network.ModNetworking;
 
 import java.util.List;
 
@@ -72,9 +72,8 @@ public class RadarBlockEntity extends BlockEntity {
             entity.setChanged();
             level.updateNeighborsAt(pos, state.getBlock());
         }
-        PacketDistributor.sendToPlayersNear(
+        ModNetworking.sendToPlayersNear(
                 serverLevel,
-                null,
                 pos.getX() + 0.5D,
                 pos.getY() + 0.5D,
                 pos.getZ() + 0.5D,
@@ -84,16 +83,16 @@ public class RadarBlockEntity extends BlockEntity {
     }
 
     @Override
-    protected void saveAdditional(CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries) {
-        super.saveAdditional(tag, registries);
+    protected void saveAdditional(CompoundTag tag) {
+        super.saveAdditional(tag);
         tag.putInt("Power", power);
         tag.putInt("RangeIndex", rangeIndex);
         tag.putInt("Mode", mode);
     }
 
     @Override
-    protected void loadAdditional(CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries) {
-        super.loadAdditional(tag, registries);
+    public void load(CompoundTag tag) {
+        super.load(tag);
         power = tag.getInt("Power");
         rangeIndex = tag.getInt("RangeIndex");
         mode = tag.getInt("Mode");

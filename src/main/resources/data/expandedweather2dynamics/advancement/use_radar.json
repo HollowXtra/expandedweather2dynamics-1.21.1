@@ -1,7 +1,7 @@
 {
   "display": {
     "icon": {
-      "id": "expandedweather2dynamics:radar_block"
+      "item": "expandedweather2dynamics:radar_block"
     },
     "title": {
       "translate": "advancements.expandedweather2dynamics.use_radar.title"

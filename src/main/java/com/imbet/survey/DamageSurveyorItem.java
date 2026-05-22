@@ -21,7 +21,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.network.PacketDistributor;
+import com.imbet.network.ModNetworking;
 
 import java.util.List;
 import java.util.Set;
@@ -182,7 +182,7 @@ public class DamageSurveyorItem extends Item {
         player.sendSystemMessage(Component.literal("In-game estimate only; official EF ratings require trained damage indicators and ground survey.")
                 .withStyle(ChatFormatting.DARK_GRAY));
         if (player instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
-            PacketDistributor.sendToPlayer(serverPlayer, new DamageSurveyResultPayload(result));
+            ModNetworking.sendToPlayer(serverPlayer, new DamageSurveyResultPayload(result));
         }
     }
 

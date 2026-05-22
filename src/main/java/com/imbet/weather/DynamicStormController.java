@@ -16,7 +16,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.network.PacketDistributor;
+import com.imbet.network.ModNetworking;
 import weather2.weathersystem.storm.StormObject;
 import weather2.weathersystem.storm.TornadoHelper;
 
@@ -462,9 +462,8 @@ public final class DynamicStormController {
         if (!Config.PERSISTENCE_ENABLED.get() || !isDynamicVortex(storm) || gameTime % interval != 0L) {
             return;
         }
-        PacketDistributor.sendToPlayersNear(
+        ModNetworking.sendToPlayersNear(
                 level,
-                null,
                 storm.pos.x,
                 storm.pos.y,
                 storm.pos.z,
@@ -487,7 +486,16 @@ public final class DynamicStormController {
         }
 
         double score = environmentScore(level, storm);
-        if (score >= Config.ENVIRONMENT_REINTENSIFY_THRESHOLD.get() && storm.levelCurIntensityStage < Math.min(storm.maxIntensityStage, StormObject.STATE_STAGE5)) {
+        int maximumStage = Math.min(storm.maxIntensityStage, Math.min(StormObject.STATE_STAGE5, Config.RAPID_INTENSIFICATION_MAX_STAGE.get()));
+        boolean canStrengthen = storm.levelCurIntensityStage < maximumStage;
+        if (Config.RAPID_INTENSIFICATION_ENABLED.get() && score >= Config.RAPID_INTENSIFICATION_THRESHOLD.get() && canStrengthen && state.canRapidIntensify(gameTime)) {
+            storm.hasStormPeaked = false;
+            storm.levelCurStagesIntensity = Math.min(1.05F, storm.levelCurStagesIntensity + Config.RAPID_INTENSIFICATION_PULSE.get().floatValue());
+            if (storm.levelCurStagesIntensity >= 1.0F) {
+                storm.stageNext();
+                state.markRapidIntensityChanged(gameTime);
+            }
+        } else if (score >= Config.ENVIRONMENT_REINTENSIFY_THRESHOLD.get() && canStrengthen) {
             storm.hasStormPeaked = false;
             storm.levelCurStagesIntensity = Math.min(1.05F, storm.levelCurStagesIntensity + 0.22F);
             if (storm.levelCurStagesIntensity >= 1.0F) {

@@ -2,7 +2,6 @@ package com.imbet.survey;
 
 import com.imbet.Config;
 import com.imbet.ExpandedWeather2Dynamics;
-import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
@@ -20,13 +19,12 @@ import java.util.Optional;
 
 public final class TornadoSurveySavedData extends SavedData {
     private static final String NAME = ExpandedWeather2Dynamics.MODID + "_tornado_surveys";
-    private static final Factory<TornadoSurveySavedData> FACTORY = new Factory<>(TornadoSurveySavedData::new, TornadoSurveySavedData::load);
     private final Map<String, TornadoTrack> tracksByDisplayId = new LinkedHashMap<>();
     private final Map<String, String> displayIdBySource = new LinkedHashMap<>();
     private int nextId = 1;
 
     public static TornadoSurveySavedData get(ServerLevel level) {
-        return level.getDataStorage().computeIfAbsent(FACTORY, NAME);
+        return level.getDataStorage().computeIfAbsent(TornadoSurveySavedData::load, TornadoSurveySavedData::new, NAME);
     }
 
     public TornadoTrack recordPoint(String sourceKey, long sourceStormId, long sourceCirculationId, long gameTime, Vec3 position, float width, double windMph, String subtype) {
@@ -100,7 +98,7 @@ public final class TornadoSurveySavedData extends SavedData {
     }
 
     @Override
-    public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
+    public CompoundTag save(CompoundTag tag) {
         tag.putInt("NextId", nextId);
         ListTag tracks = new ListTag();
         for (TornadoTrack track : tracksByDisplayId.values()) {
@@ -110,7 +108,7 @@ public final class TornadoSurveySavedData extends SavedData {
         return tag;
     }
 
-    private static TornadoSurveySavedData load(CompoundTag tag, HolderLookup.Provider registries) {
+    private static TornadoSurveySavedData load(CompoundTag tag) {
         TornadoSurveySavedData data = new TornadoSurveySavedData();
         data.nextId = Math.max(1, tag.getInt("NextId"));
         ListTag tracks = tag.getList("Tracks", Tag.TAG_COMPOUND);

@@ -50,6 +50,7 @@ public final class DynamicStormState {
     private long nextSatelliteAttemptTick;
     private long nextIntensityEvaluationTick;
     private long lastIntensityChangeTick = -1_000_000L;
+    private long lastRapidIntensityTick = -1_000_000L;
     private long lastMergeTick = -1_000_000L;
     private long lastSupercellMergeTick = -1_000_000L;
     private long supercellAbsorbedTick = -1_000_000L;
@@ -360,9 +361,18 @@ public final class DynamicStormState {
         return lastIntensityChangeTick + 20L * 20L <= gameTime;
     }
 
+    boolean canRapidIntensify(long gameTime) {
+        return lastRapidIntensityTick + Config.RAPID_INTENSIFICATION_COOLDOWN_TICKS.get() <= gameTime;
+    }
+
     void markIntensityChanged(long gameTime, boolean reintensified) {
         lastIntensityChangeTick = gameTime;
         recentlyReintensified = reintensified;
+    }
+
+    void markRapidIntensityChanged(long gameTime) {
+        lastRapidIntensityTick = gameTime;
+        markIntensityChanged(gameTime, true);
     }
 
     public boolean recentlyReintensified() {
@@ -554,6 +564,8 @@ public final class DynamicStormState {
         tag.putLong("NextBendRetargetTick", nextBendRetargetTick);
         tag.putFloat("VisualSpinSpeed", visualSpinSpeed);
         tag.putFloat("TargetVisualSpinSpeed", targetVisualSpinSpeed);
+        tag.putLong("LastIntensityChangeTick", lastIntensityChangeTick);
+        tag.putLong("LastRapidIntensityTick", lastRapidIntensityTick);
         tag.putLong("LastAlertTick", lastAlertTick);
         tag.putBoolean("RotationAssigned", rotationAssigned);
         tag.putBoolean("AntiCyclonic", antiCyclonic);
@@ -616,6 +628,8 @@ public final class DynamicStormState {
         nextBendRetargetTick = tag.getLong("NextBendRetargetTick");
         visualSpinSpeed = tag.contains("VisualSpinSpeed") ? tag.getFloat("VisualSpinSpeed") : visualSpinSpeed;
         targetVisualSpinSpeed = tag.contains("TargetVisualSpinSpeed") ? tag.getFloat("TargetVisualSpinSpeed") : visualSpinSpeed;
+        lastIntensityChangeTick = tag.contains("LastIntensityChangeTick") ? tag.getLong("LastIntensityChangeTick") : lastIntensityChangeTick;
+        lastRapidIntensityTick = tag.contains("LastRapidIntensityTick") ? tag.getLong("LastRapidIntensityTick") : lastRapidIntensityTick;
         lastAlertTick = tag.contains("LastAlertTick") ? tag.getLong("LastAlertTick") : lastAlertTick;
         rotationAssigned = tag.getBoolean("RotationAssigned");
         antiCyclonic = tag.getBoolean("AntiCyclonic");

@@ -1,13 +1,13 @@
 # Expanded Weather2 Dynamics
 
-NeoForge 1.21.1 addon for Weather, Storms & Tornadoes / Weather2. It adds expanded tornado dynamics, radar and anemometer blocks, severe-weather alert systems, SPC-style outlooks, damage surveys, supercell structure, and survival-safe storm damage controls.
+Forge 1.20.1 addon for Weather, Storms & Tornadoes / Weather2. It adds expanded tornado dynamics, radar and anemometer blocks, severe-weather alert systems, SPC-style outlooks, damage surveys, and survival-safe storm damage controls.
 
 ## Requirements
 
-- Minecraft 1.21.1
-- NeoForge 21.1.x
-- Weather2 1.21.0-2.8.6 or newer compatible 1.21.1 build
-- CoroUtil 1.21.0-1.3.7 or newer compatible 1.21.1 build
+- Minecraft 1.20.1
+- Forge 47.4.10
+- Weather2 1.20.1-2.8.3
+- CoroUtil 1.20.1 compatible Forge build
 
 ## Development
 
@@ -17,13 +17,13 @@ Build the mod jar:
 .\gradlew.bat build
 ```
 
-Run the NeoForge client from Gradle:
+Run the Forge client from Gradle:
 
 ```powershell
 .\gradlew.bat runClient
 ```
 
-Weather2 and CoroUtil are pulled from CurseMaven for the development runtime. The built jar declares Weather2 as a required NeoForge mod dependency and loads after it.
+Weather2 and CoroUtil are pulled from CurseMaven for the development runtime. The built jar declares Weather2 as a required Forge mod dependency and loads after it.
 
 ## Audio Credits
 

@@ -4,13 +4,16 @@ import com.mojang.logging.LogUtils;
 import com.imbet.network.ModNetworking;
 import com.imbet.registry.ModContent;
 import com.imbet.weather.WeatherRuntimeEvents;
-import net.neoforged.bus.api.IEventBus;
-import net.neoforged.fml.ModContainer;
-import net.neoforged.fml.ModList;
-import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.config.ModConfig;
-import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
-import net.neoforged.neoforge.common.NeoForge;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.fml.DistExecutor;
+import net.minecraftforge.fml.ModLoadingContext;
+import net.minecraftforge.fml.ModList;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.config.ModConfig;
+import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.common.MinecraftForge;
 import org.slf4j.Logger;
 
 @Mod(ExpandedWeather2Dynamics.MODID)
@@ -20,17 +23,19 @@ public final class ExpandedWeather2Dynamics {
     public static final String COROUTIL_MODID = "coroutil";
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    public ExpandedWeather2Dynamics(IEventBus modEventBus, ModContainer modContainer) {
+    public ExpandedWeather2Dynamics() {
+        IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
         ModContent.register(modEventBus);
-        modEventBus.addListener(ModNetworking::register);
+        ModNetworking.register();
         modEventBus.addListener(this::commonSetup);
-        NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onLevelTick);
-        NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onBlockPlaced);
-        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        MinecraftForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onLevelTick);
+        MinecraftForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onBlockPlaced);
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> ExpandedWeather2DynamicsClient.init(modEventBus));
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
-        if (!Config.LOG_STARTUP.getAsBoolean()) {
+        if (!Config.LOG_STARTUP.get()) {
             return;
         }
 

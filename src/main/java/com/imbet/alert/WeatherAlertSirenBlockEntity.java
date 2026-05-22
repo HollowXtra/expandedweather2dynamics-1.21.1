@@ -79,8 +79,8 @@ public class WeatherAlertSirenBlockEntity extends BlockEntity {
     }
 
     @Override
-    protected void saveAdditional(CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries) {
-        super.saveAdditional(tag, registries);
+    protected void saveAdditional(CompoundTag tag) {
+        super.saveAdditional(tag);
         tag.putInt("Mode", mode);
         tag.putInt("Power", power);
         tag.putLong("LastToneTick", lastToneTick);
@@ -90,8 +90,8 @@ public class WeatherAlertSirenBlockEntity extends BlockEntity {
     }
 
     @Override
-    protected void loadAdditional(CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries) {
-        super.loadAdditional(tag, registries);
+    public void load(CompoundTag tag) {
+        super.load(tag);
         mode = tag.getInt("Mode");
         power = tag.getInt("Power");
         lastToneTick = tag.getLong("LastToneTick");

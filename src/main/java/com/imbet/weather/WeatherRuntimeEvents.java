@@ -9,8 +9,8 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.event.level.BlockEvent;
-import net.neoforged.neoforge.event.tick.LevelTickEvent;
+import net.minecraftforge.event.level.BlockEvent;
+import net.minecraftforge.event.TickEvent.LevelTickEvent;
 import com.imbet.registry.ModContent;
 import com.imbet.survey.TornadoTrackService;
 import weather2.ServerTickHandler;
@@ -30,8 +30,11 @@ public final class WeatherRuntimeEvents {
     private WeatherRuntimeEvents() {
     }
 
-    public static void onLevelTick(LevelTickEvent.Post event) {
-        if (!(event.getLevel() instanceof ServerLevel level)) {
+    public static void onLevelTick(LevelTickEvent event) {
+        if (event.phase != net.minecraftforge.event.TickEvent.Phase.END) {
+            return;
+        }
+        if (!(event.level instanceof ServerLevel level)) {
             return;
         }
         TornadoMergeService.flushPendingRemovals(level);

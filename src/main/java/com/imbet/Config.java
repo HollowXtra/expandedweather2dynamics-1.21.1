@@ -1,238 +1,243 @@
 package com.imbet;
 
-import net.neoforged.neoforge.common.ModConfigSpec;
+import net.minecraftforge.common.ForgeConfigSpec;
 
 public final class Config {
     public static final double BLOCKS_PER_MILE = 1609.344D;
     public static final double MAX_CONFIG_WIDTH_MILES = 50_000.0D;
     public static final double MAX_CONFIG_WIDTH_BLOCKS = BLOCKS_PER_MILE * MAX_CONFIG_WIDTH_MILES;
 
-    private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
+    private static final ForgeConfigSpec.Builder BUILDER = new ForgeConfigSpec.Builder();
 
-    public static final ModConfigSpec.BooleanValue LOG_STARTUP = BUILDER
+    public static final ForgeConfigSpec.BooleanValue LOG_STARTUP = BUILDER
             .comment("Whether to log Weather2 dependency status during common setup.")
             .define("logStartup", true);
 
-    public static final ModConfigSpec.BooleanValue PERSISTENCE_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue PERSISTENCE_ENABLED;
 
-    public static final ModConfigSpec.BooleanValue DYNAMICS_ENABLED;
-    public static final ModConfigSpec.DoubleValue TORNADO_WANDER_MAX_DEGREES;
-    public static final ModConfigSpec.DoubleValue TORNADO_WANDER_SMOOTHING;
-    public static final ModConfigSpec.IntValue TORNADO_WANDER_MIN_RETARGET_TICKS;
-    public static final ModConfigSpec.IntValue TORNADO_WANDER_MAX_RETARGET_TICKS;
-    public static final ModConfigSpec.BooleanValue TORNADO_FUNNEL_BEND_ENABLED;
-    public static final ModConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_MAX_BLOCKS;
-    public static final ModConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_SWAY_BLOCKS;
-    public static final ModConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_SMOOTHING;
-    public static final ModConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_ANCHOR_FRACTION;
-    public static final ModConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_MAX_HEIGHT_FRACTION;
-    public static final ModConfigSpec.BooleanValue NO_PLAYER_AIM_ON_SPAWN;
-    public static final ModConfigSpec.BooleanValue ENVIRONMENTAL_INTENSITY_ENABLED;
-    public static final ModConfigSpec.IntValue ENVIRONMENT_SCAN_INTERVAL_TICKS;
-    public static final ModConfigSpec.DoubleValue ENVIRONMENT_REINTENSIFY_THRESHOLD;
-    public static final ModConfigSpec.DoubleValue ENVIRONMENT_DEINTENSIFY_THRESHOLD;
-    public static final ModConfigSpec.BooleanValue TORNADO_WIND_SPEED_SPIN_ENABLED;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_MIN;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_MAX;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_SMOOTHING;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_REFERENCE_MIN_MPH;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_REFERENCE_MAX_MPH;
+    public static final ForgeConfigSpec.BooleanValue DYNAMICS_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WANDER_MAX_DEGREES;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WANDER_SMOOTHING;
+    public static final ForgeConfigSpec.IntValue TORNADO_WANDER_MIN_RETARGET_TICKS;
+    public static final ForgeConfigSpec.IntValue TORNADO_WANDER_MAX_RETARGET_TICKS;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_FUNNEL_BEND_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_MAX_BLOCKS;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_SWAY_BLOCKS;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_SMOOTHING;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_ANCHOR_FRACTION;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_FUNNEL_BEND_MAX_HEIGHT_FRACTION;
+    public static final ForgeConfigSpec.BooleanValue NO_PLAYER_AIM_ON_SPAWN;
+    public static final ForgeConfigSpec.BooleanValue ENVIRONMENTAL_INTENSITY_ENABLED;
+    public static final ForgeConfigSpec.IntValue ENVIRONMENT_SCAN_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.DoubleValue ENVIRONMENT_REINTENSIFY_THRESHOLD;
+    public static final ForgeConfigSpec.DoubleValue ENVIRONMENT_DEINTENSIFY_THRESHOLD;
+    public static final ForgeConfigSpec.BooleanValue RAPID_INTENSIFICATION_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue RAPID_INTENSIFICATION_THRESHOLD;
+    public static final ForgeConfigSpec.DoubleValue RAPID_INTENSIFICATION_PULSE;
+    public static final ForgeConfigSpec.IntValue RAPID_INTENSIFICATION_COOLDOWN_TICKS;
+    public static final ForgeConfigSpec.IntValue RAPID_INTENSIFICATION_MAX_STAGE;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_WIND_SPEED_SPIN_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_MIN;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_MAX;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_SMOOTHING;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_REFERENCE_MIN_MPH;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIND_SPEED_SPIN_REFERENCE_MAX_MPH;
 
-    public static final ModConfigSpec.BooleanValue VARIABLE_WIDTHS_ENABLED;
-    public static final ModConfigSpec.BooleanValue TORNADO_REALISTIC_WIDTH_MODEL;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_MIN_MULTIPLIER;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_MAX_MULTIPLIER;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_SMOOTHING;
-    public static final ModConfigSpec.IntValue TORNADO_WIDTH_MIN_RETARGET_TICKS;
-    public static final ModConfigSpec.IntValue TORNADO_WIDTH_MAX_RETARGET_TICKS;
-    public static final ModConfigSpec.DoubleValue TORNADO_MIN_DAMAGE_WIDTH_BLOCKS;
-    public static final ModConfigSpec.DoubleValue TORNADO_MAX_DAMAGE_WIDTH_BLOCKS;
-    public static final ModConfigSpec.DoubleValue TORNADO_MIN_DAMAGE_WIDTH_MILES;
-    public static final ModConfigSpec.DoubleValue TORNADO_MAX_DAMAGE_WIDTH_MILES;
-    public static final ModConfigSpec.DoubleValue TORNADO_MAX_VISIBLE_FUNNEL_WIDTH_BLOCKS;
-    public static final ModConfigSpec.DoubleValue TORNADO_MAX_VISIBLE_FUNNEL_WIDTH_MILES;
-    public static final ModConfigSpec.DoubleValue TORNADO_VISIBLE_FUNNEL_FRACTION_MIN;
-    public static final ModConfigSpec.DoubleValue TORNADO_VISIBLE_FUNNEL_FRACTION_MAX;
+    public static final ForgeConfigSpec.BooleanValue VARIABLE_WIDTHS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_REALISTIC_WIDTH_MODEL;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIDTH_MIN_MULTIPLIER;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIDTH_MAX_MULTIPLIER;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_WIDTH_SMOOTHING;
+    public static final ForgeConfigSpec.IntValue TORNADO_WIDTH_MIN_RETARGET_TICKS;
+    public static final ForgeConfigSpec.IntValue TORNADO_WIDTH_MAX_RETARGET_TICKS;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_MIN_DAMAGE_WIDTH_BLOCKS;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_MAX_DAMAGE_WIDTH_BLOCKS;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_MIN_DAMAGE_WIDTH_MILES;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_MAX_DAMAGE_WIDTH_MILES;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_MAX_VISIBLE_FUNNEL_WIDTH_BLOCKS;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_MAX_VISIBLE_FUNNEL_WIDTH_MILES;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_VISIBLE_FUNNEL_FRACTION_MIN;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_VISIBLE_FUNNEL_FRACTION_MAX;
 
-    public static final ModConfigSpec.BooleanValue DAMAGE_ENABLED;
-    public static final ModConfigSpec.IntValue DAMAGE_MAX_BLOCKS_PER_STORM_PER_TICK;
-    public static final ModConfigSpec.DoubleValue DAMAGE_BLOCK_STRENGTH_MIN_MULTIPLIER;
-    public static final ModConfigSpec.DoubleValue DAMAGE_BLOCK_STRENGTH_MAX_MULTIPLIER;
-    public static final ModConfigSpec.BooleanValue DAMAGE_LOADED_CHUNKS_ONLY;
-    public static final ModConfigSpec.BooleanValue DAMAGE_OPEN_DOORS;
-    public static final ModConfigSpec.BooleanValue DAMAGE_GRAB_LIVING_ENTITIES;
-    public static final ModConfigSpec.BooleanValue DAMAGE_GRAB_PLAYERS;
-    public static final ModConfigSpec.BooleanValue DAMAGE_GROUND_SCOURING;
-    public static final ModConfigSpec.BooleanValue DAMAGE_TREE_DEBARKING;
-    public static final ModConfigSpec.BooleanValue DAMAGE_PRESERVE_INVENTORY_BLOCK_ENTITIES;
-    public static final ModConfigSpec.DoubleValue DAMAGE_TREE_DEBARK_MPH;
-    public static final ModConfigSpec.DoubleValue DAMAGE_HEAVY_TREE_DEBARK_MPH;
-    public static final ModConfigSpec.IntValue DAMAGE_LIGHT_SCOURING_STAGE;
-    public static final ModConfigSpec.IntValue DAMAGE_MEDIUM_SCOURING_STAGE;
-    public static final ModConfigSpec.IntValue DAMAGE_HEAVY_SCOURING_STAGE;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_ENABLED;
+    public static final ForgeConfigSpec.IntValue DAMAGE_MAX_BLOCKS_PER_STORM_PER_TICK;
+    public static final ForgeConfigSpec.DoubleValue DAMAGE_BLOCK_STRENGTH_MIN_MULTIPLIER;
+    public static final ForgeConfigSpec.DoubleValue DAMAGE_BLOCK_STRENGTH_MAX_MULTIPLIER;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_LOADED_CHUNKS_ONLY;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_OPEN_DOORS;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_GRAB_LIVING_ENTITIES;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_GRAB_PLAYERS;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_GROUND_SCOURING;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_TREE_DEBARKING;
+    public static final ForgeConfigSpec.BooleanValue DAMAGE_PRESERVE_INVENTORY_BLOCK_ENTITIES;
+    public static final ForgeConfigSpec.DoubleValue DAMAGE_TREE_DEBARK_MPH;
+    public static final ForgeConfigSpec.DoubleValue DAMAGE_HEAVY_TREE_DEBARK_MPH;
+    public static final ForgeConfigSpec.IntValue DAMAGE_LIGHT_SCOURING_STAGE;
+    public static final ForgeConfigSpec.IntValue DAMAGE_MEDIUM_SCOURING_STAGE;
+    public static final ForgeConfigSpec.IntValue DAMAGE_HEAVY_SCOURING_STAGE;
 
-    public static final ModConfigSpec.BooleanValue WINDFIELD_ENABLED;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_FORMING_MPH;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_STAGE1_MPH;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_STAGE2_MPH;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_STAGE3_MPH;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_STAGE4_MPH;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_STAGE5_MPH;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_RADIAL_INFLOW_FRACTION;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_VERTICAL_LIFT_FRACTION;
-    public static final ModConfigSpec.DoubleValue WINDFIELD_ENTITY_PUSH_SCALE;
+    public static final ForgeConfigSpec.BooleanValue WINDFIELD_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_FORMING_MPH;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_STAGE1_MPH;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_STAGE2_MPH;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_STAGE3_MPH;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_STAGE4_MPH;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_STAGE5_MPH;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_RADIAL_INFLOW_FRACTION;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_VERTICAL_LIFT_FRACTION;
+    public static final ForgeConfigSpec.DoubleValue WINDFIELD_ENTITY_PUSH_SCALE;
 
-    public static final ModConfigSpec.BooleanValue MULTIVORTEX_ENABLED;
-    public static final ModConfigSpec.IntValue MULTIVORTEX_MAX_COUNT;
-    public static final ModConfigSpec.IntValue MULTIVORTEX_MIN_STAGE;
-    public static final ModConfigSpec.DoubleValue MULTIVORTEX_DAMAGE_MULTIPLIER;
+    public static final ForgeConfigSpec.BooleanValue MULTIVORTEX_ENABLED;
+    public static final ForgeConfigSpec.IntValue MULTIVORTEX_MAX_COUNT;
+    public static final ForgeConfigSpec.IntValue MULTIVORTEX_MIN_STAGE;
+    public static final ForgeConfigSpec.DoubleValue MULTIVORTEX_DAMAGE_MULTIPLIER;
 
-    public static final ModConfigSpec.BooleanValue MERGING_ENABLED;
-    public static final ModConfigSpec.IntValue MERGE_SCAN_INTERVAL_TICKS;
-    public static final ModConfigSpec.IntValue MERGE_OVERLAP_TICKS;
-    public static final ModConfigSpec.BooleanValue MERGE_ABSORB_WEAKER;
-    public static final ModConfigSpec.BooleanValue MERGE_ORBIT_BEFORE_ABSORB;
-    public static final ModConfigSpec.IntValue MERGE_ORBIT_TICKS;
-    public static final ModConfigSpec.DoubleValue MERGE_ORBIT_STRENGTH;
+    public static final ForgeConfigSpec.BooleanValue MERGING_ENABLED;
+    public static final ForgeConfigSpec.IntValue MERGE_SCAN_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.IntValue MERGE_OVERLAP_TICKS;
+    public static final ForgeConfigSpec.BooleanValue MERGE_ABSORB_WEAKER;
+    public static final ForgeConfigSpec.BooleanValue MERGE_ORBIT_BEFORE_ABSORB;
+    public static final ForgeConfigSpec.IntValue MERGE_ORBIT_TICKS;
+    public static final ForgeConfigSpec.DoubleValue MERGE_ORBIT_STRENGTH;
 
-    public static final ModConfigSpec.BooleanValue SUPERCELL_MERGING_ENABLED;
-    public static final ModConfigSpec.IntValue SUPERCELL_MERGE_MIN_INTENSITY_STAGE;
-    public static final ModConfigSpec.IntValue SUPERCELL_MERGE_SCAN_INTERVAL_TICKS;
-    public static final ModConfigSpec.IntValue SUPERCELL_MERGE_OVERLAP_TICKS;
-    public static final ModConfigSpec.DoubleValue SUPERCELL_MERGE_DISTANCE_MULTIPLIER;
-    public static final ModConfigSpec.DoubleValue SUPERCELL_MERGE_MAX_DISTANCE_BLOCKS;
-    public static final ModConfigSpec.DoubleValue SUPERCELL_MERGE_INTENSITY_PULSE;
-    public static final ModConfigSpec.DoubleValue SUPERCELL_MERGE_MOTION_ABSORB_FRACTION;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_MERGE_SOFT_DISSIPATE_ABSORBED;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_MERGE_HARD_REMOVE_ABSORBED;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_MERGING_ENABLED;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_MERGE_MIN_INTENSITY_STAGE;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_MERGE_SCAN_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_MERGE_OVERLAP_TICKS;
+    public static final ForgeConfigSpec.DoubleValue SUPERCELL_MERGE_DISTANCE_MULTIPLIER;
+    public static final ForgeConfigSpec.DoubleValue SUPERCELL_MERGE_MAX_DISTANCE_BLOCKS;
+    public static final ForgeConfigSpec.DoubleValue SUPERCELL_MERGE_INTENSITY_PULSE;
+    public static final ForgeConfigSpec.DoubleValue SUPERCELL_MERGE_MOTION_ABSORB_FRACTION;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_MERGE_SOFT_DISSIPATE_ABSORBED;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_MERGE_HARD_REMOVE_ABSORBED;
 
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_ENABLED;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_CLIENT_VISUALS;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_RADAR;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WINDFIELD_INFLUENCE;
-    public static final ModConfigSpec.IntValue SUPERCELL_STRUCTURE_RENDER_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_ANVIL_PARTICLES;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_PARTICLES;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_LOWERING;
-    public static final ModConfigSpec.DoubleValue SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_MESOCYCLONE_STRENGTH;
-    public static final ModConfigSpec.IntValue SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_PERSISTENCE_TICKS;
-    public static final ModConfigSpec.IntValue SUPERCELL_STRUCTURE_WALL_CLOUD_MAX_DIAMETER_BLOCKS;
-    public static final ModConfigSpec.IntValue SUPERCELL_STRUCTURE_WALL_CLOUD_MAX_LOWERING_BLOCKS;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_ROTATION_PARTICLES;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_SCUD_FEED_PARTICLES;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_RISK_BOOST;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_GUST_FRONT_PARTICLES;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_FLANKING_LINE_PARTICLES;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_VIRGA_MAMMATUS_PARTICLES;
-    public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_RFD_STRAIGHT_LINE_WIND;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_CLIENT_VISUALS;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_RADAR;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WINDFIELD_INFLUENCE;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_STRUCTURE_RENDER_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_ANVIL_PARTICLES;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_PARTICLES;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_LOWERING;
+    public static final ForgeConfigSpec.DoubleValue SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_MESOCYCLONE_STRENGTH;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_PERSISTENCE_TICKS;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_STRUCTURE_WALL_CLOUD_MAX_DIAMETER_BLOCKS;
+    public static final ForgeConfigSpec.IntValue SUPERCELL_STRUCTURE_WALL_CLOUD_MAX_LOWERING_BLOCKS;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_ROTATION_PARTICLES;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_SCUD_FEED_PARTICLES;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_WALL_CLOUD_RISK_BOOST;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_GUST_FRONT_PARTICLES;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_FLANKING_LINE_PARTICLES;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_VIRGA_MAMMATUS_PARTICLES;
+    public static final ForgeConfigSpec.BooleanValue SUPERCELL_STRUCTURE_RFD_STRAIGHT_LINE_WIND;
 
-    public static final ModConfigSpec.BooleanValue RADAR_ENABLED;
-    public static final ModConfigSpec.IntValue RADAR_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue RADAR_UPDATE_INTERVAL_TICKS;
-    public static final ModConfigSpec.BooleanValue RADAR_WORLD_PANEL_ENABLED;
-    public static final ModConfigSpec.BooleanValue RADAR_STABLE_NORTH_UP;
-    public static final ModConfigSpec.BooleanValue RADAR_CONFIRMED_CIRCULATION_MARKER;
+    public static final ForgeConfigSpec.BooleanValue RADAR_ENABLED;
+    public static final ForgeConfigSpec.IntValue RADAR_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue RADAR_UPDATE_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.BooleanValue RADAR_WORLD_PANEL_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue RADAR_STABLE_NORTH_UP;
+    public static final ForgeConfigSpec.BooleanValue RADAR_CONFIRMED_CIRCULATION_MARKER;
 
-    public static final ModConfigSpec.BooleanValue SURVEYS_ENABLED;
-    public static final ModConfigSpec.IntValue SURVEY_RADIUS_BLOCKS;
-    public static final ModConfigSpec.IntValue SURVEY_TRACK_RECORD_INTERVAL_TICKS;
-    public static final ModConfigSpec.IntValue SURVEY_MAX_TRACK_AGE_TICKS;
-    public static final ModConfigSpec.IntValue SURVEY_RECENT_TRACK_WINDOW_TICKS;
-    public static final ModConfigSpec.IntValue SURVEY_TRACK_CONTEXT_BLOCKS;
-    public static final ModConfigSpec.BooleanValue SURVEY_OPEN_GUI_ON_SURVEY;
+    public static final ForgeConfigSpec.BooleanValue SURVEYS_ENABLED;
+    public static final ForgeConfigSpec.IntValue SURVEY_RADIUS_BLOCKS;
+    public static final ForgeConfigSpec.IntValue SURVEY_TRACK_RECORD_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.IntValue SURVEY_MAX_TRACK_AGE_TICKS;
+    public static final ForgeConfigSpec.IntValue SURVEY_RECENT_TRACK_WINDOW_TICKS;
+    public static final ForgeConfigSpec.IntValue SURVEY_TRACK_CONTEXT_BLOCKS;
+    public static final ForgeConfigSpec.BooleanValue SURVEY_OPEN_GUI_ON_SURVEY;
 
-    public static final ModConfigSpec.BooleanValue ALERTS_ENABLED;
-    public static final ModConfigSpec.BooleanValue ALERTS_STRUCTURED_PRODUCTS;
-    public static final ModConfigSpec.BooleanValue ALERTS_TORNADO_EMERGENCY;
-    public static final ModConfigSpec.BooleanValue ALERTS_SAFE_FAUX_TONES_ONLY;
-    public static final ModConfigSpec.BooleanValue ALERTS_FAUX_SOUND;
-    public static final ModConfigSpec.IntValue ALERT_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue ALERT_WATCH_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue ALERT_WARNING_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue ALERT_WARNING_PATH_LEAD_TICKS;
-    public static final ModConfigSpec.IntValue ALERT_COOLDOWN_TICKS;
+    public static final ForgeConfigSpec.BooleanValue ALERTS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue ALERTS_STRUCTURED_PRODUCTS;
+    public static final ForgeConfigSpec.BooleanValue ALERTS_TORNADO_EMERGENCY;
+    public static final ForgeConfigSpec.BooleanValue ALERTS_SAFE_FAUX_TONES_ONLY;
+    public static final ForgeConfigSpec.BooleanValue ALERTS_FAUX_SOUND;
+    public static final ForgeConfigSpec.IntValue ALERT_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue ALERT_WATCH_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue ALERT_WARNING_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue ALERT_WARNING_PATH_LEAD_TICKS;
+    public static final ForgeConfigSpec.IntValue ALERT_COOLDOWN_TICKS;
 
-    public static final ModConfigSpec.BooleanValue WATERSPOUTS_ENABLED;
-    public static final ModConfigSpec.BooleanValue FAIR_WEATHER_WATERSPOUTS_ENABLED;
-    public static final ModConfigSpec.BooleanValue CYCLONES_ENABLED;
-    public static final ModConfigSpec.BooleanValue LANDSPOUTS_ENABLED;
-    public static final ModConfigSpec.BooleanValue DUST_DEVILS_ENABLED;
-    public static final ModConfigSpec.BooleanValue WINTER_ALERTS_ENABLED;
-    public static final ModConfigSpec.BooleanValue SATELLITE_TORNADOES_ENABLED;
-    public static final ModConfigSpec.BooleanValue SATELLITE_TORNADOES_REAL_CIRCULATION;
-    public static final ModConfigSpec.IntValue SATELLITE_TORNADOES_MAX_ACTIVE;
-    public static final ModConfigSpec.IntValue SATELLITE_TORNADOES_MIN_PARENT_STAGE;
-    public static final ModConfigSpec.DoubleValue SATELLITE_TORNADOES_MAX_WIND_FRACTION;
-    public static final ModConfigSpec.DoubleValue SATELLITE_TORNADOES_SPAWN_CHANCE;
-    public static final ModConfigSpec.IntValue SATELLITE_TORNADOES_DAMAGE_BLOCKS_PER_TICK;
-    public static final ModConfigSpec.DoubleValue LANDSPOUT_SPAWN_CHANCE;
-    public static final ModConfigSpec.DoubleValue WATERSPOUT_SPAWN_CHANCE;
-    public static final ModConfigSpec.DoubleValue DUST_DEVIL_SPAWN_CHANCE;
-    public static final ModConfigSpec.BooleanValue ANTI_CYCLONIC_TORNADOES_ENABLED;
-    public static final ModConfigSpec.DoubleValue ANTI_CYCLONIC_TORNADO_CHANCE;
-    public static final ModConfigSpec.BooleanValue ANTI_CYCLONIC_INVERT_WEATHER2_SPIN;
-    public static final ModConfigSpec.IntValue MAX_ADDON_VORTICES;
-    public static final ModConfigSpec.BooleanValue SQUALL_LINES_ENABLED;
-    public static final ModConfigSpec.IntValue SQUALL_LINE_MIN_CELLS;
-    public static final ModConfigSpec.IntValue SQUALL_LINE_MAX_THICKNESS_BLOCKS;
-    public static final ModConfigSpec.IntValue SQUALL_LINE_MAX_AGE_TICKS;
-    public static final ModConfigSpec.BooleanValue ANEMOMETER_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue WATERSPOUTS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue FAIR_WEATHER_WATERSPOUTS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue CYCLONES_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue LANDSPOUTS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue DUST_DEVILS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue WINTER_ALERTS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue SATELLITE_TORNADOES_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue SATELLITE_TORNADOES_REAL_CIRCULATION;
+    public static final ForgeConfigSpec.IntValue SATELLITE_TORNADOES_MAX_ACTIVE;
+    public static final ForgeConfigSpec.IntValue SATELLITE_TORNADOES_MIN_PARENT_STAGE;
+    public static final ForgeConfigSpec.DoubleValue SATELLITE_TORNADOES_MAX_WIND_FRACTION;
+    public static final ForgeConfigSpec.DoubleValue SATELLITE_TORNADOES_SPAWN_CHANCE;
+    public static final ForgeConfigSpec.IntValue SATELLITE_TORNADOES_DAMAGE_BLOCKS_PER_TICK;
+    public static final ForgeConfigSpec.DoubleValue LANDSPOUT_SPAWN_CHANCE;
+    public static final ForgeConfigSpec.DoubleValue WATERSPOUT_SPAWN_CHANCE;
+    public static final ForgeConfigSpec.DoubleValue DUST_DEVIL_SPAWN_CHANCE;
+    public static final ForgeConfigSpec.BooleanValue ANTI_CYCLONIC_TORNADOES_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue ANTI_CYCLONIC_TORNADO_CHANCE;
+    public static final ForgeConfigSpec.BooleanValue ANTI_CYCLONIC_INVERT_WEATHER2_SPIN;
+    public static final ForgeConfigSpec.IntValue MAX_ADDON_VORTICES;
+    public static final ForgeConfigSpec.BooleanValue SQUALL_LINES_ENABLED;
+    public static final ForgeConfigSpec.IntValue SQUALL_LINE_MIN_CELLS;
+    public static final ForgeConfigSpec.IntValue SQUALL_LINE_MAX_THICKNESS_BLOCKS;
+    public static final ForgeConfigSpec.IntValue SQUALL_LINE_MAX_AGE_TICKS;
+    public static final ForgeConfigSpec.BooleanValue ANEMOMETER_ENABLED;
 
-    public static final ModConfigSpec.BooleanValue INFLOW_JETS_ENABLED;
-    public static final ModConfigSpec.IntValue INFLOW_JET_LENGTH_BLOCKS;
-    public static final ModConfigSpec.IntValue INFLOW_JET_PARTICLES_PER_TICK;
+    public static final ForgeConfigSpec.BooleanValue INFLOW_JETS_ENABLED;
+    public static final ForgeConfigSpec.IntValue INFLOW_JET_LENGTH_BLOCKS;
+    public static final ForgeConfigSpec.IntValue INFLOW_JET_PARTICLES_PER_TICK;
 
-    public static final ModConfigSpec.BooleanValue VISUALS_ENABLED;
-    public static final ModConfigSpec.DoubleValue SEVERE_SKY_TINT_STRENGTH;
-    public static final ModConfigSpec.BooleanValue CLEAR_INTERVALS_ENABLED;
-    public static final ModConfigSpec.DoubleValue CLEAR_INTERVAL_RAIN_REDUCTION;
-    public static final ModConfigSpec.DoubleValue SKY_SMOOTHING;
-    public static final ModConfigSpec.IntValue MIN_SKY_UPDATE_TICKS;
-    public static final ModConfigSpec.BooleanValue STICK_DEBRIS_ENABLED;
-    public static final ModConfigSpec.IntValue STICK_DEBRIS_RENDER_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue MAX_STICK_DEBRIS_PER_TICK;
-    public static final ModConfigSpec.DoubleValue SUB_VORTEX_STICK_DENSITY;
-    public static final ModConfigSpec.DoubleValue LANDSPOUT_STICK_DENSITY;
-    public static final ModConfigSpec.DoubleValue DUST_DEVIL_STICK_DENSITY;
-    public static final ModConfigSpec.DoubleValue WATERSPOUT_STICK_DENSITY;
-    public static final ModConfigSpec.DoubleValue SQUALL_LINE_STICK_DENSITY;
+    public static final ForgeConfigSpec.BooleanValue VISUALS_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue SEVERE_SKY_TINT_STRENGTH;
+    public static final ForgeConfigSpec.BooleanValue CLEAR_INTERVALS_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue CLEAR_INTERVAL_RAIN_REDUCTION;
+    public static final ForgeConfigSpec.DoubleValue SKY_SMOOTHING;
+    public static final ForgeConfigSpec.IntValue MIN_SKY_UPDATE_TICKS;
+    public static final ForgeConfigSpec.BooleanValue STICK_DEBRIS_ENABLED;
+    public static final ForgeConfigSpec.IntValue STICK_DEBRIS_RENDER_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue MAX_STICK_DEBRIS_PER_TICK;
+    public static final ForgeConfigSpec.DoubleValue SUB_VORTEX_STICK_DENSITY;
+    public static final ForgeConfigSpec.DoubleValue LANDSPOUT_STICK_DENSITY;
+    public static final ForgeConfigSpec.DoubleValue DUST_DEVIL_STICK_DENSITY;
+    public static final ForgeConfigSpec.DoubleValue WATERSPOUT_STICK_DENSITY;
+    public static final ForgeConfigSpec.DoubleValue SQUALL_LINE_STICK_DENSITY;
 
-    public static final ModConfigSpec.BooleanValue IMMERSIVE_THUNDER_ENABLED;
-    public static final ModConfigSpec.DoubleValue THUNDER_SECONDS_PER_MILE;
-    public static final ModConfigSpec.IntValue THUNDER_MAX_DELAY_TICKS;
+    public static final ForgeConfigSpec.BooleanValue IMMERSIVE_THUNDER_ENABLED;
+    public static final ForgeConfigSpec.DoubleValue THUNDER_SECONDS_PER_MILE;
+    public static final ForgeConfigSpec.IntValue THUNDER_MAX_DELAY_TICKS;
 
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_ENABLED;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_ROAR_SOUND;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_CAMERA_RUMBLE;
-    public static final ModConfigSpec.DoubleValue TORNADO_IMMERSION_MAX_CAMERA_ROLL_DEGREES;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_FOV_PRESSURE;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_FOG_PRESSURE;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_CLOSE_DEBRIS;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_INSIDE_CORE_EFFECTS;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_INFLOW_SHADER_OVERLAY;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_EYE_EFFECT;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_BLOWOUT_AUDIO;
-    public static final ModConfigSpec.DoubleValue TORNADO_IMMERSION_INSIDE_FOG_MULTIPLIER;
-    public static final ModConfigSpec.DoubleValue TORNADO_IMMERSION_INFLOW_OVERLAY_OPACITY;
-    public static final ModConfigSpec.DoubleValue TORNADO_IMMERSION_EYE_CLEAR_RADIUS;
-    public static final ModConfigSpec.DoubleValue TORNADO_IMMERSION_BLOWOUT_AUDIO_INTENSITY;
-    public static final ModConfigSpec.IntValue TORNADO_IMMERSION_RENDER_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue TORNADO_IMMERSION_MAX_PARTICLES_PER_TICK;
-    public static final ModConfigSpec.BooleanValue TORNADO_IMMERSION_ACCESSIBILITY_REDUCED_MOTION;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_ROAR_SOUND;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_CAMERA_RUMBLE;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_IMMERSION_MAX_CAMERA_ROLL_DEGREES;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_FOV_PRESSURE;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_FOG_PRESSURE;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_CLOSE_DEBRIS;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_INSIDE_CORE_EFFECTS;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_INFLOW_SHADER_OVERLAY;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_EYE_EFFECT;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_BLOWOUT_AUDIO;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_IMMERSION_INSIDE_FOG_MULTIPLIER;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_IMMERSION_INFLOW_OVERLAY_OPACITY;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_IMMERSION_EYE_CLEAR_RADIUS;
+    public static final ForgeConfigSpec.DoubleValue TORNADO_IMMERSION_BLOWOUT_AUDIO_INTENSITY;
+    public static final ForgeConfigSpec.IntValue TORNADO_IMMERSION_RENDER_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue TORNADO_IMMERSION_MAX_PARTICLES_PER_TICK;
+    public static final ForgeConfigSpec.BooleanValue TORNADO_IMMERSION_ACCESSIBILITY_REDUCED_MOTION;
 
-    public static final ModConfigSpec.BooleanValue CYCLOIDAL_MARKS_ENABLED;
-    public static final ModConfigSpec.IntValue CYCLOIDAL_MIN_STAGE;
-    public static final ModConfigSpec.IntValue CYCLOIDAL_MAX_BLOCKS_PER_TICK;
-    public static final ModConfigSpec.IntValue CYCLOIDAL_SWATH_SAMPLES;
-    public static final ModConfigSpec.BooleanValue CYCLOIDAL_COSMETIC_ONLY;
+    public static final ForgeConfigSpec.BooleanValue CYCLOIDAL_MARKS_ENABLED;
+    public static final ForgeConfigSpec.IntValue CYCLOIDAL_MIN_STAGE;
+    public static final ForgeConfigSpec.IntValue CYCLOIDAL_MAX_BLOCKS_PER_TICK;
+    public static final ForgeConfigSpec.IntValue CYCLOIDAL_SWATH_SAMPLES;
+    public static final ForgeConfigSpec.BooleanValue CYCLOIDAL_COSMETIC_ONLY;
 
-    public static final ModConfigSpec.BooleanValue ADVANCEMENTS_ENABLED;
+    public static final ForgeConfigSpec.BooleanValue ADVANCEMENTS_ENABLED;
 
-    public static final ModConfigSpec.IntValue MULTIPLAYER_SYNC_RANGE_BLOCKS;
-    public static final ModConfigSpec.IntValue MULTIPLAYER_STATE_SYNC_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.IntValue MULTIPLAYER_SYNC_RANGE_BLOCKS;
+    public static final ForgeConfigSpec.IntValue MULTIPLAYER_STATE_SYNC_INTERVAL_TICKS;
 
-    public static final ModConfigSpec.IntValue PERFORMANCE_STORM_SCAN_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.IntValue PERFORMANCE_STORM_SCAN_INTERVAL_TICKS;
 
     static {
         BUILDER.push("persistence");
@@ -263,6 +268,16 @@ public final class Config {
         ENVIRONMENT_SCAN_INTERVAL_TICKS = BUILDER.defineInRange("environmentScanIntervalTicks", 100, 20, 20 * 60 * 5);
         ENVIRONMENT_REINTENSIFY_THRESHOLD = BUILDER.defineInRange("environmentReintensifyThreshold", 0.68D, 0.0D, 1.0D);
         ENVIRONMENT_DEINTENSIFY_THRESHOLD = BUILDER.defineInRange("environmentDeintensifyThreshold", 0.28D, 0.0D, 1.0D);
+        RAPID_INTENSIFICATION_ENABLED = BUILDER.comment("Allows very favorable environments to rapidly intensify a real Weather2 severe/tornadic storm through the normal Weather2 stage path.")
+                .define("rapidIntensification", true);
+        RAPID_INTENSIFICATION_THRESHOLD = BUILDER.comment("Environment score required for rapid intensification. Higher values make rapid intensification rarer.")
+                .defineInRange("rapidIntensificationThreshold", 0.86D, 0.0D, 1.0D);
+        RAPID_INTENSIFICATION_PULSE = BUILDER.comment("Stage-progress pulse added during rapid intensification. At most one stage is gained per evaluation.")
+                .defineInRange("rapidIntensificationPulse", 0.46D, 0.0D, 1.0D);
+        RAPID_INTENSIFICATION_COOLDOWN_TICKS = BUILDER.comment("Minimum ticks between rapid intensification pulses for one storm.")
+                .defineInRange("rapidIntensificationCooldownTicks", 600, 20, 20 * 60 * 20);
+        RAPID_INTENSIFICATION_MAX_STAGE = BUILDER.comment("Highest Weather2 intensity stage that rapid intensification may push toward.")
+                .defineInRange("rapidIntensificationMaxStage", 9, 1, 9);
         TORNADO_WIND_SPEED_SPIN_ENABLED = BUILDER.comment("Scales Weather2 tornado visual spin speed from the addon tornado windfield mph.")
                 .define("windSpeedSpin", true);
         TORNADO_WIND_SPEED_SPIN_MIN = BUILDER.defineInRange("windSpeedSpinMin", 0.055D, 0.0D, 2.0D);
@@ -540,7 +555,7 @@ public final class Config {
         TORNADO_IMMERSION_INSIDE_CORE_EFFECTS = BUILDER.comment("Enables extra client-only effects when the player is inside a tornado damage path/core.")
                 .define("insideCoreEffects", true);
         TORNADO_IMMERSION_INFLOW_SHADER_OVERLAY = BUILDER.comment("Draws a shader-style screen overlay with inflow streaks, dust veil, and tornado-eye ring when inside the tornado.")
-                .define("inflowShaderOverlay", true);
+                .define("inflowShaderOverlay", false);
         TORNADO_IMMERSION_EYE_EFFECT = BUILDER.comment("Adds a brief calm hollow visual/audio pocket in the innermost tornado core.")
                 .define("eyeEffect", true);
         TORNADO_IMMERSION_BLOWOUT_AUDIO = BUILDER.comment("Saturates and wobbles tornado roar audio near/inside the core.")
@@ -578,7 +593,7 @@ public final class Config {
         BUILDER.pop();
     }
 
-    static final ModConfigSpec SPEC = BUILDER.build();
+    static final ForgeConfigSpec SPEC = BUILDER.build();
 
     public static double milesToBlocks(double miles) {
         return miles * BLOCKS_PER_MILE;

@@ -100,16 +100,16 @@ public class AnemometerBlockEntity extends BlockEntity {
     }
 
     @Override
-    protected void saveAdditional(CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries) {
-        super.saveAdditional(tag, registries);
+    protected void saveAdditional(CompoundTag tag) {
+        super.saveAdditional(tag);
         tag.putDouble("WindMph", windMph);
         tag.putInt("Power", power);
         tag.putFloat("Angle", angle);
     }
 
     @Override
-    protected void loadAdditional(CompoundTag tag, net.minecraft.core.HolderLookup.Provider registries) {
-        super.loadAdditional(tag, registries);
+    public void load(CompoundTag tag) {
+        super.load(tag);
         windMph = tag.getDouble("WindMph");
         power = tag.getInt("Power");
         angle = tag.getFloat("Angle");

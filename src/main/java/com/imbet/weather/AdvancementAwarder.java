@@ -2,7 +2,7 @@ package com.imbet.weather;
 
 import com.imbet.Config;
 import com.imbet.ExpandedWeather2Dynamics;
-import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.advancements.Advancement;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
@@ -22,9 +22,9 @@ public final class AdvancementAwarder {
         if (!Config.ADVANCEMENTS_ENABLED.get()) {
             return;
         }
-        AdvancementHolder holder = player.server.getAdvancements().get(ResourceLocation.fromNamespaceAndPath(ExpandedWeather2Dynamics.MODID, path));
-        if (holder != null) {
-            player.getAdvancements().award(holder, "trigger");
+        Advancement advancement = player.server.getAdvancements().getAdvancement(new ResourceLocation(ExpandedWeather2Dynamics.MODID, path));
+        if (advancement != null) {
+            player.getAdvancements().award(advancement, "trigger");
         }
     }
 }
