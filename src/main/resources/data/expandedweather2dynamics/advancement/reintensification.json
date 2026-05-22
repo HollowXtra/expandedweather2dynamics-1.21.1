@@ -1,0 +1,20 @@
+{
+  "parent": "expandedweather2dynamics:detect_tornado",
+  "display": {
+    "icon": {
+      "id": "minecraft:recovery_compass"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.reintensification.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.reintensification.description"
+    },
+    "frame": "challenge"
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}
