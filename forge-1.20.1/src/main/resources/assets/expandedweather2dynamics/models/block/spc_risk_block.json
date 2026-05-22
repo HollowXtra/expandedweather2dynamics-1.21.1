@@ -1,6 +1,0 @@
-{
-  "parent": "minecraft:block/cube_all",
-  "textures": {
-    "all": "expandedweather2dynamics:block/spc_risk_block"
-  }
-}
