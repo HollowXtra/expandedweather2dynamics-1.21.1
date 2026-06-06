@@ -34,9 +34,6 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
         for (RadarStormSnapshot storm : storms) {
             float rx = radarX(radar, storm.x(), range);
             float rz = radarZ(radar, storm.z(), range);
-            if (!insideScope(rx, rz)) {
-                continue;
-            }
             float size = returnSize(storm);
             float circulationX = radarX(radar, storm.circulationX(), range);
             float circulationZ = radarZ(radar, storm.circulationZ(), range);
@@ -46,24 +43,33 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
                 circulationX = rx;
                 circulationZ = rz;
             }
-            if (mode == 1) {
-                drawVelocityReturn(consumer, pose, storm, hookX, hookZ, size, y + 0.007F);
-            } else {
-                if (mode == 2) {
-                    drawRiskPixels(consumer, pose, storm, rx, rz, size, y + 0.007F);
+            float displayX = storm.hasConfirmedCirculation() ? circulationX : storm.hookEcho() ? hookX : rx;
+            float displayZ = storm.hasConfirmedCirculation() ? circulationZ : storm.hookEcho() ? hookZ : rz;
+            boolean returnInside = insideScope(rx, rz);
+            boolean displayInside = insideScope(displayX, displayZ);
+            if (!returnInside && !displayInside) {
+                continue;
+            }
+            if (returnInside) {
+                if (mode == 1) {
+                    drawVelocityReturn(consumer, pose, storm, hookX, hookZ, size, y + 0.007F);
                 } else {
-                    drawReflectivityReturn(consumer, pose, storm, rx, rz, size, y + 0.007F);
+                    if (mode == 2) {
+                        drawRiskPixels(consumer, pose, storm, rx, rz, size, y + 0.007F);
+                    } else {
+                        drawReflectivityReturn(consumer, pose, storm, rx, rz, size, y + 0.007F);
+                    }
                 }
             }
-            float trackX = storm.hasConfirmedCirculation() ? circulationX : rx;
-            float trackZ = storm.hasConfirmedCirculation() ? circulationZ : rz;
+            float trackX = displayInside ? displayX : rx;
+            float trackZ = displayInside ? displayZ : rz;
             drawMotionTrack(consumer, pose, storm, trackX, trackZ, range, y + 0.014F);
             if (storm.subVortices() > 0) {
                 drawSubVortexMarkers(consumer, pose, storm, circulationX, circulationZ, size, y + 0.016F);
             }
-            if (storm.hasConfirmedCirculation() && Config.RADAR_CONFIRMED_CIRCULATION_MARKER.get()) {
+            if (storm.hasConfirmedCirculation() && Config.RADAR_CONFIRMED_CIRCULATION_MARKER.get() && displayInside) {
                 drawTornadoMarker(consumer, pose, circulationX, circulationZ, size, y + 0.017F);
-            } else if (storm.hookEcho()) {
+            } else if (storm.hookEcho() && displayInside) {
                 drawMesocycloneMarker(consumer, pose, hookX, hookZ, size, y + 0.016F);
             }
         }
@@ -238,7 +244,7 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
     }
 
     private static void drawSubVortexMarkers(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, float rx, float rz, float size, float y) {
-        int count = Mth.clamp(storm.subVortices(), 1, 6);
+        int count = Mth.clamp(storm.subVortices(), 1, 10);
         for (int i = 0; i < count; i++) {
             float angle = (float) (i * Math.PI * 2.0D / count);
             float ox = Mth.cos(angle) * size * 1.55F;

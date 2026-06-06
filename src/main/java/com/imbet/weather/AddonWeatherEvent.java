@@ -97,7 +97,7 @@ public final class AddonWeatherEvent {
     public void tick() {
         if (!isLine()) {
             position = position.add(motion);
-            motion = motion.scale(0.985D);
+            motion = keepMinimumHorizontalMotion(motion.scale(motionDrag()));
         } else {
             position = position.add(motion);
             lineStart = lineStart.add(motion);
@@ -111,6 +111,16 @@ public final class AddonWeatherEvent {
         position = start.add(end).scale(0.5D);
         motion = newMotion;
         expireTick = Math.max(expireTick, newExpireTick);
+    }
+
+    public AddonWeatherEvent snapshot() {
+        AddonWeatherEvent copy = new AddonWeatherEvent(id, type, position, motion, radius, maxWindMph, spawnTick, expireTick);
+        copy.lastAlertTick = lastAlertTick;
+        if (isLine()) {
+            copy.lineStart = safeVec(lineStart);
+            copy.lineEnd = safeVec(lineEnd);
+        }
+        return copy;
     }
 
     public boolean expired(long gameTime) {
@@ -170,5 +180,48 @@ public final class AddonWeatherEvent {
 
     private static float finite(float value) {
         return Float.isFinite(value) ? value : 0.0F;
+    }
+
+    private double motionDrag() {
+        return switch (type) {
+            case FLAMMAGENITUS -> 0.9996D;
+            case HURRICANE -> 0.9995D;
+            case WILDFIRE -> 0.999D;
+            case FLOATER_TORNADO -> 0.9965D;
+            case WATERSPOUT -> 0.9975D;
+            case LANDSPOUT -> 0.996D;
+            case FIRE_WHIRL -> 0.993D;
+            case GUSTNADO -> 0.992D;
+            case SNOW_DEVIL -> 0.990D;
+            case DUST_DEVIL -> 0.990D;
+            default -> 0.985D;
+        };
+    }
+
+    private Vec3 keepMinimumHorizontalMotion(Vec3 dampedMotion) {
+        double minSpeed = switch (type) {
+            case GUSTNADO -> 0.034D;
+            case FIRE_WHIRL -> 0.020D;
+            case FLOATER_TORNADO -> 0.018D;
+            case FLAMMAGENITUS -> 0.006D;
+            case WILDFIRE -> 0.004D;
+            case SNOW_DEVIL -> 0.010D;
+            case DUST_DEVIL -> 0.010D;
+            case LANDSPOUT -> 0.014D;
+            case WATERSPOUT -> 0.012D;
+            default -> 0.0D;
+        };
+        if (minSpeed <= 0.0D || dampedMotion == null) {
+            return safeVec(dampedMotion);
+        }
+        double horizontal = Math.sqrt(dampedMotion.x * dampedMotion.x + dampedMotion.z * dampedMotion.z);
+        if (horizontal < 1.0E-5D) {
+            return Vec3.ZERO;
+        }
+        if (horizontal >= minSpeed) {
+            return dampedMotion;
+        }
+        double scale = minSpeed / horizontal;
+        return new Vec3(dampedMotion.x * scale, dampedMotion.y, dampedMotion.z * scale);
     }
 }

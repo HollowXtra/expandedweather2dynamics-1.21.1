@@ -18,19 +18,20 @@ public record RadarSnapshotPayload(BlockPos origin, List<RadarStormSnapshot> sto
             RadarSnapshotPayload::read
     );
 
+    public RadarSnapshotPayload {
+        origin = origin == null ? BlockPos.ZERO : origin.immutable();
+        storms = copyStorms(storms);
+    }
+
     @Override
     public Type<? extends CustomPacketPayload> type() {
         return TYPE;
     }
 
     public void write(RegistryFriendlyByteBuf buf) {
-        List<RadarStormSnapshot> safeStorms = storms == null ? List.of() : storms.stream()
-                .filter(snapshot -> snapshot != null)
-                .limit(96)
-                .toList();
-        buf.writeBlockPos(origin == null ? BlockPos.ZERO : origin);
-        buf.writeVarInt(safeStorms.size());
-        for (RadarStormSnapshot snapshot : safeStorms) {
+        buf.writeBlockPos(origin);
+        buf.writeVarInt(storms.size());
+        for (RadarStormSnapshot snapshot : storms) {
             snapshot.write(buf);
         }
     }
@@ -43,5 +44,15 @@ public record RadarSnapshotPayload(BlockPos origin, List<RadarStormSnapshot> sto
             storms.add(RadarStormSnapshot.read(buf));
         }
         return new RadarSnapshotPayload(origin, storms);
+    }
+
+    private static List<RadarStormSnapshot> copyStorms(List<RadarStormSnapshot> source) {
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        return source.stream()
+                .filter(snapshot -> snapshot != null)
+                .limit(96)
+                .toList();
     }
 }

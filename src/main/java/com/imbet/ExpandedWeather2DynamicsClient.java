@@ -2,12 +2,18 @@ package com.imbet;
 
 import com.imbet.client.AnemometerRenderer;
 import com.imbet.client.ClientWeatherEffects;
+import com.imbet.client.CloudShadowShaderRenderer;
+import com.imbet.client.DustDevilRenderer;
+import com.imbet.client.FoliageWindController;
+import com.imbet.client.ForecastIconRenderer;
+import com.imbet.client.MorningFogClient;
 import com.imbet.client.RadarScreen;
 import com.imbet.client.RadarPanelRenderer;
 import com.imbet.client.RadarShader;
 import com.imbet.client.SpcRiskPanelRenderer;
 import com.imbet.client.TornadoFearClient;
-import com.imbet.client.TornadoInflowShader;
+import com.imbet.client.VolumetricPrecipitationRenderer;
+import com.imbet.client.XaeroWeatherOverlayRenderer;
 import com.imbet.registry.ModContent;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -35,12 +41,21 @@ public class ExpandedWeather2DynamicsClient {
         // Do not forget to add translations for your config options to the en_us.json file.
         container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
         NeoForge.EVENT_BUS.addListener(ClientWeatherEffects::onClientTick);
+        NeoForge.EVENT_BUS.addListener(FoliageWindController::onClientTick);
+        NeoForge.EVENT_BUS.addListener(FoliageWindController::onRenderLevelStage);
         NeoForge.EVENT_BUS.addListener(TornadoFearClient::onClientTick);
         NeoForge.EVENT_BUS.addListener(TornadoFearClient::onCameraAngles);
         NeoForge.EVENT_BUS.addListener(TornadoFearClient::onFov);
         NeoForge.EVENT_BUS.addListener(TornadoFearClient::onFogColor);
         NeoForge.EVENT_BUS.addListener(TornadoFearClient::onRenderFog);
-        NeoForge.EVENT_BUS.addListener(TornadoInflowShader::onRenderLevelStage);
+        NeoForge.EVENT_BUS.addListener(MorningFogClient::onClientTick);
+        NeoForge.EVENT_BUS.addListener(MorningFogClient::onFogColor);
+        NeoForge.EVENT_BUS.addListener(MorningFogClient::onRenderFog);
+        NeoForge.EVENT_BUS.addListener(VolumetricPrecipitationRenderer::onRenderLevelStage);
+        NeoForge.EVENT_BUS.addListener(CloudShadowShaderRenderer::onRenderLevelStage);
+        NeoForge.EVENT_BUS.addListener(ForecastIconRenderer::onRenderLevelStage);
+        NeoForge.EVENT_BUS.addListener(XaeroWeatherOverlayRenderer::onScreenRenderPost);
+        NeoForge.EVENT_BUS.addListener(XaeroWeatherOverlayRenderer::onHudRenderPost);
     }
 
     @SubscribeEvent
@@ -60,11 +75,14 @@ public class ExpandedWeather2DynamicsClient {
         event.registerBlockEntityRenderer(ModContent.RADAR_BLOCK_ENTITY.get(), RadarPanelRenderer::new);
         event.registerBlockEntityRenderer(ModContent.ANEMOMETER_BLOCK_ENTITY.get(), AnemometerRenderer::new);
         event.registerBlockEntityRenderer(ModContent.SPC_RISK_BLOCK_ENTITY.get(), SpcRiskPanelRenderer::new);
+        event.registerEntityRenderer(ModContent.DUST_DEVIL_ENTITY.get(), DustDevilRenderer::new);
+        event.registerEntityRenderer(ModContent.LANDSPOUT_ENTITY.get(), DustDevilRenderer::new);
+        event.registerEntityRenderer(ModContent.WATERSPOUT_ENTITY.get(), DustDevilRenderer::new);
+        event.registerEntityRenderer(ModContent.GUSTNADO_ENTITY.get(), DustDevilRenderer::new);
     }
 
     @SubscribeEvent
     static void registerShaders(RegisterShadersEvent event) throws IOException {
         RadarShader.register(event);
-        TornadoInflowShader.register(event);
     }
 }

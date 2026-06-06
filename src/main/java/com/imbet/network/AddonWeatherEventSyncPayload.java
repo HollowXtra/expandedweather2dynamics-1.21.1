@@ -17,18 +17,18 @@ public record AddonWeatherEventSyncPayload(List<AddonWeatherEvent> events) imple
             AddonWeatherEventSyncPayload::read
     );
 
+    public AddonWeatherEventSyncPayload {
+        events = copyEvents(events);
+    }
+
     @Override
     public Type<? extends CustomPacketPayload> type() {
         return TYPE;
     }
 
     private void write(RegistryFriendlyByteBuf buf) {
-        List<AddonWeatherEvent> safeEvents = events == null ? List.of() : events.stream()
-                .filter(event -> event != null)
-                .limit(128)
-                .toList();
-        buf.writeVarInt(safeEvents.size());
-        for (AddonWeatherEvent event : safeEvents) {
+        buf.writeVarInt(events.size());
+        for (AddonWeatherEvent event : events) {
             event.write(buf);
         }
     }
@@ -40,5 +40,16 @@ public record AddonWeatherEventSyncPayload(List<AddonWeatherEvent> events) imple
             events.add(AddonWeatherEvent.read(buf));
         }
         return new AddonWeatherEventSyncPayload(events);
+    }
+
+    private static List<AddonWeatherEvent> copyEvents(List<AddonWeatherEvent> source) {
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        return source.stream()
+                .filter(event -> event != null)
+                .limit(128)
+                .map(AddonWeatherEvent::snapshot)
+                .toList();
     }
 }

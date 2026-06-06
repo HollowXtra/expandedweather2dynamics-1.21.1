@@ -26,32 +26,42 @@ public record DamageSurveyResult(
 ) {
     public static final DamageSurveyResult NONE = new DamageSurveyResult("NO TRACK", "No EF damage", 0, "none", 0, 0, 0, 0, 0.0F, 0.0F, 0L, 0L, 0.0D, 0.0D, "", List.of());
 
+    public DamageSurveyResult {
+        tornadoId = limit(tornadoId, 32);
+        efRating = limit(efRating, 32);
+        estimatedMph = Math.max(0, estimatedMph);
+        confidence = limit(confidence, 32);
+        scouredSurfaceBlocks = Math.max(0, scouredSurfaceBlocks);
+        debarkedLogs = Math.max(0, debarkedLogs);
+        damagedColumns = Math.max(0, damagedColumns);
+        pathWidthBlocks = Math.max(0, pathWidthBlocks);
+        maxTrackWidthBlocks = finite(maxTrackWidthBlocks);
+        maxTrackWindMph = finite(maxTrackWindMph);
+        surveyX = finite(surveyX);
+        surveyZ = finite(surveyZ);
+        mergeSummary = limit(mergeSummary, 192);
+        points = copyPoints(points);
+    }
+
     public void write(FriendlyByteBuf buf) {
-        List<MapPoint> safePoints = points == null ? List.of() : points;
-        buf.writeUtf(limit(tornadoId, 32), 32);
-        buf.writeUtf(limit(efRating, 32), 32);
-        buf.writeVarInt(Math.max(0, estimatedMph));
-        buf.writeUtf(limit(confidence, 32), 32);
-        buf.writeVarInt(Math.max(0, scouredSurfaceBlocks));
-        buf.writeVarInt(Math.max(0, debarkedLogs));
-        buf.writeVarInt(Math.max(0, damagedColumns));
-        buf.writeVarInt(Math.max(0, pathWidthBlocks));
-        buf.writeFloat(finite(maxTrackWidthBlocks));
-        buf.writeFloat(finite(maxTrackWindMph));
+        buf.writeUtf(tornadoId, 32);
+        buf.writeUtf(efRating, 32);
+        buf.writeVarInt(estimatedMph);
+        buf.writeUtf(confidence, 32);
+        buf.writeVarInt(scouredSurfaceBlocks);
+        buf.writeVarInt(debarkedLogs);
+        buf.writeVarInt(damagedColumns);
+        buf.writeVarInt(pathWidthBlocks);
+        buf.writeFloat(maxTrackWidthBlocks);
+        buf.writeFloat(maxTrackWindMph);
         buf.writeLong(startTick);
         buf.writeLong(endTick);
-        buf.writeDouble(finite(surveyX));
-        buf.writeDouble(finite(surveyZ));
-        buf.writeUtf(limit(mergeSummary, 192), 192);
-        int count = Math.min(safePoints.size(), 256);
-        buf.writeVarInt(count);
-        for (int i = 0; i < count; i++) {
-            MapPoint point = safePoints.get(i);
-            if (point == null) {
-                new MapPoint(0.0D, 0.0D, 0.0F, 0.0F).write(buf);
-            } else {
-                point.write(buf);
-            }
+        buf.writeDouble(surveyX);
+        buf.writeDouble(surveyZ);
+        buf.writeUtf(mergeSummary, 192);
+        buf.writeVarInt(points.size());
+        for (MapPoint point : points) {
+            point.write(buf);
         }
     }
 
@@ -98,7 +108,24 @@ public record DamageSurveyResult(
         return Double.isFinite(value) ? value : 0.0D;
     }
 
+    private static List<MapPoint> copyPoints(List<MapPoint> source) {
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        return source.stream()
+                .filter(point -> point != null)
+                .limit(256)
+                .toList();
+    }
+
     public record MapPoint(double x, double z, float widthBlocks, float windMph) {
+        public MapPoint {
+            x = finite(x);
+            z = finite(z);
+            widthBlocks = finite(widthBlocks);
+            windMph = finite(windMph);
+        }
+
         public static MapPoint from(TornadoSurveySavedData.TrackPoint point) {
             return new MapPoint(point.x(), point.z(), point.widthBlocks(), point.windMph());
         }
@@ -110,10 +137,10 @@ public record DamageSurveyResult(
         }
 
         private void write(FriendlyByteBuf buf) {
-            buf.writeDouble(finite(x));
-            buf.writeDouble(finite(z));
-            buf.writeFloat(finite(widthBlocks));
-            buf.writeFloat(finite(windMph));
+            buf.writeDouble(x);
+            buf.writeDouble(z);
+            buf.writeFloat(widthBlocks);
+            buf.writeFloat(windMph);
         }
 
         private static MapPoint read(FriendlyByteBuf buf) {

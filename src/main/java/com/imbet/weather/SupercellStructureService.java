@@ -41,16 +41,19 @@ public final class SupercellStructureService {
         if (!Config.SUPERCELL_STRUCTURE_ENABLED.get() || storm == null || storm.pos == null || storm.isDead) {
             return false;
         }
-        if (storm.stormType != StormObject.TYPE_LAND || storm.attrib_waterSpout || storm.isCycloneFormingOrGreater() || storm.isTropicalCyclone() || storm.isHurricane()) {
+        if (storm.stormType != StormObject.TYPE_LAND || storm.attrib_waterSpout || DynamicStormController.isNativeCyclone(storm)) {
             return false;
         }
-        return storm.levelCurIntensityStage >= StormObject.STATE_THUNDER;
+        if (AddonWeatherEventService.isSquallLineHelperStorm(storm) || AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+            return false;
+        }
+        return storm.isTornadoFormingOrGreater() || storm.levelCurIntensityStage >= StormObject.STATE_HAIL;
     }
 
     public static StructureSample sample(StormObject storm, DynamicStormState state) {
         Vec3 center = storm == null || storm.pos == null ? Vec3.ZERO : storm.pos;
         Vec3 forward = motionDirection(storm);
-        Vec3 right = new Vec3(-forward.z, 0.0D, forward.x).normalize();
+        Vec3 right = new Vec3(-forward.z, 0.0D, forward.x).scale(DynamicStormController.visualRotationSign(storm)).normalize();
         double radius = structureRadius(storm, state);
         Vec3 mesocyclone = center.add(forward.scale(-radius * 0.36D)).add(right.scale(radius * 0.48D));
         Vec3 updraft = center.add(forward.scale(-radius * 0.16D)).add(right.scale(radius * 0.26D));
@@ -68,7 +71,42 @@ public final class SupercellStructureService {
         Vec3 flankingLineEnd = mesocyclone.add(forward.scale(-radius * 0.20D)).add(right.scale(radius * 0.10D));
         Vec3 gustFrontLeft = rearFlank.add(forward.scale(radius * 0.20D)).add(right.scale(-radius * 0.84D));
         Vec3 gustFrontRight = rearFlank.add(forward.scale(radius * 0.56D)).add(right.scale(radius * 0.60D));
-        return new StructureSample(forward, right, updraft, mesocyclone, forwardFlank, rearFlank, inflowSource, anvilCore, backShearedAnvil, flankingLineStart, flankingLineEnd, gustFrontLeft, gustFrontRight, wallCloudCenter, wallCloudBase, clearSlotCenter, radius, wallCloudDiameter, rainFreeBaseY);
+        SupercellMode mode = modeFor(storm, state);
+        double hpBias = mode == SupercellMode.HP ? 1.0D : mode == SupercellMode.CLASSIC ? 0.42D : 0.12D;
+        double lpBias = mode == SupercellMode.LP ? 1.0D : 0.0D;
+        Vec3 hookEchoNotch = mesocyclone
+                .add(forward.scale(-radius * (0.14D + hpBias * 0.08D)))
+                .add(right.scale(-radius * (0.16D + hpBias * 0.16D)));
+        Vec3 rainWrapCurtain = mesocyclone
+                .add(forward.scale(radius * (0.08D + hpBias * 0.24D)))
+                .add(right.scale(-radius * (0.14D + hpBias * 0.34D)));
+        Vec3 hailShaft = forwardFlank
+                .add(forward.scale(radius * (0.10D + lpBias * 0.10D)))
+                .add(right.scale(-radius * (0.24D + lpBias * 0.18D)));
+        Vec3 inflowTail = inflowSource.lerp(wallCloudCenter, 0.46D)
+                .add(right.scale(radius * 0.10D));
+        Vec3 rainFreeBase = updraft
+                .add(forward.scale(-radius * 0.06D))
+                .add(right.scale(radius * 0.10D));
+        return new StructureSample(forward, right, updraft, mesocyclone, forwardFlank, rearFlank, inflowSource, anvilCore, backShearedAnvil, flankingLineStart, flankingLineEnd, gustFrontLeft, gustFrontRight, wallCloudCenter, wallCloudBase, clearSlotCenter, hookEchoNotch, rainWrapCurtain, hailShaft, inflowTail, rainFreeBase, mode, radius, wallCloudDiameter, rainFreeBaseY);
+    }
+
+    public static SupercellMode modeFor(StormObject storm, DynamicStormState state) {
+        float ffd = state == null ? 0.0F : state.ffdStrength();
+        float rfd = state == null ? 0.0F : state.rfdStrength();
+        float hail = state == null ? 0.0F : state.hailCoreStrength();
+        boolean precipitating = storm != null && storm.isPrecipitating();
+        boolean hailStage = storm != null && storm.levelCurIntensityStage >= StormObject.STATE_HAIL;
+        if ((precipitating && ffd >= 0.62F && rfd >= 0.38F) || ffd >= 0.78F) {
+            return SupercellMode.HP;
+        }
+        if ((hailStage || hail >= 0.44F) && ffd <= 0.60F) {
+            return SupercellMode.LP;
+        }
+        if (!precipitating && hail >= 0.36F) {
+            return SupercellMode.LP;
+        }
+        return SupercellMode.CLASSIC;
     }
 
     public static TornadoWindField.WindSample sampleWind(StormObject storm, Level level, Vec3 position) {
@@ -105,6 +143,22 @@ public final class SupercellStructureService {
         Vec3 ffd = ffdDirection.scale((10.0D + state.ffdStrength() * 38.0D) * ffdFalloff);
         mphVector = mphVector.add(ffd);
         strongest = Math.max(strongest, ffd.length());
+
+        double hookDistance = horizontalDistance(position, structure.hookEchoNotch());
+        double hookFalloff = Mth.clamp(1.0D - hookDistance / (24.0D + structure.radius() * 0.11D), 0.0D, 1.0D);
+        Vec3 hookDirection = structure.right().scale(-0.78D).add(structure.forward().scale(-0.28D)).normalize();
+        Vec3 hook = hookDirection.scale((10.0D + state.mesocycloneStrength() * 42.0D + state.wallCloudRotationStrength() * 26.0D) * hookFalloff);
+        mphVector = mphVector.add(hook);
+        strongest = Math.max(strongest, hook.length());
+
+        if (structure.mode() == SupercellMode.HP) {
+            double wrapDistance = distanceToSegment2d(position, structure.hookEchoNotch(), structure.rainWrapCurtain());
+            double wrapFalloff = Mth.clamp(1.0D - wrapDistance / (34.0D + structure.radius() * 0.16D), 0.0D, 1.0D);
+            Vec3 wrapDirection = structure.forward().scale(0.52D).add(structure.right().scale(-0.42D)).normalize();
+            Vec3 wrap = wrapDirection.scale((16.0D + state.ffdStrength() * 34.0D + state.rfdStrength() * 24.0D) * wrapFalloff);
+            mphVector = mphVector.add(wrap);
+            strongest = Math.max(strongest, wrap.length());
+        }
 
         return new TornadoWindField.WindSample(mphVector, mphVector.length(), strongest, 0.0D, structure.radius(), 0.0D);
     }
@@ -200,9 +254,21 @@ public final class SupercellStructureService {
             Vec3 wallCloudCenter,
             Vec3 wallCloudBase,
             Vec3 clearSlotCenter,
+            Vec3 hookEchoNotch,
+            Vec3 rainWrapCurtain,
+            Vec3 hailShaft,
+            Vec3 inflowTail,
+            Vec3 rainFreeBase,
+            SupercellMode mode,
             double radius,
             double wallCloudDiameter,
             double rainFreeBaseY
     ) {
+    }
+
+    public enum SupercellMode {
+        CLASSIC,
+        HP,
+        LP
     }
 }

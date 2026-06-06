@@ -74,7 +74,11 @@ public final class SupercellMergeService {
         if (storm == null || storm.pos == null || storm.isDead || DynamicStormController.isAbsorbedOrDecaying(storm)) {
             return false;
         }
-        if (storm.stormType != StormObject.TYPE_LAND || storm.attrib_waterSpout || storm.isCycloneFormingOrGreater() || storm.isTropicalCyclone() || storm.isHurricane()) {
+        if (storm.stormType != StormObject.TYPE_LAND
+                || storm.attrib_waterSpout
+                || DynamicStormController.isNativeCyclone(storm)
+                || AddonWeatherEventService.isSquallLineHelperStorm(storm)
+                || AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
             return false;
         }
         return storm.levelCurIntensityStage >= Config.SUPERCELL_MERGE_MIN_INTENSITY_STAGE.get();

@@ -65,14 +65,21 @@ public final class TreeDamage {
             if (!level.isLoaded(base)) {
                 continue;
             }
-            BlockPos surface = level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, base);
+            BlockPos surface = BlockGrabSafety.safeSurface(level, base, net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+            if (surface == null) {
+                continue;
+            }
             BlockPos.MutableBlockPos cursor = surface.mutable();
             for (int y = -2; y <= 10 && changed < maxChanges; y++) {
                 cursor.set(surface.getX(), surface.getY() + y, surface.getZ());
                 if (!level.isLoaded(cursor)) {
                     continue;
                 }
-                BlockState blockState = level.getBlockState(cursor);
+                BlockGrabSafety.BlockSample block = BlockGrabSafety.sample(level, cursor, null);
+                if (!BlockGrabSafety.canEdit(block, false)) {
+                    continue;
+                }
+                BlockState blockState = block.state();
                 TornadoWindField.WindSample sample = TornadoWindField.sample(storm, level, Vec3.atCenterOf(cursor));
                 double localMph = Math.max(maxWindMph * Mth.clamp(1.0D - Vec3.atCenterOf(cursor).distanceTo(center) / Math.max(1.0D, radius * 2.0D), 0.0D, 1.0D), sample.strongestLocalMph());
                 if (stripLog(level, cursor, blockState, localMph)) {
@@ -96,8 +103,7 @@ public final class TreeDamage {
         if (state.hasProperty(BlockStateProperties.AXIS) && replacement.hasProperty(BlockStateProperties.AXIS)) {
             replacement = replacement.setValue(BlockStateProperties.AXIS, state.getValue(BlockStateProperties.AXIS));
         }
-        level.setBlock(pos, replacement, 3);
-        return true;
+        return BlockGrabSafety.safeSetBlock(level, pos, replacement, 3);
     }
 
     private static boolean thinLeaves(ServerLevel level, BlockPos pos, BlockState state, double localMph) {
@@ -107,7 +113,6 @@ public final class TreeDamage {
         if (level.random.nextFloat() > 0.55F) {
             return false;
         }
-        level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
-        return true;
+        return BlockGrabSafety.safeSetBlock(level, pos, Blocks.AIR.defaultBlockState(), 3);
     }
 }

@@ -48,6 +48,10 @@ public abstract class TornadoHelperMixin {
             return;
         }
         TornadoHelper helper = (TornadoHelper) (Object) this;
+        if (DynamicStormController.shouldForceGrabEntity(helper, entity)) {
+            cir.setReturnValue(true);
+            return;
+        }
         if (!DynamicStormController.canGrabEntity(helper, entity)) {
             cir.setReturnValue(false);
         }

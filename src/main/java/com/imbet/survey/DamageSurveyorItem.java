@@ -2,6 +2,8 @@ package com.imbet.survey;
 
 import com.imbet.Config;
 import com.imbet.network.DamageSurveyResultPayload;
+import com.imbet.network.NetworkSafety;
+import com.imbet.weather.BlockGrabSafety;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -21,7 +23,6 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.List;
 import java.util.Set;
@@ -120,7 +121,10 @@ public class DamageSurveyorItem extends Item {
                 if (!level.isLoaded(column)) {
                     continue;
                 }
-                BlockPos surface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column);
+                BlockPos surface = BlockGrabSafety.safeSurface(level, column, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+                if (surface == null) {
+                    continue;
+                }
                 BlockPos ground = surface.below();
                 if (level.isLoaded(ground)) {
                     result.recordGround(ground, level.getBlockState(ground));
@@ -182,7 +186,7 @@ public class DamageSurveyorItem extends Item {
         player.sendSystemMessage(Component.literal("In-game estimate only; official EF ratings require trained damage indicators and ground survey.")
                 .withStyle(ChatFormatting.DARK_GRAY));
         if (player instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
-            PacketDistributor.sendToPlayer(serverPlayer, new DamageSurveyResultPayload(result));
+            NetworkSafety.sendToPlayer(serverPlayer, new DamageSurveyResultPayload(result));
         }
     }
 

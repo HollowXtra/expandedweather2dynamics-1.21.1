@@ -8,6 +8,8 @@ import com.imbet.weather.DynamicStormState;
 import com.imbet.weather.StormClassifier;
 import com.imbet.weather.StormSubtype;
 import com.imbet.weather.TornadoWindField;
+import com.imbet.weather.WeatherDataStreamService;
+import com.imbet.weather.WeatherPhysicalSnapshot;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
 import weather2.ServerTickHandler;
@@ -30,6 +32,25 @@ public final class TornadoTrackService {
             return;
         }
         TornadoSurveySavedData data = TornadoSurveySavedData.get(level);
+        java.util.List<WeatherPhysicalSnapshot> snapshots = WeatherDataStreamService.snapshots(level);
+        if (!snapshots.isEmpty()) {
+            for (WeatherPhysicalSnapshot snapshot : snapshots) {
+                if (!snapshot.trackableVortex()) {
+                    continue;
+                }
+                data.recordPoint(
+                        snapshot.sourceKey(),
+                        snapshot.parentId() == Long.MIN_VALUE ? snapshot.sourceId() : snapshot.parentId(),
+                        snapshot.sourceId(),
+                        level.getGameTime(),
+                        snapshot.circulationPosition(),
+                        Math.max(4.0F, snapshot.damagePathWidth()),
+                        snapshot.maxWindMph(),
+                        snapshot.subtype().label()
+                );
+            }
+            return;
+        }
         WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
         if (manager != null) {
             for (WeatherObject object : new ArrayList<>(manager.getStormObjects())) {

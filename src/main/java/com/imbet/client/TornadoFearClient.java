@@ -184,12 +184,24 @@ public final class TornadoFearClient {
         return Config.TORNADO_IMMERSION_ENABLED.get()
                 && Config.TORNADO_IMMERSION_CAMERA_RUMBLE.get()
                 && !Config.TORNADO_IMMERSION_ACCESSIBILITY_REDUCED_MOTION.get()
+                && closeEffectFalloff() > 0.0F
                 && fearIntensity > 0.04F;
     }
 
     private static float rumbleStrength() {
         float wind = activeSample == null ? 0.0F : Mth.clamp((float) (activeSample.windMph() / 250.0D), 0.0F, 1.0F);
-        return Mth.clamp(fearIntensity * (0.45F + wind * 0.55F) + insideCoreIntensity * 0.36F - insideEyeIntensity * 0.16F, 0.0F, 1.0F);
+        float strength = (fearIntensity * (0.45F + wind * 0.55F) + insideCoreIntensity * 0.36F - insideEyeIntensity * 0.16F) * closeEffectFalloff();
+        if (ef3IntenseActive()) {
+            strength *= Config.TORNADO_IMMERSION_EF3_CAMERA_MULTIPLIER.get().floatValue();
+        }
+        return Mth.clamp(strength, 0.0F, 1.0F);
+    }
+
+    private static boolean ef3IntenseActive() {
+        return Config.TORNADO_IMMERSION_INTENSE_EF3_EFFECTS.get()
+                && activeSample != null
+                && activeSample != FearSample.NONE
+                && activeSample.windMph() >= Config.TORNADO_IMMERSION_EF3_WIND_THRESHOLD_MPH.get();
     }
 
     private static void reset(Minecraft minecraft) {
@@ -268,7 +280,7 @@ public final class TornadoFearClient {
     }
 
     private static boolean isFearVortex(StormSubtype subtype) {
-        return subtype == StormSubtype.LANDSPOUT || subtype == StormSubtype.DUST_DEVIL || subtype == StormSubtype.WATERSPOUT;
+        return subtype == StormSubtype.LANDSPOUT || subtype == StormSubtype.DUST_DEVIL || subtype == StormSubtype.GUSTNADO || subtype == StormSubtype.WATERSPOUT;
     }
 
     private static Vec3 addonVortexWind(AddonWeatherEvent event, Vec3 playerPos) {
@@ -287,7 +299,9 @@ public final class TornadoFearClient {
     }
 
     private static void tickRoar(Minecraft minecraft) {
-        if (!Config.TORNADO_IMMERSION_ROAR_SOUND.get() || fearIntensity <= 0.035F || activeSample == FearSample.NONE) {
+        float closeFalloff = closeEffectFalloff();
+        float closeIntensity = fearIntensity * closeFalloff;
+        if (!Config.TORNADO_IMMERSION_ROAR_SOUND.get() || closeIntensity <= 0.035F || activeSample == FearSample.NONE) {
             if (roarSound != null) {
                 roarSound.fadeOut();
             }
@@ -297,7 +311,15 @@ public final class TornadoFearClient {
             roarSound = new TornadoRoarSound(activeSample);
             minecraft.getSoundManager().play(roarSound);
         }
-        roarSound.update(activeSample, fearIntensity);
+        roarSound.update(activeSample, closeIntensity);
+    }
+
+    private static float closeEffectFalloff() {
+        if (activeSample == null || activeSample == FearSample.NONE) {
+            return 0.0F;
+        }
+        double radius = Math.max(1.0D, Config.TORNADO_IMMERSION_CLOSE_EFFECT_RADIUS_BLOCKS.get());
+        return Mth.clamp((float) (1.0D - activeSample.distance() / radius), 0.0F, 1.0F);
     }
 
     private static void tickImpactSounds(ClientLevel level, Player player) {
@@ -364,15 +386,15 @@ public final class TornadoFearClient {
     }
 
     private static void spawnWeatherParticle(ClientLevel level, Vec3 pos, Vec3 velocity, net.minecraft.client.renderer.texture.TextureAtlasSprite sprite, float scale, float red, float green, float blue, float alpha, int maxAge, float windWeight, ParticleOptions fallback) {
-        if (sprite == null) {
+        if (!Config.EXTENDED_RENDERING_ENABLED.get() || sprite == null) {
             level.addParticle(fallback, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
             return;
         }
         EntityRotFX particle = new EntityRotFX(level, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
         particle.setSprite(sprite);
-        particle.setScale(scale);
+        particle.setScale(Mth.clamp(scale, 0.05F, 42.0F));
         particle.setColor(red, green, blue);
-        particle.setAlpha(alpha);
+        particle.setAlpha(Mth.clamp(alpha, 0.02F, 0.62F));
         particle.setMaxAge(maxAge);
         particle.setGravity(0.0F);
         particle.setCanCollide(false);
@@ -406,16 +428,19 @@ public final class TornadoFearClient {
             x = sample.center().x;
             y = sample.center().y;
             z = sample.center().z;
-            float distanceFade = Mth.clamp((float) (1.0D - sample.distance() / Math.max(64.0D, Config.TORNADO_IMMERSION_RENDER_RANGE_BLOCKS.get())), 0.0F, 1.0F);
+            float distanceFade = closeEffectFalloff();
             float wind = Mth.clamp((float) (sample.windMph() / 260.0D), 0.0F, 1.0F);
             float blowout = Config.TORNADO_IMMERSION_BLOWOUT_AUDIO.get()
                     ? Mth.clamp(insideCoreIntensity * Config.TORNADO_IMMERSION_BLOWOUT_AUDIO_INTENSITY.get().floatValue(), 0.0F, 1.65F)
                     : 0.0F;
+            float ef3 = Config.TORNADO_IMMERSION_INTENSE_EF3_EFFECTS.get() && sample.windMph() >= Config.TORNADO_IMMERSION_EF3_WIND_THRESHOLD_MPH.get()
+                    ? Config.TORNADO_IMMERSION_EF3_ROAR_MULTIPLIER.get().floatValue()
+                    : 1.0F;
             float eye = Config.TORNADO_IMMERSION_EYE_EFFECT.get() ? insideEyeIntensity : 0.0F;
             double tick = Minecraft.getInstance().level == null ? 0.0D : Minecraft.getInstance().level.getGameTime();
             float wobble = (float) (Math.sin(tick * 0.37D) * 0.055D + Math.sin(tick * 1.17D) * 0.022D) * blowout;
-            targetVolume = Mth.clamp(0.06F + intensity * 0.95F + distanceFade * 0.32F + blowout * 0.58F - eye * 0.46F, 0.0F, 1.85F);
-            targetPitch = Mth.clamp(0.58F + wind * 0.26F - intensity * 0.08F - blowout * 0.13F - eye * 0.09F + wobble, 0.36F, 0.98F);
+            targetVolume = Mth.clamp((0.06F + intensity * 0.95F + distanceFade * 0.32F + blowout * 0.58F - eye * 0.46F) * ef3, 0.0F, 2.4F);
+            targetPitch = Mth.clamp(0.58F + wind * 0.26F - intensity * 0.08F - blowout * 0.13F - eye * 0.09F + wobble - (ef3 - 1.0F) * 0.055F, 0.34F, 0.98F);
         }
 
         private void fadeOut() {

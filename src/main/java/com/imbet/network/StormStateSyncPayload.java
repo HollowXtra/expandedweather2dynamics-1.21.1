@@ -14,6 +14,10 @@ public record StormStateSyncPayload(long stormId, CompoundTag state) implements 
             StormStateSyncPayload::read
     );
 
+    public StormStateSyncPayload {
+        state = state == null ? new CompoundTag() : state.copy();
+    }
+
     @Override
     public Type<? extends CustomPacketPayload> type() {
         return TYPE;
@@ -21,7 +25,7 @@ public record StormStateSyncPayload(long stormId, CompoundTag state) implements 
 
     private void write(RegistryFriendlyByteBuf buf) {
         buf.writeLong(stormId);
-        buf.writeNbt(state == null ? new CompoundTag() : state.copy());
+        buf.writeNbt(state);
     }
 
     private static StormStateSyncPayload read(RegistryFriendlyByteBuf buf) {

@@ -26,8 +26,11 @@ public class RadarMenu extends AbstractContainerMenu {
 
     @Override
     public boolean stillValid(Player player) {
-        return player.level().getBlockState(radarPos).is(ModContent.RADAR_BLOCK.get())
-                && player.distanceToSqr(radarPos.getX() + 0.5D, radarPos.getY() + 0.5D, radarPos.getZ() + 0.5D) <= 4096.0D;
+        if (player.level().getBlockState(radarPos).is(ModContent.RADAR_BLOCK.get())) {
+            return player.distanceToSqr(radarPos.getX() + 0.5D, radarPos.getY() + 0.5D, radarPos.getZ() + 0.5D) <= 4096.0D;
+        }
+        return player.getMainHandItem().is(ModContent.PORTABLE_RADAR_ITEM.get())
+                || player.getOffhandItem().is(ModContent.PORTABLE_RADAR_ITEM.get());
     }
 
     @Override

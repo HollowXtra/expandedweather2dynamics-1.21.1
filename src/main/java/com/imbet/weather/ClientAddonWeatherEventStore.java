@@ -15,6 +15,21 @@ public final class ClientAddonWeatherEventStore {
         events = List.copyOf(payload.events());
     }
 
+    public static void tick(long gameTime) {
+        if (events.isEmpty()) {
+            return;
+        }
+        List<AddonWeatherEvent> updated = new ArrayList<>(events.size());
+        for (AddonWeatherEvent event : events) {
+            if (event == null || event.expired(gameTime)) {
+                continue;
+            }
+            event.tick();
+            updated.add(event);
+        }
+        events = List.copyOf(updated);
+    }
+
     public static List<AddonWeatherEvent> events() {
         return new ArrayList<>(events);
     }

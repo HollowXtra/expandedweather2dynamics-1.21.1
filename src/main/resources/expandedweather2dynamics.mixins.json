@@ -3,10 +3,17 @@
   "package": "com.imbet.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "ForecastBlockMixin",
     "LightningBoltWeatherNewMixin",
+    "PacketNBTFromServerMixin",
     "StormObjectMixin",
     "TornadoFunnelSimpleMixin",
     "TornadoHelperMixin"
+  ],
+  "client": [
+    "BlockRenderDispatcherMixin",
+    "EntityRotFXPauseMixin",
+    "LevelRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1
