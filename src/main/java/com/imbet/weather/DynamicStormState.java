@@ -16,7 +16,7 @@ import java.util.Random;
 
 public final class DynamicStormState {
     private static final float WEDGE_ENTER_WIDTH_BLOCKS = 1609.344F * 0.5F;
-    private static final float WEDGE_EXIT_WIDTH_BLOCKS = 1609.344F * 0.44F;
+    private static final float WEDGE_EXIT_WIDTH_BLOCKS = 1609.344F * 0.38F;
     private static final float WEDGE_FORCED_VISIBLE_CAP_BLOCKS = 1609.344F;
 
     private final long stormId;
@@ -179,7 +179,7 @@ public final class DynamicStormState {
         int minTicks = Math.min(Config.TORNADO_WIDTH_MIN_RETARGET_TICKS.get(), Config.TORNADO_WIDTH_MAX_RETARGET_TICKS.get());
         int maxTicks = Math.max(Config.TORNADO_WIDTH_MIN_RETARGET_TICKS.get(), Config.TORNADO_WIDTH_MAX_RETARGET_TICKS.get());
         float minDamageWidth = (float) Config.effectiveMinDamageWidthBlocks();
-        float maxDamageWidth = (float) Config.effectiveMaxDamageWidthBlocks();
+        float maxDamageWidth = Math.max((float) Config.effectiveMaxDamageWidthBlocks(), WEDGE_ENTER_WIDTH_BLOCKS);
         float legacyMin = Math.min(Config.TORNADO_WIDTH_MIN_MULTIPLIER.get().floatValue(), Config.TORNADO_WIDTH_MAX_MULTIPLIER.get().floatValue());
         float legacyMax = Math.max(Config.TORNADO_WIDTH_MIN_MULTIPLIER.get().floatValue(), Config.TORNADO_WIDTH_MAX_MULTIPLIER.get().floatValue());
 
@@ -443,7 +443,7 @@ public final class DynamicStormState {
             subVortices.clear();
             multiVortexEpisodeActive = false;
             multiVortexEpisodeEndTick = 0L;
-            if (!multiVortexTagLocked && (sidewinderTagLocked || funnelMorphologyLocked)) {
+            if (!multiVortexTagLocked && (sidewinderTagLocked || (funnelMorphologyLocked && !wedgeMorphologyActive()))) {
                 return;
             }
             if (!multiVortexTagLocked && gameTime < nextMultiVortexEpisodeAttemptTick) {
@@ -466,7 +466,7 @@ public final class DynamicStormState {
             multiVortexEpisodeEndTick = gameTime + nextIntInclusive(minEpisode, maxEpisode);
             nextSubVortexRetargetTick = gameTime;
             clearSidewinderTag();
-            clearFunnelMorphologyTag();
+            clearNonWedgeFunnelMorphologyTag();
         }
         if (gameTime < nextSubVortexRetargetTick && subVortices.size() >= desiredCount) {
             return;
@@ -567,6 +567,33 @@ public final class DynamicStormState {
         trunkCurveStrength = 1.0F;
     }
 
+    private void clearNonWedgeFunnelMorphologyTag() {
+        if (!wedgeMorphologyActive()) {
+            clearFunnelMorphologyTag();
+            return;
+        }
+        targetFunnelMorphology = FunnelMorphology.WEDGE;
+        if (funnelMorphology != FunnelMorphology.WEDGE) {
+            funnelMorphology = FunnelMorphology.DEFAULT;
+        }
+        funnelMorphologyLocked = true;
+        targetTrunkNeckFraction = 0.78F;
+        trunkCurveStrength = 0.35F;
+    }
+
+    private void clearWedgeMorphologyTag() {
+        funnelMorphologyLocked = false;
+        if (targetFunnelMorphology == FunnelMorphology.WEDGE) {
+            targetFunnelMorphology = FunnelMorphology.DEFAULT;
+        }
+        if (funnelMorphology == FunnelMorphology.WEDGE) {
+            funnelMorphology = FunnelMorphology.DEFAULT;
+        }
+        if (targetFunnelMorphology == FunnelMorphology.DEFAULT && funnelMorphology == FunnelMorphology.DEFAULT) {
+            funnelMorphologyBlend = 0.0F;
+        }
+    }
+
     private void activateWedgeMorphology() {
         clearSidewinderTag();
         if (targetFunnelMorphology != FunnelMorphology.WEDGE) {
@@ -576,7 +603,7 @@ public final class DynamicStormState {
             funnelMorphology = FunnelMorphology.DEFAULT;
             funnelMorphologyBlend = 0.0F;
         }
-        funnelMorphologyLocked = false;
+        funnelMorphologyLocked = true;
         targetTrunkNeckFraction = 0.78F;
         trunkCurveStrength = 0.35F;
     }
@@ -1247,11 +1274,14 @@ public final class DynamicStormState {
             nextMorphologyRetargetTick = gameTime + nextIntInclusive(80, 180);
             return;
         }
-        if (multiVortexVisualActive() || sidewinderVisualActive()) {
-            funnelMorphologyLocked = false;
-            targetFunnelMorphology = FunnelMorphology.DEFAULT;
-            funnelMorphology = FunnelMorphology.DEFAULT;
-            funnelMorphologyBlend = 0.0F;
+        if (multiVortexVisualActive()) {
+            clearSidewinderTag();
+            clearNonWedgeFunnelMorphologyTag();
+            nextMorphologyRetargetTick = gameTime + nextIntInclusive(180, 420);
+            return;
+        }
+        if (sidewinderVisualActive()) {
+            clearNonWedgeFunnelMorphologyTag();
             nextMorphologyRetargetTick = gameTime + nextIntInclusive(180, 420);
             return;
         }
@@ -1343,8 +1373,7 @@ public final class DynamicStormState {
     private boolean refreshWedgeMorphology(StormObject storm) {
         if (storm == null || storm.attrib_waterSpout || !storm.isTornadoFormingOrGreater()) {
             if (wedgeMorphologyActive()) {
-                funnelMorphologyLocked = false;
-                targetFunnelMorphology = FunnelMorphology.DEFAULT;
+                clearWedgeMorphologyTag();
             }
             return false;
         }
@@ -1352,8 +1381,7 @@ public final class DynamicStormState {
         float threshold = wedgeMorphologyActive() ? WEDGE_EXIT_WIDTH_BLOCKS : WEDGE_ENTER_WIDTH_BLOCKS;
         if (currentWidth < threshold) {
             if (wedgeMorphologyActive()) {
-                funnelMorphologyLocked = false;
-                targetFunnelMorphology = FunnelMorphology.DEFAULT;
+                clearWedgeMorphologyTag();
             }
             return false;
         }
@@ -1374,7 +1402,7 @@ public final class DynamicStormState {
             return;
         }
         float minDamageWidth = (float) Config.effectiveMinDamageWidthBlocks();
-        float maxDamageWidth = (float) Config.effectiveMaxDamageWidthBlocks();
+        float maxDamageWidth = Math.max((float) Config.effectiveMaxDamageWidthBlocks(), WEDGE_ENTER_WIDTH_BLOCKS);
         float wedgeDamageFloor = Mth.clamp(Math.max(WEDGE_ENTER_WIDTH_BLOCKS, damagePathWidth), minDamageWidth, maxDamageWidth);
         targetDamagePathWidth = Math.max(targetDamagePathWidth, wedgeDamageFloor);
 
