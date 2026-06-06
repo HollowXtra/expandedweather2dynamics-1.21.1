@@ -1,6 +1,7 @@
 package com.imbet.weather;
 
 import com.imbet.Config;
+import com.imbet.compat.immersiveaircraft.ImmersiveAircraftStormCompat;
 import com.imbet.network.StormStateSyncPayload;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
@@ -11,12 +12,14 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.vehicle.Boat;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
 import com.imbet.network.ModNetworking;
+import weather2.weathersystem.WeatherManagerServer;
 import weather2.weathersystem.storm.StormObject;
 import weather2.weathersystem.storm.TornadoHelper;
 
@@ -66,10 +69,12 @@ public final class DynamicStormController {
             return;
         }
         updateSubVortices(storm, state);
+        updateHorizontalVortices(storm, state);
         if (world instanceof ServerLevel serverLevel) {
             updateSatelliteTornadoes(storm, state);
             TornadoMergeService.tick(serverLevel, storm, state);
             CirculationDamage.tick(serverLevel, storm, state);
+            FlyingBlockImpactDamage.tick(serverLevel, storm, state);
             applyEnvironmentalIntensity(serverLevel, storm, state);
             TreeDamage.tick(serverLevel, storm, state);
             if (CycloidalMarks.tick(serverLevel, storm, state)) {
@@ -102,6 +107,10 @@ public final class DynamicStormController {
         }
         DynamicStormState state = stateFor(storm);
         int visibleCap = Math.max(3, (int) Math.min(Integer.MAX_VALUE, Math.round(Config.effectiveMaxVisibleFunnelWidthBlocks())));
+        if (state.wedgeMorphologyActive()) {
+            int forcedWedgeCap = (int) Math.round(Math.min(Config.milesToBlocks(1.0D), Math.max(state.visibleFunnelWidth(), Config.milesToBlocks(0.5D))));
+            visibleCap = Math.max(visibleCap, forcedWedgeCap);
+        }
         if (Config.TORNADO_REALISTIC_WIDTH_MODEL.get()) {
             return Mth.clamp(Math.round(state.visibleFunnelWidth()), 3, visibleCap);
         }
@@ -135,6 +144,26 @@ public final class DynamicStormController {
         double upperKink = Math.sin(effectiveFraction * Math.PI * 2.0D + state.bendPhase() * 0.72D) * sway * 0.24D * effectiveFraction;
         Vec3 offset = lean.scale(maxBend * heightEase + upperKink).add(cross.scale(curve));
         return new Vec3(basePos.x + offset.x, layerPos.y, basePos.z + offset.z);
+    }
+
+    public static double mainFunnelGroundLift(StormObject storm, int layerIndex, int layerCount) {
+        if (storm == null || !storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout || layerCount <= 1) {
+            return 0.0D;
+        }
+        DynamicStormState state = stateFor(storm);
+        FunnelMorphology morphology = state.targetFunnelMorphology().shaped() ? state.targetFunnelMorphology() : state.funnelMorphology();
+        if (morphology != FunnelMorphology.FLOATER || !Config.FLOATER_TORNADOES_ENABLED.get()) {
+            return 0.0D;
+        }
+        float blend = state.funnelMorphologyBlend();
+        if (blend <= 0.001F) {
+            return 0.0D;
+        }
+        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        double v = Mth.clamp(fraction / 0.68D, 0.0D, 1.0D);
+        double lowerWeight = 1.0D - (v * v * (3.0D - 2.0D * v));
+        double lift = Mth.clamp(18.0D + state.visibleFunnelWidth() * 0.22D, 18.0D, 64.0D);
+        return lift * lowerWeight * blend;
     }
 
     public static void saveStateToStorm(StormObject storm) {
@@ -192,10 +221,15 @@ public final class DynamicStormController {
         if (Config.DAMAGE_LOADED_CHUNKS_ONLY.get() && !level.isLoaded(pos)) {
             return false;
         }
-        BlockState state = level.getBlockState(pos);
-        if (Config.DAMAGE_OPEN_DOORS.get() && state.hasProperty(BlockStateProperties.OPEN) && !state.getValue(BlockStateProperties.OPEN)) {
-            level.setBlock(pos, state.setValue(BlockStateProperties.OPEN, true), 3);
-            level.updateNeighborsAt(pos, state.getBlock());
+        BlockGrabSafety.BlockSample sample = BlockGrabSafety.sample(level, pos, null);
+        if (!BlockGrabSafety.canEdit(sample)) {
+            return false;
+        }
+        TornadoWindField.WindSample wind = TornadoWindField.sample(helper.storm, level, Vec3.atCenterOf(pos));
+        if (!BlockGrabSafety.canPickupByWind(sample, wind.strongestLocalMph())) {
+            return false;
+        }
+        if (Config.DAMAGE_OPEN_DOORS.get() && BlockGrabSafety.tryOpenDoor(level, sample)) {
             return false;
         }
         return stateFor(helper.storm).tryConsumeBlockDamage(level.getGameTime());
@@ -208,23 +242,24 @@ public final class DynamicStormController {
         if (Config.DAMAGE_LOADED_CHUNKS_ONLY.get() && !level.isLoaded(pos)) {
             return false;
         }
-        float hardness = state.getDestroySpeed(level, pos);
-        if (hardness < 0.0F) {
-            return false;
-        }
-        if (state.is(Blocks.BEDROCK) || state.is(Blocks.END_PORTAL) || state.is(Blocks.END_PORTAL_FRAME) || state.is(Blocks.NETHER_PORTAL) || state.is(Blocks.COMMAND_BLOCK) || state.is(Blocks.CHAIN_COMMAND_BLOCK) || state.is(Blocks.REPEATING_COMMAND_BLOCK)) {
-            return false;
-        }
-        if (Config.DAMAGE_PRESERVE_INVENTORY_BLOCK_ENTITIES.get() && level.getBlockEntity(pos) != null) {
+        BlockGrabSafety.BlockSample sample = BlockGrabSafety.sample(level, pos, state);
+        if (!BlockGrabSafety.canEdit(sample)) {
             return false;
         }
         TornadoWindField.WindSample wind = TornadoWindField.sample(helper.storm, level, Vec3.atCenterOf(pos));
+        double localWindMph = wind.strongestLocalMph();
+        if (!BlockGrabSafety.canPickupByWind(sample, localWindMph)) {
+            return false;
+        }
+        float hardness = sample.destroySpeed();
+        if (hardness < 0.0F) {
+            return false;
+        }
         float strengthMultiplier = strengthMultiplierFor(helper.storm);
         if (wind.strongestLocalMph() > TornadoWindField.maxWindMph(helper.storm) * 0.82D) {
             strengthMultiplier *= Config.MULTIVORTEX_DAMAGE_MULTIPLIER.get().floatValue();
         }
-        float stageAllowance = Math.max(0, helper.storm.levelCurIntensityStage - StormObject.STATE_FORMING + 1) * 1.25F;
-        float maxHardness = Math.max(1.0F, stageAllowance * strengthMultiplier);
+        float maxHardness = (float) Math.max(0.75D, ((localWindMph - 45.0D) / 28.0D) * strengthMultiplier);
         if (hardness > maxHardness) {
             return false;
         }
@@ -251,6 +286,9 @@ public final class DynamicStormController {
         if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null) {
             return false;
         }
+        if (isVehiclePickupTarget(entity)) {
+            return shouldForceGrabEntity(helper, entity);
+        }
         if (entity instanceof Player) {
             return Config.DAMAGE_GRAB_PLAYERS.get();
         }
@@ -260,8 +298,170 @@ public final class DynamicStormController {
         return true;
     }
 
+    public static boolean shouldForceGrabEntity(TornadoHelper helper, Entity entity) {
+        if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null || entity == null) {
+            return false;
+        }
+        if (!isVehiclePickupTarget(entity)) {
+            return false;
+        }
+        TornadoWindField.WindSample wind = TornadoWindField.sample(helper.storm, entity.level(), entity.position());
+        return isInsideVehiclePickupWindField(helper.storm, entity.level(), entity.position(), wind);
+    }
+
+    private static boolean isVehiclePickupTarget(Entity entity) {
+        return entity instanceof Boat || ImmersiveAircraftStormCompat.isAircraftEntity(entity);
+    }
+
+    private static boolean isInsideVehiclePickupWindField(StormObject storm, Level level, Vec3 position, TornadoWindField.WindSample wind) {
+        if (storm == null || level == null || position == null || wind == null) {
+            return false;
+        }
+        double windMph = Math.max(wind.speedMph(), wind.strongestLocalMph());
+        if (windMph < 35.0D) {
+            return false;
+        }
+        double parentPickupRadius = Math.max(wind.baseRadius() * 2.15D, wind.radiusMaxWind() * 4.25D);
+        if (wind.distanceFromCore() <= parentPickupRadius) {
+            return true;
+        }
+
+        DynamicStormState state = stateFor(storm);
+        double baseRadius = Math.max(6.0D, wind.baseRadius());
+        for (DynamicStormState.SubVortex vortex : state.subVortices()) {
+            Vec3 center = TornadoWindField.subVortexGroundCenter(level, storm, vortex, position.y);
+            double distance = Math.sqrt(position.distanceToSqr(center.x, position.y, center.z));
+            double subCoreRadius = Math.max(1.5D, baseRadius * vortex.radiusFraction() * 0.28D);
+            if (distance <= subCoreRadius * 3.5D) {
+                return true;
+            }
+        }
+        for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
+            Vec3 center = satelliteCenter(storm, satellite, position.y);
+            double distance = Math.sqrt(position.distanceToSqr(center.x, position.y, center.z));
+            double satelliteCore = Math.max(2.0D, satellite.radiusOfMaxWind());
+            if (distance <= satelliteCore * 4.2D) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static boolean isDynamicVortex(StormObject storm) {
-        return storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout;
+        if (storm == null) {
+            return false;
+        }
+        if (storm.attrib_waterSpout) {
+            return true;
+        }
+        if (isNativeCyclone(storm) || AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+            return false;
+        }
+        return storm.isTornadoFormingOrGreater();
+    }
+
+    public static boolean isNativeCyclone(StormObject storm) {
+        return storm != null
+                && storm.stormType == StormObject.TYPE_WATER
+                && storm.levelCurIntensityStage >= StormObject.STATE_FORMING;
+    }
+
+    public static boolean isNativeTropicalCyclone(StormObject storm) {
+        return storm != null
+                && storm.stormType == StormObject.TYPE_WATER
+                && storm.levelCurIntensityStage >= StormObject.STATE_STAGE1;
+    }
+
+    public static boolean isNativeHurricane(StormObject storm) {
+        return storm != null
+                && storm.stormType == StormObject.TYPE_WATER
+                && storm.levelCurIntensityStage >= StormObject.STATE_STAGE5;
+    }
+
+    public static Vec3 tornadoCirculationCenter(StormObject storm) {
+        if (storm == null || storm.pos == null) {
+            return Vec3.ZERO;
+        }
+        Vec3 center = finiteVector(storm.posBaseFormationPos) ? storm.posBaseFormationPos : null;
+        if (center == null) {
+            try {
+                center = storm.calculateBaseFormationPos();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (!finiteVector(center)) {
+            try {
+                center = storm.getFunnelCenter(storm.pos);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return finiteVector(center) ? center : storm.pos;
+    }
+
+    private static boolean finiteVector(Vec3 value) {
+        return value != null
+                && Double.isFinite(value.x)
+                && Double.isFinite(value.y)
+                && Double.isFinite(value.z);
+    }
+
+    public static int cycloneStageForWind(double windMph) {
+        if (windMph >= 157.0D) {
+            return StormObject.STATE_STAGE5;
+        }
+        if (windMph >= 130.0D) {
+            return StormObject.STATE_STAGE4;
+        }
+        if (windMph >= 111.0D) {
+            return StormObject.STATE_STAGE3;
+        }
+        if (windMph >= 96.0D) {
+            return StormObject.STATE_STAGE2;
+        }
+        if (windMph >= 74.0D) {
+            return StormObject.STATE_STAGE1;
+        }
+        return StormObject.STATE_FORMING;
+    }
+
+    public static boolean promoteNativeCyclone(ServerLevel level, StormObject storm, boolean force, double targetWindMph) {
+        if (!Config.CYCLONES_ENABLED.get() || level == null || storm == null || storm.pos == null || storm.manager == null) {
+            return false;
+        }
+        if (!force && !isOverWaterOrOcean(level, storm.pos.x, storm.pos.z)) {
+            return false;
+        }
+        storm.stormType = StormObject.TYPE_WATER;
+        storm.attrib_waterSpout = false;
+        storm.setPrecipitating(true);
+        storm.setCloudlessStorm(false);
+        storm.isGrowing = true;
+        storm.hasStormPeaked = false;
+        storm.canBeDeadly = true;
+
+        int requestedStage = cycloneStageForWind(targetWindMph);
+        int rolledMax = storm.rollDiceOnMaxIntensity();
+        int stageFloor = force ? requestedStage : Math.max(storm.levelCurIntensityStage, StormObject.STATE_FORMING);
+        int maxFloor = force ? requestedStage : Math.max(stageFloor, StormObject.STATE_STAGE1);
+        storm.levelCurIntensityStage = Math.max(storm.levelCurIntensityStage, stageFloor);
+        storm.levelCurStagesIntensity = Math.max(storm.levelCurStagesIntensity, force ? 0.72F : 0.42F);
+        storm.levelStormIntensityMax = Math.max(Math.max(storm.levelStormIntensityMax, rolledMax), maxFloor);
+        storm.maxIntensityStage = Math.max(storm.maxIntensityStage, storm.levelStormIntensityMax);
+        storm.levelWindMomentum = Math.max(storm.levelWindMomentum, (float) Mth.clamp(targetWindMph / 90.0D, 0.70D, 2.20D));
+        storm.levelWater = Math.max(storm.levelWater, Math.max(120, storm.levelWaterStartRaining * 4));
+
+        int sizeFloor = Mth.clamp(180 + (int) Math.round(targetWindMph * 2.35D), 220, force ? 720 : 520);
+        int maxSizeFloor = Mth.clamp(sizeFloor + (int) Math.round(targetWindMph * 1.65D), 320, force ? 1200 : 760);
+        storm.size = Math.max(storm.size, sizeFloor);
+        storm.maxSize = Math.max(storm.maxSize, maxSizeFloor);
+        if (Math.abs(storm.spinSpeed) < 0.02D) {
+            storm.spinSpeed = 0.035D;
+        }
+        stateFor(storm).setSubtype(isNativeHurricane(storm) ? StormSubtype.HURRICANE : StormSubtype.CYCLONE);
+        if (storm.manager instanceof WeatherManagerServer manager) {
+            manager.syncStormUpdate(storm);
+        }
+        return true;
     }
 
     public static boolean isAntiCyclonicTornado(StormObject storm) {
@@ -274,6 +474,27 @@ public final class DynamicStormController {
 
     public static double rotationSign(StormObject storm) {
         return isAntiCyclonicTornado(storm) ? -1.0D : 1.0D;
+    }
+
+    public static double visualRotationSign(StormObject storm) {
+        if (!Config.ANTI_CYCLONIC_TORNADOES_ENABLED.get() || storm == null || storm.attrib_waterSpout) {
+            return 1.0D;
+        }
+        DynamicStormState state = stateFor(storm);
+        return state.rotationAssigned() && state.isAntiCyclonic() ? -1.0D : 1.0D;
+    }
+
+    public static boolean canUseElephantTrunkVisuals(DynamicStormState state) {
+        if (state == null) {
+            return false;
+        }
+        float damageWidth = state.damagePathWidth();
+        float visibleWidth = state.visibleFunnelWidth();
+        if (damageWidth > 260.0F || visibleWidth > 150.0F) {
+            return false;
+        }
+        float widthFraction = damageWidth <= 1.0F ? 1.0F : visibleWidth / damageWidth;
+        return widthFraction <= Math.max(0.70F, Config.TORNADO_ELEPHANT_TRUNK_MAX_VISIBLE_WIDTH_FRACTION.get().floatValue());
     }
 
     public static float visualSpinSpeed(StormObject storm) {
@@ -294,8 +515,13 @@ public final class DynamicStormController {
         }
         float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
         float layerScale = Mth.lerp(fraction, 0.65F, 1.0F);
-        float spinDelta = (stateFor(storm).visualSpinSpeed() - 0.08F) * 70.0F;
-        return Mth.clamp(spinDelta * layerScale * (float) rotationSign(storm), -6.0F, 24.0F);
+        float baseline = Math.max(0.0F, Config.TORNADO_WIND_SPEED_SPIN_MIN.get().floatValue());
+        DynamicStormState state = stateFor(storm);
+        boolean drillBit = state.targetFunnelMorphology() == FunnelMorphology.DRILL_BIT || state.funnelMorphology() == FunnelMorphology.DRILL_BIT;
+        boolean floater = state.targetFunnelMorphology() == FunnelMorphology.FLOATER || state.funnelMorphology() == FunnelMorphology.FLOATER;
+        float spinDelta = Math.max(0.0F, state.visualSpinSpeed() - baseline) * (drillBit ? 108.0F : floater ? 84.0F : 70.0F);
+        float spinLimit = drillBit ? 36.0F : floater ? 30.0F : 24.0F;
+        return Mth.clamp(spinDelta * layerScale * (float) rotationSign(storm), -spinLimit, spinLimit);
     }
 
     public static boolean isAbsorbedOrDecaying(StormObject storm) {
@@ -341,6 +567,18 @@ public final class DynamicStormController {
         return Math.max(3.0D, satellite.damagePathWidth() * 0.5D);
     }
 
+    public static double subVortexWindMph(StormObject storm, DynamicStormState.SubVortex vortex) {
+        if (storm == null || vortex == null) {
+            return 0.0D;
+        }
+        double parentWind = TornadoWindField.maxWindMph(storm);
+        double intensity = Mth.clamp(vortex.intensityFraction(), 0.05F, 1.0F);
+        double stageBlend = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0D, 0.0D, 1.0D);
+        double physicsWind = parentWind * (0.58D + intensity * 0.86D);
+        double explicitRangeWind = 100.0D + intensity * 155.0D + stageBlend * 74.0D;
+        return Mth.clamp(Math.max(physicsWind, explicitRangeWind), 100.0D, 335.0D);
+    }
+
     private static float motionAngleDegrees(StormObject storm) {
         if (storm.motion != null && storm.motion.horizontalDistanceSqr() > 0.0004D) {
             return (float) Math.toDegrees(Math.atan2(storm.motion.z, storm.motion.x));
@@ -353,7 +591,10 @@ public final class DynamicStormController {
         if (!level.isLoaded(sample)) {
             return false;
         }
-        BlockPos surface = level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, sample);
+        BlockPos surface = BlockGrabSafety.safeSurface(level, sample, net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING);
+        if (surface == null) {
+            return false;
+        }
         BlockState below = level.getBlockState(surface.below());
         if (below.getFluidState().is(FluidTags.WATER)) {
             return true;
@@ -374,18 +615,65 @@ public final class DynamicStormController {
         if (!level.isLoaded(pos)) {
             return 0;
         }
-        BlockPos surface = level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, pos);
+        BlockPos surface = BlockGrabSafety.safeSurface(level, pos, net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING);
+        if (surface == null) {
+            return 0;
+        }
         return Math.max(0, surface.getY() - 1 - pos.getY());
     }
 
     private static void updateSubVortices(StormObject storm, DynamicStormState state) {
-        if (!Config.MULTIVORTEX_ENABLED.get() || storm.levelCurIntensityStage < Config.MULTIVORTEX_MIN_STAGE.get() || !isDynamicVortex(storm)) {
-            state.updateSubVortices(storm.manager.getWorld().getGameTime(), 0, baseRadiusForWind(storm));
+        int effectiveMinStage = Math.max(Config.MULTIVORTEX_MIN_STAGE.get(), StormObject.STATE_STAGE2);
+        int effectiveMaxCount = Math.min(Math.max(0, Config.MULTIVORTEX_MAX_COUNT.get()), 10);
+        if (!Config.MULTIVORTEX_ENABLED.get() || storm.levelCurIntensityStage < effectiveMinStage || !isDynamicVortex(storm) || effectiveMaxCount <= 0) {
+            state.updateSubVortices(storm.manager.getWorld().getGameTime(), 0, baseRadiusForWind(storm), storm.levelCurIntensityStage, storm.levelCurStagesIntensity);
             return;
         }
-        int stageOverMinimum = Math.max(0, storm.levelCurIntensityStage - Config.MULTIVORTEX_MIN_STAGE.get());
-        int desired = Mth.clamp(1 + stageOverMinimum + (storm.levelCurStagesIntensity > 0.65F ? 1 : 0), 0, Config.MULTIVORTEX_MAX_COUNT.get());
-        state.updateSubVortices(storm.manager.getWorld().getGameTime(), desired, baseRadiusForWind(storm));
+        int stageOverMinimum = Math.max(0, storm.levelCurIntensityStage - effectiveMinStage);
+        double maxWind = TornadoWindField.maxWindMph(storm);
+        int desired = 1 + stageOverMinimum;
+        if (storm.levelCurStagesIntensity > 0.55F) {
+            desired++;
+        }
+        if (storm.levelCurStagesIntensity > 0.78F) {
+            desired += 2;
+        }
+        if (state.wedgeMorphologyActive()) {
+            desired += 2;
+        }
+        if (maxWind >= 190.0D) {
+            desired++;
+        }
+        if (maxWind >= 250.0D) {
+            desired++;
+        }
+        desired = Mth.clamp(desired, 0, effectiveMaxCount);
+        state.updateSubVortices(storm.manager.getWorld().getGameTime(), desired, baseRadiusForWind(storm), storm.levelCurIntensityStage, storm.levelCurStagesIntensity);
+    }
+
+    private static void updateHorizontalVortices(StormObject storm, DynamicStormState state) {
+        int effectiveMaxCount = Math.min(Math.max(0, Config.HORIZONTAL_VORTICES_MAX_COUNT.get()), 10);
+        int effectiveMinStage = Math.max(Config.HORIZONTAL_VORTICES_MIN_STAGE.get(), StormObject.STATE_STAGE1);
+        if (!Config.HORIZONTAL_VORTICES_ENABLED.get() || storm.levelCurIntensityStage < effectiveMinStage || !isDynamicVortex(storm) || effectiveMaxCount <= 0) {
+            state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), 0, baseRadiusForWind(storm), false);
+            return;
+        }
+        double maxWind = TornadoWindField.maxWindMph(storm);
+        int desired = maxWind >= 90.0D ? 1 : 0;
+        if (maxWind >= 135.0D) {
+            desired++;
+        }
+        if (maxWind >= 180.0D) {
+            desired++;
+        }
+        if (state.multiVortexVisualActive()) {
+            desired += Math.min(3, Math.max(1, state.subVortices().size() / 3));
+        }
+        if (state.wedgeMorphologyActive()) {
+            desired++;
+        }
+        desired = Mth.clamp(desired, 0, effectiveMaxCount);
+        state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), desired, baseRadiusForWind(storm), state.multiVortexVisualActive());
     }
 
     private static void updateSatelliteTornadoes(StormObject storm, DynamicStormState state) {
@@ -532,7 +820,11 @@ public final class DynamicStormController {
                 if (!level.isLoaded(sample)) {
                     continue;
                 }
-                int y = level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, sample).getY();
+                BlockPos surface = BlockGrabSafety.safeSurface(level, sample, net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING);
+                if (surface == null) {
+                    continue;
+                }
+                int y = surface.getY();
                 min = Math.min(min, y);
                 max = Math.max(max, y);
             }

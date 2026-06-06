@@ -77,16 +77,23 @@ public final class CycloidalMarks {
         if (!level.isLoaded(sample)) {
             return false;
         }
-        BlockPos surface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, sample);
+        BlockPos surface = BlockGrabSafety.safeSurface(level, sample, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+        if (surface == null) {
+            return false;
+        }
         BlockPos pos = surface.below();
         if (!level.isLoaded(pos)) {
             return false;
         }
-        BlockState state = level.getBlockState(pos);
+        BlockGrabSafety.BlockSample sampleBlock = BlockGrabSafety.sample(level, pos, null);
+        if (!BlockGrabSafety.canEdit(sampleBlock)) {
+            return false;
+        }
+        BlockState state = sampleBlock.state();
         Block replacement = replacementFor(state);
         if (replacement == null) {
             if ((strong || !Config.CYCLOIDAL_COSMETIC_ONLY.get()) && (state.is(BlockTags.CROPS) || state.is(BlockTags.FLOWERS) || state.is(BlockTags.REPLACEABLE_BY_TREES))) {
-                level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+                BlockGrabSafety.safeSetBlock(level, pos, Blocks.AIR.defaultBlockState(), 3);
                 return true;
             }
             return false;
@@ -95,7 +102,7 @@ public final class CycloidalMarks {
         if (state.is(replacementState.getBlock())) {
             return false;
         }
-        level.setBlock(pos, replacementState, 3);
+        BlockGrabSafety.safeSetBlock(level, pos, replacementState, 3);
         return true;
     }
 

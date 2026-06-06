@@ -7,13 +7,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 public record AddonWeatherEventSyncPayload(List<AddonWeatherEvent> events) {
-    public void write(FriendlyByteBuf buf) {
-        List<AddonWeatherEvent> safeEvents = events == null ? List.of() : events.stream()
+    public AddonWeatherEventSyncPayload {
+        events = events == null ? List.of() : events.stream()
                 .filter(event -> event != null)
                 .limit(128)
+                .map(AddonWeatherEvent::snapshot)
                 .toList();
-        buf.writeVarInt(safeEvents.size());
-        for (AddonWeatherEvent event : safeEvents) {
+    }
+
+    public void write(FriendlyByteBuf buf) {
+        buf.writeVarInt(events.size());
+        for (AddonWeatherEvent event : events) {
             event.write(buf);
         }
     }

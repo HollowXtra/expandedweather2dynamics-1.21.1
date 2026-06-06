@@ -3,6 +3,7 @@ package com.imbet.client;
 import com.imbet.radar.ClientRadarStore;
 import com.imbet.radar.RadarMenu;
 import com.imbet.radar.RadarStormSnapshot;
+import com.imbet.weather.ClientForecastStore;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
@@ -51,8 +52,9 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         graphics.fill(centerX - 1, scopeY, centerX + 1, scopeY + scopeSize, GRID);
         graphics.fill(scopeX, centerY - 1, scopeX + scopeSize, centerY + 1, GRID);
 
-        List<RadarStormSnapshot> storms = ClientRadarStore.stormsFor(menu.radarPos());
-        int range = com.imbet.Config.RADAR_RANGE_BLOCKS.get();
+        ClientForecastStore.Display forecastDisplay = ClientForecastStore.displayFor(menu.radarPos()).orElse(null);
+        List<RadarStormSnapshot> storms = forecastDisplay == null ? ClientRadarStore.stormsFor(menu.radarPos()) : forecastDisplay.storms();
+        int range = forecastDisplay == null ? com.imbet.Config.RADAR_RANGE_BLOCKS.get() : forecastDisplay.range();
         for (RadarStormSnapshot storm : storms) {
             int sx = centerX + Mth.clamp((int) ((storm.x() - menu.radarPos().getX()) / range * (scopeSize / 2.0D)), -scopeSize / 2 + 3, scopeSize / 2 - 3);
             int sy = centerY + Mth.clamp((int) ((storm.z() - menu.radarPos().getZ()) / range * (scopeSize / 2.0D)), -scopeSize / 2 + 3, scopeSize / 2 - 3);
@@ -63,11 +65,11 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         }
 
         graphics.drawString(font, title, x + 10, y + 8, TEXT, false);
-        graphics.drawString(font, "Range " + range + " blocks", scopeX, scopeY + scopeSize + 7, 0xFF9FD5D1, false);
+        graphics.drawString(font, (forecastDisplay == null ? "Range " : "Forecast range ") + range + " blocks", scopeX, scopeY + scopeSize + 7, 0xFF9FD5D1, false);
 
         int listX = x + 166;
         int listY = y + 22;
-        graphics.drawString(font, "SPC / EAS", listX, y + 8, TEXT, false);
+        graphics.drawString(font, forecastDisplay == null ? "SPC / EAS" : modeLabel(forecastDisplay.mode()), listX, y + 8, TEXT, false);
         if (storms.isEmpty()) {
             graphics.drawString(font, "No returns", listX, listY, 0xFF9FD5D1, false);
             return;
@@ -92,5 +94,13 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
             return;
         }
         graphics.fill(Math.min(sx, sx + dx), Math.min(sy, sy + dy), Math.max(sx, sx + dx) + 1, Math.max(sy, sy + dy) + 1, 0xFFFFFFFF);
+    }
+
+    private String modeLabel(int mode) {
+        return switch (mode) {
+            case com.imbet.network.ForecastSnapshotPayload.MODE_RISK -> "SPC Risk";
+            case com.imbet.network.ForecastSnapshotPayload.MODE_TRACKS -> "Tracks";
+            default -> "Forecast";
+        };
     }
 }

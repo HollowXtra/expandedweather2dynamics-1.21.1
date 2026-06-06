@@ -99,10 +99,35 @@ public final class SpcOutlookService {
                 maxWindMph = Math.max(maxWindMph, event.maxWindMph());
                 hazard = "Organized Squall-Line Wind";
                 severeCount++;
+            } else if (event.type() == StormSubtype.HURRICANE) {
+                SpcRisk hurricaneRisk = event.maxWindMph() >= 130.0F ? SpcRisk.HIGH : event.maxWindMph() >= 96.0F ? SpcRisk.MODERATE : SpcRisk.ENHANCED;
+                wind = SpcRisk.max(wind, hurricaneRisk);
+                categorical = SpcRisk.max(categorical, hurricaneRisk);
+                maxWindMph = Math.max(maxWindMph, event.maxWindMph());
+                hazard = "Maritime Hurricane Wind";
+                severeCount++;
+            } else if (event.type() == StormSubtype.WILDFIRE || event.type() == StormSubtype.FIRE_WHIRL || event.type() == StormSubtype.FLAMMAGENITUS) {
+                SpcRisk fireRisk = fireRisk(event);
+                categorical = SpcRisk.max(categorical, fireRisk);
+                if (event.type() == StormSubtype.FIRE_WHIRL) {
+                    wind = SpcRisk.max(wind, fireRisk);
+                    maxWindMph = Math.max(maxWindMph, event.maxWindMph());
+                }
+                hazard = event.type() == StormSubtype.FIRE_WHIRL ? "Fire Whirl / Extreme Fire Weather" : event.type() == StormSubtype.FLAMMAGENITUS ? "Flammagenitus Fire-Plume Risk" : "Wildfire Spread Risk";
+                severeCount++;
+            } else if (event.type() == StormSubtype.FLOATER_TORNADO) {
+                SpcRisk floaterRisk = event.maxWindMph() >= 96.0F ? SpcRisk.SLIGHT : SpcRisk.MARGINAL;
+                tornado = SpcRisk.max(tornado, floaterRisk);
+                categorical = SpcRisk.max(categorical, floaterRisk);
+                maxWindMph = Math.max(maxWindMph, event.maxWindMph());
+                hazard = "Elevated Floater Tornado";
             } else if (event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT) {
                 tornado = SpcRisk.max(tornado, SpcRisk.MARGINAL);
                 categorical = SpcRisk.max(categorical, SpcRisk.MARGINAL);
                 hazard = event.type() == StormSubtype.LANDSPOUT ? "Landspout Advisory" : "Waterspout Advisory";
+            } else if (event.type() == StormSubtype.SNOW_DEVIL) {
+                categorical = SpcRisk.max(categorical, SpcRisk.MARGINAL);
+                hazard = "Rare Snow Devil Advisory";
             } else if (event.type() == StormSubtype.DUST_DEVIL) {
                 categorical = SpcRisk.max(categorical, SpcRisk.MARGINAL);
                 hazard = "Dust Devil Advisory";
@@ -126,6 +151,28 @@ public final class SpcOutlookService {
         categorical = SpcRisk.max(categorical, wind);
         categorical = SpcRisk.max(categorical, hail);
         return new Outlook(categorical, tornado, wind, hail, hazard, stormCount, severeCount, maxWindMph);
+    }
+
+    private static SpcRisk fireRisk(AddonWeatherEvent event) {
+        if (!Config.FIRE_WEATHER_RISK_ENABLED.get()) {
+            return SpcRisk.NONE;
+        }
+        if (event.type() == StormSubtype.FIRE_WHIRL) {
+            return event.maxWindMph() >= 105.0F ? SpcRisk.MODERATE : event.maxWindMph() >= 82.0F ? SpcRisk.ENHANCED : SpcRisk.SLIGHT;
+        }
+        if (event.type() == StormSubtype.FLAMMAGENITUS) {
+            return event.radius() >= 160.0F ? SpcRisk.ENHANCED : SpcRisk.SLIGHT;
+        }
+        if (event.radius() >= 110.0F) {
+            return SpcRisk.MODERATE;
+        }
+        if (event.radius() >= 75.0F) {
+            return SpcRisk.ENHANCED;
+        }
+        if (event.radius() >= 45.0F) {
+            return SpcRisk.SLIGHT;
+        }
+        return SpcRisk.MARGINAL;
     }
 
     private static SpcRisk tornadoRisk(StormObject storm, DynamicStormState state, StormSubtype subtype) {

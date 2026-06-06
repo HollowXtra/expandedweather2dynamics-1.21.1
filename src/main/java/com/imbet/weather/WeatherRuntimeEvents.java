@@ -1,6 +1,9 @@
 package com.imbet.weather;
 
 import com.imbet.Config;
+import com.imbet.compat.immersiveaircraft.ImmersiveAircraftStormCompat;
+import com.imbet.compat.mts.ImmersiveVehiclesStormCompat;
+import com.imbet.compat.treephysics.TreePhysicsStormCompat;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -8,7 +11,9 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.event.TickEvent.LevelTickEvent;
 import com.imbet.registry.ModContent;
@@ -40,7 +45,13 @@ public final class WeatherRuntimeEvents {
         TornadoMergeService.flushPendingRemovals(level);
         SupercellMergeService.tick(level);
         AddonWeatherEventService.tick(level);
+        SevereWeatherManager.tick(level);
+        LowPressureService.tick(level);
+        ForecastReadout.tick(level);
         TornadoTrackService.tick(level);
+        ImmersiveVehiclesStormCompat.tick(level);
+        ImmersiveAircraftStormCompat.tick(level);
+        TreePhysicsStormCompat.tick(level);
         maybeAlertAddonEvents(level);
         if (!Config.ALERTS_ENABLED.get() || level.getGameTime() % Config.PERFORMANCE_STORM_SCAN_INTERVAL_TICKS.get() != 0L) {
             return;
@@ -70,6 +81,15 @@ public final class WeatherRuntimeEvents {
             AdvancementAwarder.award(player, AdvancementAwarder.USE_ANEMOMETER);
         } else if (event.getPlacedBlock().is(ModContent.WEATHER_ALERT_SIREN_BLOCK.get())) {
             AdvancementAwarder.award(player, AdvancementAwarder.USE_RADAR);
+        }
+    }
+
+    public static void onEntityJoinLevel(EntityJoinLevelEvent event) {
+        if (event.getLevel().isClientSide() || !Config.AI_VILLAGER_TORNADO_SHELTER.get()) {
+            return;
+        }
+        if (event.getEntity() instanceof Villager villager) {
+            TornadoShelterGoal.attach(villager);
         }
     }
 

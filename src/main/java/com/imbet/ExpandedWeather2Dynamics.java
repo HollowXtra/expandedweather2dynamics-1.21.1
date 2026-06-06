@@ -1,6 +1,7 @@
 package com.imbet;
 
 import com.mojang.logging.LogUtils;
+import com.imbet.command.EwdCommand;
 import com.imbet.network.ModNetworking;
 import com.imbet.registry.ModContent;
 import com.imbet.weather.WeatherRuntimeEvents;
@@ -30,6 +31,8 @@ public final class ExpandedWeather2Dynamics {
         modEventBus.addListener(this::commonSetup);
         MinecraftForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onLevelTick);
         MinecraftForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onBlockPlaced);
+        MinecraftForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onEntityJoinLevel);
+        MinecraftForge.EVENT_BUS.addListener(EwdCommand::register);
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> ExpandedWeather2DynamicsClient.init(modEventBus));
     }

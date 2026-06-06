@@ -2,6 +2,7 @@ package com.imbet.survey;
 
 import com.imbet.Config;
 import com.imbet.network.DamageSurveyResultPayload;
+import com.imbet.weather.BlockGrabSafety;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -120,7 +121,10 @@ public class DamageSurveyorItem extends Item {
                 if (!level.isLoaded(column)) {
                     continue;
                 }
-                BlockPos surface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column);
+                BlockPos surface = BlockGrabSafety.safeSurface(level, column, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+                if (surface == null) {
+                    continue;
+                }
                 BlockPos ground = surface.below();
                 if (level.isLoaded(ground)) {
                     result.recordGround(ground, level.getBlockState(ground));

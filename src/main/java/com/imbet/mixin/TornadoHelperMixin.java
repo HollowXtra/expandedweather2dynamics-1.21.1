@@ -37,9 +37,7 @@ public abstract class TornadoHelperMixin {
             return;
         }
         TornadoHelper helper = (TornadoHelper) (Object) this;
-        if (!DynamicStormController.canGrabBlock(helper, level, state, pos)) {
-            cir.setReturnValue(false);
-        }
+        cir.setReturnValue(DynamicStormController.canGrabBlock(helper, level, state, pos));
     }
 
     @Inject(method = "canGrabEntity", at = @At("HEAD"), cancellable = true)
@@ -48,6 +46,10 @@ public abstract class TornadoHelperMixin {
             return;
         }
         TornadoHelper helper = (TornadoHelper) (Object) this;
+        if (DynamicStormController.shouldForceGrabEntity(helper, entity)) {
+            cir.setReturnValue(true);
+            return;
+        }
         if (!DynamicStormController.canGrabEntity(helper, entity)) {
             cir.setReturnValue(false);
         }

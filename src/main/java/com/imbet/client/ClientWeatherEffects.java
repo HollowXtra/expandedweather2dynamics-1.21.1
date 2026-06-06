@@ -15,14 +15,17 @@ import extendedrenderer.particle.entity.EntityRotFX;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ItemParticleOption;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent.ClientTickEvent;
 import weather2.ClientTickHandler;
@@ -35,11 +38,13 @@ import java.util.Iterator;
 import java.util.List;
 
 public final class ClientWeatherEffects {
+    private static final float LOCAL_PARTICLE_WIND_WEIGHT = 9999.0F;
     private static final List<PendingThunder> PENDING_THUNDER = new ArrayList<>();
     private static float visualRain;
     private static float visualThunder;
     private static long lastSkyUpdateTick = -1000L;
     private static int stickDebrisSpawnedThisTick;
+    private static int debrisCloudSpawnedThisTick;
     private static int structureParticlesSpawnedThisTick;
 
     private ClientWeatherEffects() {
@@ -54,6 +59,11 @@ public final class ClientWeatherEffects {
             PENDING_THUNDER.clear();
             visualRain = 0.0F;
             visualThunder = 0.0F;
+            SatelliteTornadoFunnelRenderer.clear();
+            CloudShadowShaderRenderer.clear();
+            return;
+        }
+        if (minecraft.isPaused()) {
             return;
         }
         tickPendingThunder(minecraft);
@@ -62,13 +72,16 @@ public final class ClientWeatherEffects {
             minecraft.setScreen(new DamageSurveyScreen(surveyResult));
         }
         if (!Config.VISUALS_ENABLED.get()) {
+            SatelliteTornadoFunnelRenderer.clear();
             return;
         }
         stickDebrisSpawnedThisTick = 0;
+        debrisCloudSpawnedThisTick = 0;
         structureParticlesSpawnedThisTick = 0;
         spawnAddonWeatherEvents(minecraft.level, minecraft.player.position());
         WeatherManagerClient manager = ClientTickHandler.weatherManager;
         if (manager == null) {
+            SatelliteTornadoFunnelRenderer.clear();
             return;
         }
         spawnSupercellStructures(minecraft.level, manager, minecraft.player.position());
@@ -77,6 +90,7 @@ public final class ClientWeatherEffects {
         float targetThunder = 0.0F;
         if (storm == null) {
             smoothSky(minecraft.level, targetRain, targetThunder);
+            SatelliteTornadoFunnelRenderer.cleanup(minecraft.level.getGameTime());
             return;
         }
         double distance = storm.pos.distanceTo(minecraft.player.position());
@@ -92,10 +106,14 @@ public final class ClientWeatherEffects {
             spawnInflowJets(minecraft.level, storm);
         }
         if (DynamicStormController.isDynamicVortex(storm)) {
+            spawnTornadoDebrisCloud(minecraft.level, storm, minecraft.player.position());
+            spawnSubVortexVisuals(minecraft.level, storm, minecraft.player.position());
+            spawnHorizontalVortexVisuals(minecraft.level, storm, minecraft.player.position());
             spawnMainTornadoStickDebris(minecraft.level, storm, minecraft.player.position());
             spawnSubVortexStickDebris(minecraft.level, storm, minecraft.player.position());
             spawnSatelliteSwirls(minecraft.level, storm);
         }
+        SatelliteTornadoFunnelRenderer.cleanup(minecraft.level.getGameTime());
     }
 
     public static void scheduleThunder(double x, double y, double z, float volume, float pitch) {
@@ -156,6 +174,7 @@ public final class ClientWeatherEffects {
                 continue;
             }
             spawnSupercellStructure(level, storm, state);
+            spawnCloudShadows(level, storm, state);
             if (structureParticlesSpawnedThisTick >= Config.SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK.get()) {
                 return;
             }
@@ -168,13 +187,17 @@ public final class ClientWeatherEffects {
         if (Config.SUPERCELL_STRUCTURE_ANVIL_PARTICLES.get()) {
             spawnAnvilAndOvershootingTop(level, structure, strength);
         }
+        spawnRotatingUpdraftTower(level, storm, structure, state);
         if (Config.SUPERCELL_STRUCTURE_WALL_CLOUD_PARTICLES.get()) {
             spawnWallCloud(level, storm, structure, state);
         }
+        spawnRearFlankClearSlot(level, structure, state);
+        spawnRainFreeBaseAndInflowTail(level, structure, state);
         if (Config.SUPERCELL_STRUCTURE_FLANKING_LINE_PARTICLES.get()) {
             spawnFlankingLine(level, structure, strength);
         }
         spawnForwardFlankPrecip(level, structure, state.ffdStrength(), state.hailCoreStrength());
+        spawnHookEchoRainWrapAndHailShaft(level, structure, state);
         if (Config.SUPERCELL_STRUCTURE_GUST_FRONT_PARTICLES.get()) {
             spawnRearFlankGustFront(level, structure, state.rfdStrength());
         }
@@ -260,15 +283,128 @@ public final class ClientWeatherEffects {
         }
     }
 
+    private static void spawnRainFreeBaseAndInflowTail(ClientLevel level, SupercellStructureService.StructureSample structure, DynamicStormState state) {
+        float strength = state.supercellStructureStrength();
+        if (strength <= 0.08F) {
+            return;
+        }
+
+        int baseCount = Mth.clamp(1 + (int) (strength * 3.0F), 1, 4);
+        double baseRadius = Math.max(18.0D, structure.wallCloudDiameter() * 0.44D);
+        for (int i = 0; i < baseCount; i++) {
+            double along = (level.random.nextDouble() - 0.55D) * baseRadius;
+            double lateral = (level.random.nextDouble() - 0.50D) * baseRadius * 0.72D;
+            Vec3 base = structure.rainFreeBase()
+                    .add(structure.forward().scale(along))
+                    .add(structure.right().scale(lateral));
+            Vec3 pos = new Vec3(base.x, visualY(level, base, structure.rainFreeBaseY() + level.random.nextDouble() * 8.0D), base.z);
+            Vec3 velocity = structure.forward().scale(0.006D + strength * 0.012D).add(structure.right().scale(-0.004D)).add(0.0D, 0.002D, 0.0D);
+            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud256, 13.0F + strength * 15.0F, 0.62F, 0.64F, 0.70F, 0.16F, 110, 0.02F, ParticleTypes.CLOUD);
+        }
+    }
+
+    private static void spawnRotatingUpdraftTower(ClientLevel level, StormObject storm, SupercellStructureService.StructureSample structure, DynamicStormState state) {
+        float meso = state.mesocycloneStrength();
+        if (meso <= 0.08F) {
+            return;
+        }
+        double rotationSign = DynamicStormController.visualRotationSign(storm);
+        int count = Mth.clamp(2 + (int) (meso * 7.0F), 2, 9);
+        double towerRadius = Math.max(18.0D, structure.wallCloudDiameter() * (structure.mode() == SupercellStructureService.SupercellMode.LP ? 0.38D : 0.48D));
+        double top = Mth.clamp(112.0D + structure.radius() * 0.24D, 108.0D, 176.0D);
+        for (int i = 0; i < count; i++) {
+            double layer = level.random.nextDouble();
+            double angle = level.getGameTime() * 0.018D * rotationSign + layer * Math.PI * 5.8D + level.random.nextDouble() * 0.90D;
+            double radius = towerRadius * (0.22D + layer * 0.72D);
+            Vec3 base = structure.updraft()
+                    .add(Math.cos(angle) * radius, 0.0D, Math.sin(angle) * radius)
+                    .add(structure.forward().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.08D));
+            double height = Mth.lerp(layer, structure.rainFreeBaseY() + 12.0D, top);
+            Vec3 tangent = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign);
+            Vec3 velocity = tangent.scale(0.026D + meso * 0.060D)
+                    .add(structure.forward().scale(0.006D))
+                    .add(0.0D, 0.018D + meso * 0.026D, 0.0D);
+            float shade = (float) Mth.lerp(layer, 0.44D, 0.76D);
+            Vec3 pos = new Vec3(base.x, visualY(level, base, height), base.z);
+            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud256,
+                    16.0F + meso * 17.0F + level.random.nextFloat() * 12.0F,
+                    shade * 0.58F, shade * 0.60F, shade * 0.68F, 0.34F + meso * 0.22F, 136, 0.08F, ParticleTypes.CLOUD);
+        }
+    }
+
+    private static void spawnRearFlankClearSlot(ClientLevel level, SupercellStructureService.StructureSample structure, DynamicStormState state) {
+        float rfd = state.rfdStrength();
+        if (rfd <= 0.10F) {
+            return;
+        }
+        int count = Mth.clamp(1 + (int) (rfd * 4.0F), 1, 5);
+        for (int i = 0; i < count; i++) {
+            Vec3 base = structure.clearSlotCenter()
+                    .add(structure.forward().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.22D))
+                    .add(structure.right().scale((level.random.nextDouble() - 0.45D) * structure.radius() * 0.18D));
+            Vec3 outward = base.subtract(structure.mesocyclone());
+            outward = outward.horizontalDistanceSqr() < 1.0E-5D ? structure.forward().add(structure.right()).normalize() : new Vec3(outward.x, 0.0D, outward.z).normalize();
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 14.0D + level.random.nextDouble() * 34.0D), base.z);
+            Vec3 velocity = outward.scale(0.070D + rfd * 0.092D).add(0.0D, -0.018D, 0.0D);
+            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud,
+                    5.5F + rfd * 7.5F, 0.42F, 0.40F, 0.36F, 0.24F, 58, 0.18F, ParticleTypes.CLOUD);
+        }
+    }
+
+    private static void spawnHookEchoRainWrapAndHailShaft(ClientLevel level, SupercellStructureService.StructureSample structure, DynamicStormState state) {
+        float meso = state.mesocycloneStrength();
+        if (meso <= 0.08F) {
+            return;
+        }
+
+        int hookCount = Mth.clamp(1 + (int) (meso * 5.0F), 1, 6);
+        for (int i = 0; i < hookCount; i++) {
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            double distance = (0.25D + level.random.nextDouble() * 0.75D) * Math.max(12.0D, structure.wallCloudDiameter() * 0.30D);
+            Vec3 base = structure.hookEchoNotch().add(Math.cos(angle) * distance, 0.0D, Math.sin(angle) * distance);
+            Vec3 towardMeso = structure.mesocyclone().subtract(base);
+            towardMeso = towardMeso.horizontalDistanceSqr() < 1.0E-5D ? structure.forward().scale(-1.0D) : new Vec3(towardMeso.x, 0.0D, towardMeso.z).normalize();
+            Vec3 hookCurl = structure.right().scale(-0.040D - meso * 0.060D).add(towardMeso.scale(0.035D + meso * 0.050D));
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 12.0D + level.random.nextDouble() * Math.max(24.0D, structure.rainFreeBaseY())), base.z);
+            spawnStructureParticle(level, pos, hookCurl.add(0.0D, 0.010D + meso * 0.014D, 0.0D), ParticleRegistry.cloud, 5.6F + meso * 7.8F, 0.30F, 0.32F, 0.37F, 0.50F, 64, 0.20F, ParticleTypes.CLOUD);
+        }
+
+        if (structure.mode() == SupercellStructureService.SupercellMode.HP) {
+            int wrapCount = Mth.clamp(2 + (int) ((state.ffdStrength() + state.rfdStrength()) * 5.0F), 2, 9);
+            for (int i = 0; i < wrapCount; i++) {
+                Vec3 base = structure.hookEchoNotch().lerp(structure.rainWrapCurtain(), level.random.nextDouble())
+                        .add(structure.forward().scale((level.random.nextDouble() - 0.45D) * structure.radius() * 0.24D))
+                        .add(structure.right().scale((level.random.nextDouble() - 0.50D) * structure.radius() * 0.18D));
+                Vec3 pos = new Vec3(base.x, visualY(level, base, 8.0D + level.random.nextDouble() * 52.0D), base.z);
+                Vec3 velocity = structure.forward().scale(0.038D + state.ffdStrength() * 0.050D)
+                        .add(structure.right().scale(-0.024D - state.rfdStrength() * 0.040D))
+                        .add(0.0D, -0.042D - state.ffdStrength() * 0.050D, 0.0D);
+                spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud256, 10.0F + state.ffdStrength() * 13.0F, 0.24F, 0.27F, 0.34F, 0.56F, 72, 0.16F, ParticleTypes.RAIN);
+            }
+        } else if (structure.mode() == SupercellStructureService.SupercellMode.LP && state.hailCoreStrength() > 0.24F) {
+            int hailCount = Mth.clamp(1 + (int) (state.hailCoreStrength() * 5.0F), 1, 6);
+            for (int i = 0; i < hailCount; i++) {
+                Vec3 base = structure.hailShaft()
+                        .add(structure.forward().scale((level.random.nextDouble() - 0.35D) * structure.radius() * 0.36D))
+                        .add(structure.right().scale((level.random.nextDouble() - 0.50D) * structure.radius() * 0.28D));
+                Vec3 pos = new Vec3(base.x, visualY(level, base, 32.0D + level.random.nextDouble() * 62.0D), base.z);
+                Vec3 velocity = structure.forward().scale(0.018D).add(structure.right().scale(-0.010D)).add(0.0D, -0.24D - state.hailCoreStrength() * 0.18D, 0.0D);
+                spawnStructureParticle(level, pos, velocity, ParticleRegistry.groundSplash, 0.80F + state.hailCoreStrength() * 0.95F, 0.86F, 0.92F, 1.00F, 0.62F, 30, 0.02F, ParticleTypes.RAIN);
+            }
+        }
+    }
+
     private static void spawnFlankingLine(ClientLevel level, SupercellStructureService.StructureSample structure, float strength) {
         int count = Mth.clamp(1 + (int) (strength * 4.0F), 1, 4);
         for (int i = 0; i < count; i++) {
             double t = level.random.nextDouble();
             Vec3 base = structure.flankingLineStart().lerp(structure.flankingLineEnd(), t)
-                    .add(structure.right().scale((level.random.nextDouble() - 0.5D) * 18.0D));
-            Vec3 pos = new Vec3(base.x, visualY(level, base, 32.0D + level.random.nextDouble() * 42.0D), base.z);
-            Vec3 velocity = structure.forward().scale(0.010D).add(structure.right().scale(-0.006D)).add(0.0D, 0.012D, 0.0D);
-            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud256, 7.0F + level.random.nextFloat() * 8.0F, 0.72F, 0.72F, 0.76F, 0.35F, 92, 0.03F, ParticleTypes.CLOUD);
+                    .add(structure.right().scale((level.random.nextDouble() - 0.5D) * (14.0D + t * 18.0D)));
+            double towerHeight = 22.0D + t * 58.0D + level.random.nextDouble() * 26.0D;
+            Vec3 pos = new Vec3(base.x, visualY(level, base, towerHeight), base.z);
+            Vec3 velocity = structure.forward().scale(0.010D).add(structure.right().scale(-0.006D)).add(0.0D, 0.010D + t * 0.012D, 0.0D);
+            float scale = (float) (6.0D + t * 12.0D + level.random.nextDouble() * 7.0D);
+            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud256, scale, 0.70F, 0.70F, 0.76F, 0.30F + (float) t * 0.18F, 96, 0.03F, ParticleTypes.CLOUD);
         }
     }
 
@@ -415,6 +551,187 @@ public final class ClientWeatherEffects {
         }
     }
 
+    private static Vec3 satelliteVisualCenter(ClientLevel level, StormObject storm, DynamicStormState.TornadoCirculationState satellite) {
+        Vec3 center = DynamicStormController.satelliteCenter(storm, satellite, storm.pos.y);
+        int groundY = vortexGroundY(level, center);
+        return new Vec3(center.x, groundY + 0.65D, center.z);
+    }
+
+    private static void spawnTornadoDebrisCloud(ClientLevel level, StormObject storm, Vec3 playerPos) {
+        if (!Config.TORNADO_DEBRIS_CLOUD_ENABLED.get() || Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get() <= 0 || storm == null || storm.pos == null) {
+            return;
+        }
+        if (storm.pos.distanceTo(playerPos) > Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()) {
+            return;
+        }
+        double maxWind = TornadoWindField.maxWindMph(storm);
+        if (maxWind < 45.0D) {
+            return;
+        }
+        DynamicStormState state = DynamicStormController.stateFor(storm);
+        double visibleRadius = Math.max(6.0D, state.visibleFunnelWidth() * 0.5D);
+        double radiusOfMaxWind = Math.max(4.0D, DynamicStormController.radiusOfMaxWind(storm));
+        double clearRadius = Mth.clamp(Math.max(visibleRadius + 10.0D, radiusOfMaxWind * 0.28D), 9.0D, 512.0D);
+        double cloudRadius = clearRadius + Mth.clamp(Math.max(22.0D, visibleRadius * 0.64D + maxWind / 14.0D), 22.0D, 145.0D);
+        float density = Config.TORNADO_DEBRIS_CLOUD_DENSITY.get().floatValue();
+        int attempts = Mth.clamp((int) Math.round((12.0D + maxWind / 17.0D + (cloudRadius - clearRadius) / 3.6D) * density), 8, 74);
+        double coreRadius = Mth.clamp(Math.max(visibleRadius * 0.76D, radiusOfMaxWind * 0.42D), 4.0D, 96.0D);
+        int coreAttempts = Mth.clamp((int) Math.round((8.0D + maxWind / 20.0D + coreRadius / 6.0D) * density), 6, 44);
+        spawnDebrisCloudCore(level, storm, storm.pos, coreRadius, maxWind, coreAttempts, 1.0F);
+        spawnDebrisCloudAround(level, storm, storm.pos, clearRadius, cloudRadius, maxWind, attempts, 1.0F);
+
+        for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
+            Vec3 center = satelliteVisualCenter(level, storm, satellite);
+            if (center.distanceTo(playerPos) > Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()) {
+                continue;
+            }
+            double satelliteWind = DynamicStormController.satelliteWindMph(storm, satellite);
+            double satelliteClearRadius = Mth.clamp(satellite.visibleFunnelWidth() + 4.0D, 4.0D, 80.0D);
+            double satelliteRadius = satelliteClearRadius + Mth.clamp(DynamicStormController.satelliteRadius(storm, satellite) * 0.26D, 6.0D, 34.0D);
+            int satelliteAttempts = Mth.clamp((int) Math.round((1.0D + satelliteWind / 80.0D + (satelliteRadius - satelliteClearRadius) / 12.0D) * density), 1, 6);
+            spawnDebrisCloudCore(level, storm, center, Mth.clamp(satelliteClearRadius * 0.65D, 2.0D, 18.0D), satelliteWind, Math.max(1, satelliteAttempts), 0.62F);
+            spawnDebrisCloudAround(level, storm, center, satelliteClearRadius, satelliteRadius, satelliteWind, satelliteAttempts, 0.72F);
+        }
+    }
+
+    private static void spawnDebrisCloudCore(ClientLevel level, StormObject storm, Vec3 center, double coreRadius, double maxWind, int attempts, float intensityScale) {
+        double rotationSign = DynamicStormController.visualRotationSign(storm);
+        for (int i = 0; i < attempts; i++) {
+            if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
+                return;
+            }
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            double distance = Math.pow(level.random.nextDouble(), 0.78D) * Math.max(1.0D, coreRadius);
+            Vec3 groundSample = center.add(Math.cos(angle) * distance, 0.0D, Math.sin(angle) * distance);
+            int groundY = vortexGroundY(level, groundSample);
+            double nearCore = Mth.clamp(1.0D - distance / Math.max(1.0D, coreRadius), 0.0D, 1.0D);
+            double heightLimit = Mth.clamp(3.2D + maxWind / 28.0D + nearCore * 4.0D, 4.0D, 16.0D);
+            double height = Math.pow(level.random.nextDouble(), 1.85D) * heightLimit;
+            Vec3 pos = new Vec3(groundSample.x, groundY + 0.28D + height, groundSample.z);
+            boolean dustyFoot = height < 3.2D || nearCore > 0.68D;
+            Vec3 radial = new Vec3(Math.cos(angle), 0.0D, Math.sin(angle));
+            Vec3 tangent = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign);
+            Vec3 velocity = tangent.scale(0.050D + maxWind * 0.00054D + nearCore * 0.030D)
+                    .add(radial.scale(-0.010D - nearCore * 0.018D))
+                    .add(0.0D, dustyFoot ? 0.006D + nearCore * 0.018D : 0.012D + nearCore * 0.026D, 0.0D);
+            float scale = (float) Mth.clamp(14.0D + coreRadius * 0.32D + nearCore * 21.0D + level.random.nextDouble() * 15.0D, 11.0D, 58.0D);
+            float alpha = (float) Mth.clamp((0.48D + nearCore * 0.25D + maxWind / 1450.0D + (dustyFoot ? 0.12D : 0.0D)) * intensityScale, 0.32D, 0.82D);
+            DustTone tone = dustyFoot ? tornadoFootTone(level, groundSample) : debrisTone(level, groundSample, true, false);
+            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 40 + level.random.nextInt(62));
+        }
+    }
+
+    private static void spawnDebrisCloudAround(ClientLevel level, StormObject storm, Vec3 center, double clearRadius, double cloudRadius, double maxWind, int attempts, float intensityScale) {
+        double rotationSign = DynamicStormController.visualRotationSign(storm);
+        double ringWidth = Math.max(2.0D, cloudRadius - clearRadius);
+        for (int i = 0; i < attempts; i++) {
+            if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
+                return;
+            }
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            boolean lowGroundBowl = level.random.nextFloat() < 0.68F;
+            boolean loftedCurtain = !lowGroundBowl && level.random.nextFloat() < 0.58F;
+            double distance = level.random.nextFloat() < 0.62F
+                    ? clearRadius + Math.pow(level.random.nextDouble(), 1.70D) * ringWidth * 0.64D
+                    : clearRadius + Math.sqrt(level.random.nextDouble()) * ringWidth;
+            Vec3 groundSample = center.add(Math.cos(angle) * distance, 0.0D, Math.sin(angle) * distance);
+            int groundY = vortexGroundY(level, groundSample);
+            double heightLimit = lowGroundBowl ? Mth.clamp(maxWind / 40.0D, 1.8D, 7.0D) : loftedCurtain ? Mth.clamp(maxWind / 9.5D, 10.0D, 34.0D) : Mth.clamp(maxWind / 18.0D, 4.0D, 18.0D);
+            double height = Math.pow(level.random.nextDouble(), lowGroundBowl ? 2.2D : loftedCurtain ? 1.08D : 1.35D) * heightLimit;
+            Vec3 pos = new Vec3(groundSample.x, groundY + 0.35D + height, groundSample.z);
+            double nearWall = Mth.clamp(1.0D - (distance - clearRadius) / ringWidth, 0.0D, 1.0D);
+            double outerShelf = Mth.clamp((distance - clearRadius) / ringWidth, 0.0D, 1.0D);
+            Vec3 radialOut = new Vec3(Math.cos(angle), 0.0D, Math.sin(angle));
+            Vec3 tangent = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign);
+            Vec3 velocity = tangent.scale(0.030D + maxWind * 0.00042D + nearWall * 0.018D)
+                    .add(radialOut.scale(0.006D + outerShelf * 0.018D))
+                    .add(0.0D, lowGroundBowl ? 0.004D + nearWall * 0.012D : loftedCurtain ? 0.022D + nearWall * 0.030D : 0.014D + nearWall * 0.030D, 0.0D);
+            float scale = (float) Mth.clamp((lowGroundBowl ? 14.0D : loftedCurtain ? 12.0D : 8.0D) + ringWidth * 0.26D + outerShelf * 10.0D + level.random.nextDouble() * 11.0D, 8.0D, 42.0D);
+            float alpha = (float) Mth.clamp(((lowGroundBowl ? 0.40D : loftedCurtain ? 0.30D : 0.25D) + nearWall * 0.11D + outerShelf * 0.13D + maxWind / 1350.0D) * intensityScale, 0.20D, 0.58D);
+            if (lowGroundBowl) {
+                scale = Mth.clamp(scale * 1.18F, 10.0F, 54.0F);
+                alpha = Mth.clamp(alpha + 0.08F, 0.24F, 0.68F);
+            }
+            DustTone tone = lowGroundBowl ? tornadoFootTone(level, groundSample) : debrisTone(level, groundSample, false, loftedCurtain);
+            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 34 + level.random.nextInt(58));
+        }
+    }
+
+    private static void spawnDebrisCloudParticle(ClientLevel level, Vec3 pos, Vec3 velocity, float scale, float alpha, DustTone tone, int maxAge) {
+        if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
+            return;
+        }
+        debrisCloudSpawnedThisTick++;
+        if (!spawnWeather2Particle(level, pos, velocity, ParticleRegistry.cloud256, scale, tone.red(), tone.green(), tone.blue(), alpha, maxAge, 0.0F)) {
+            level.addParticle(ParticleTypes.POOF, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
+        }
+    }
+
+    private static void spawnCloudShadows(ClientLevel level, StormObject storm, DynamicStormState state) {
+        if (structureParticlesSpawnedThisTick >= Config.SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK.get()) {
+            return;
+        }
+        float strength = state.supercellStructureStrength();
+        if (strength <= 0.08F) {
+            return;
+        }
+        SupercellStructureService.StructureSample structure = SupercellStructureService.sample(storm, state);
+        int count = Mth.clamp(2 + (int) (strength * 4.0F), 2, 6);
+        for (int i = 0; i < count; i++) {
+            if (structureParticlesSpawnedThisTick >= Config.SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK.get()) {
+                return;
+            }
+            double along = (level.random.nextDouble() - 0.18D) * structure.radius() * 1.95D;
+            double lateral = (level.random.nextDouble() - 0.5D) * structure.radius() * 1.38D;
+            Vec3 base = structure.anvilCore().add(structure.forward().scale(along)).add(structure.right().scale(lateral));
+            int groundY = level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, net.minecraft.core.BlockPos.containing(base)).getY();
+            Vec3 pos = new Vec3(base.x, groundY + 0.06D + level.random.nextDouble() * 0.03D, base.z);
+            float shade = 0.018F + level.random.nextFloat() * 0.024F;
+            float alpha = Mth.clamp(0.20F + strength * 0.18F, 0.18F, 0.42F);
+            float scale = (float) Mth.clamp(46.0D + structure.radius() * 0.18D + level.random.nextDouble() * 58.0D, 36.0D, 152.0D);
+            CloudShadowShaderRenderer.submit(level, pos, scale, shade, alpha, 118 + level.random.nextInt(78));
+            structureParticlesSpawnedThisTick++;
+        }
+    }
+
+    private static void spawnSubVortexVisuals(ClientLevel level, StormObject storm, Vec3 playerPos) {
+        if (!Config.MULTIVORTEX_ENABLED.get() || !Config.VISUALS_ENABLED.get()) {
+            return;
+        }
+        if (storm.pos.distanceTo(playerPos) > Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()) {
+            return;
+        }
+        DynamicStormState state = DynamicStormController.stateFor(storm);
+        double rotationSign = DynamicStormController.rotationSign(storm);
+        for (DynamicStormState.SubVortex vortex : state.subVortices()) {
+            Vec3 center = TornadoWindField.subVortexGroundCenter(level, storm, vortex, storm.pos.y);
+            if (center.distanceTo(playerPos) > Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()) {
+                continue;
+            }
+            SatelliteTornadoFunnelRenderer.tickSubVortex(level, storm, vortex, center, DynamicStormController.subVortexWindMph(storm, vortex), rotationSign);
+        }
+    }
+
+    private static void spawnHorizontalVortexVisuals(ClientLevel level, StormObject storm, Vec3 playerPos) {
+        if (!Config.HORIZONTAL_VORTICES_ENABLED.get() || !Config.VISUALS_ENABLED.get()) {
+            return;
+        }
+        if (storm.pos.distanceTo(playerPos) > Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()) {
+            return;
+        }
+        DynamicStormState state = DynamicStormController.stateFor(storm);
+        double rotationSign = DynamicStormController.rotationSign(storm);
+        double parentWind = TornadoWindField.maxWindMph(storm);
+        double parentRadius = DynamicStormController.baseRadiusForWind(storm);
+        for (DynamicStormState.HorizontalVortex vortex : state.horizontalVortices()) {
+            Vec3 center = TornadoWindField.horizontalVortexGroundCenter(level, storm, vortex, storm.pos.y);
+            if (center.distanceTo(playerPos) > Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()) {
+                continue;
+            }
+            SatelliteTornadoFunnelRenderer.tickHorizontalVortex(level, storm, vortex, center, parentRadius, parentWind, rotationSign);
+        }
+    }
+
     private static void spawnSubVortexStickDebris(ClientLevel level, StormObject storm, Vec3 playerPos) {
         if (!Config.STICK_DEBRIS_ENABLED.get() || storm.pos.distanceTo(playerPos) > Config.STICK_DEBRIS_RENDER_RANGE_BLOCKS.get()) {
             return;
@@ -445,6 +762,14 @@ public final class ClientWeatherEffects {
             if (event.position().distanceTo(playerPos) > 512.0D) {
                 continue;
             }
+            if (event.type() == StormSubtype.WILDFIRE) {
+                spawnWildfireVisual(level, event);
+                continue;
+            }
+            if (event.type() == StormSubtype.FLAMMAGENITUS) {
+                spawnFlammagenitusVisual(level, event);
+                continue;
+            }
             int count = particleCountFor(event);
             for (int i = 0; i < count; i++) {
                 Vec3 pos = event.isLine() ? randomLineParticle(level, event) : randomVortexParticle(level, event);
@@ -464,10 +789,29 @@ public final class ClientWeatherEffects {
                     if (!spawnWeather2Particle(level, pos, dustVelocity, randomDebrisSprite(level), 3.0F + level.random.nextFloat() * 2.2F, 0.62F, 0.48F, 0.32F, 0.72F, 40, 0.12F)) {
                         level.addParticle(ParticleTypes.POOF, pos.x, pos.y, pos.z, dustVelocity.x, dustVelocity.y, dustVelocity.z);
                     }
+                } else if (event.type() == StormSubtype.SNOW_DEVIL) {
+                    Vec3 snowVelocity = new Vec3(velocity.x * 0.82D, 0.020D + level.random.nextDouble() * 0.035D, velocity.z * 0.82D);
+                    if (!spawnWeather2Particle(level, pos, snowVelocity, ParticleRegistry.cloud256, 3.8F + level.random.nextFloat() * 3.2F, 0.86F, 0.90F, 0.96F, 0.46F, 52, 0.08F)) {
+                        level.addParticle(ParticleTypes.SNOWFLAKE, pos.x, pos.y, pos.z, snowVelocity.x, snowVelocity.y, snowVelocity.z);
+                    }
+                } else if (event.type() == StormSubtype.FIRE_WHIRL) {
+                    Vec3 fireVelocity = new Vec3(velocity.x * 0.76D, 0.045D + level.random.nextDouble() * 0.085D, velocity.z * 0.76D);
+                    float heat = level.random.nextFloat();
+                    if (!spawnWeather2Particle(level, pos, fireVelocity, ParticleRegistry.cloud256, 5.8F + level.random.nextFloat() * 6.8F, Mth.lerp(heat, 0.28F, 0.82F), Mth.lerp(heat, 0.22F, 0.43F), Mth.lerp(heat, 0.18F, 0.24F), 0.58F, 54, 0.18F)) {
+                        level.addParticle(ParticleTypes.LARGE_SMOKE, pos.x, pos.y, pos.z, fireVelocity.x, fireVelocity.y, fireVelocity.z);
+                    }
+                    if (level.random.nextFloat() < 0.18F) {
+                        level.addParticle(ParticleTypes.FLAME, pos.x, pos.y, pos.z, fireVelocity.x * 0.35D, fireVelocity.y * 0.35D, fireVelocity.z * 0.35D);
+                    }
                 } else if (event.type() == StormSubtype.SQUALL_LINE) {
                     Vec3 linePos = new Vec3(pos.x, pos.y + 1.2D + level.random.nextDouble() * 4.0D, pos.z);
                     if (!spawnWeather2Particle(level, linePos, velocity, ParticleRegistry.cloud, 6.0F + level.random.nextFloat() * 4.0F, 0.48F, 0.50F, 0.56F, 0.52F, 46, 0.18F)) {
                         level.addParticle(ParticleTypes.CLOUD, linePos.x, linePos.y, linePos.z, velocity.x, 0.0D, velocity.z);
+                    }
+                } else if (event.type() == StormSubtype.FLOATER_TORNADO) {
+                    Vec3 floaterVelocity = new Vec3(velocity.x, 0.018D + level.random.nextDouble() * 0.035D, velocity.z);
+                    if (!spawnWeather2Particle(level, pos, floaterVelocity, ParticleRegistry.cloud256, 5.8F + level.random.nextFloat() * 5.6F, 0.58F, 0.60F, 0.64F, 0.48F, 58, 0.12F)) {
+                        level.addParticle(ParticleTypes.CLOUD, pos.x, pos.y, pos.z, floaterVelocity.x, floaterVelocity.y, floaterVelocity.z);
                     }
                 } else {
                     Vec3 landspoutVelocity = new Vec3(velocity.x, 0.03D, velocity.z);
@@ -485,12 +829,46 @@ public final class ClientWeatherEffects {
         }
     }
 
+    private static void spawnWildfireVisual(ClientLevel level, AddonWeatherEvent event) {
+        int count = Mth.clamp((int) (event.radius() / 8.0F), 6, 26);
+        for (int i = 0; i < count; i++) {
+            Vec3 pos = randomFireWeatherParticle(level, event, 0.0D, Math.max(10.0D, event.radius()));
+            Vec3 velocity = new Vec3((level.random.nextDouble() - 0.5D) * 0.035D, 0.035D + level.random.nextDouble() * 0.095D, (level.random.nextDouble() - 0.5D) * 0.035D);
+            if (!spawnWeather2Particle(level, pos, velocity, ParticleRegistry.cloud256, 8.0F + level.random.nextFloat() * 12.0F, 0.16F, 0.15F, 0.14F, 0.52F, 80, 0.05F)) {
+                level.addParticle(ParticleTypes.LARGE_SMOKE, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
+            }
+            if (level.random.nextFloat() < 0.24F) {
+                level.addParticle(ParticleTypes.FLAME, pos.x, pos.y + 0.15D, pos.z, velocity.x * 0.30D, velocity.y * 0.18D, velocity.z * 0.30D);
+            }
+        }
+    }
+
+    private static void spawnFlammagenitusVisual(ClientLevel level, AddonWeatherEvent event) {
+        int count = Mth.clamp((int) (event.radius() / 10.0F), 10, 34);
+        for (int i = 0; i < count; i++) {
+            double height = 18.0D + Math.pow(level.random.nextDouble(), 0.62D) * 120.0D;
+            Vec3 pos = randomFireWeatherParticle(level, event, height, event.radius());
+            Vec3 velocity = new Vec3((level.random.nextDouble() - 0.5D) * 0.030D, 0.016D + level.random.nextDouble() * 0.055D, (level.random.nextDouble() - 0.5D) * 0.030D);
+            float tone = level.random.nextFloat();
+            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud256, 18.0F + level.random.nextFloat() * 20.0F, Mth.lerp(tone, 0.30F, 0.62F), Mth.lerp(tone, 0.30F, 0.58F), Mth.lerp(tone, 0.32F, 0.62F), 0.34F, 130, 0.02F, ParticleTypes.CLOUD);
+        }
+    }
+
+    private static Vec3 randomFireWeatherParticle(ClientLevel level, AddonWeatherEvent event, double heightOffset, double radius) {
+        double angle = level.random.nextDouble() * Math.PI * 2.0D;
+        double distance = Math.sqrt(level.random.nextDouble()) * radius;
+        Vec3 base = new Vec3(event.position().x + Math.cos(angle) * distance, event.position().y, event.position().z + Math.sin(angle) * distance);
+        return new Vec3(base.x, visualY(level, base, heightOffset), base.z);
+    }
+
     private static Vec3 randomVortexParticle(ClientLevel level, AddonWeatherEvent event) {
         double angle = level.random.nextDouble() * Math.PI * 2.0D;
-        double radius = Math.sqrt(level.random.nextDouble()) * event.radius();
+        double radiusMultiplier = event.type() == StormSubtype.FIRE_WHIRL ? 1.45D : event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL ? 1.15D : 1.0D;
+        double radius = Math.sqrt(level.random.nextDouble()) * event.radius() * radiusMultiplier;
         double y = level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, net.minecraft.core.BlockPos.containing(event.position())).getY();
         double height = vortexParticleHeight(level, event);
-        return new Vec3(event.position().x + Math.cos(angle) * radius, y + 0.2D + height, event.position().z + Math.sin(angle) * radius);
+        double baseOffset = event.type() == StormSubtype.FLOATER_TORNADO ? Math.max(12.0D, event.position().y - y) : 0.2D;
+        return new Vec3(event.position().x + Math.cos(angle) * radius, y + baseOffset + height, event.position().z + Math.sin(angle) * radius);
     }
 
     private static Vec3 randomLineParticle(ClientLevel level, AddonWeatherEvent event) {
@@ -528,10 +906,79 @@ public final class ClientWeatherEffects {
         };
     }
 
+    private static DustTone debrisTone(ClientLevel level, Vec3 pos, boolean lowGroundBowl, boolean loftedCurtain) {
+        DustTone base = surfaceDustTone(level, pos, loftedCurtain ? 0.14F : lowGroundBowl ? -0.04F : 0.04F);
+        float contrast = lowGroundBowl ? 0.92F : loftedCurtain ? 1.08F : 1.0F;
+        return new DustTone(
+                Mth.clamp(base.red() * contrast, 0.05F, 0.90F),
+                Mth.clamp(base.green() * contrast, 0.05F, 0.90F),
+                Mth.clamp(base.blue() * contrast, 0.05F, 0.90F)
+        );
+    }
+
+    private static DustTone tornadoFootTone(ClientLevel level, Vec3 pos) {
+        DustTone base = surfaceDustTone(level, pos, -0.08F);
+        return new DustTone(
+                Mth.clamp(base.red() * 0.88F + 0.030F, 0.04F, 0.78F),
+                Mth.clamp(base.green() * 0.82F + 0.020F, 0.04F, 0.72F),
+                Mth.clamp(base.blue() * 0.72F + 0.012F, 0.04F, 0.66F)
+        );
+    }
+
+    private static DustTone surfaceDustTone(ClientLevel level, Vec3 pos, float lift) {
+        BlockState state = surfaceState(level, pos);
+        DustTone tone;
+        if (state.getFluidState().is(FluidTags.WATER)) {
+            tone = new DustTone(0.34F, 0.39F, 0.42F);
+        } else if (state.is(net.minecraft.world.level.block.Blocks.WATER)
+                || level.getFluidState(BlockPos.containing(pos.x, vortexGroundY(level, pos), pos.z).below()).is(FluidTags.WATER)) {
+            tone = new DustTone(0.34F, 0.39F, 0.42F);
+        } else if (state.is(net.minecraft.world.level.block.Blocks.SAND)) {
+            tone = new DustTone(0.66F, 0.54F, 0.34F);
+        } else if (state.is(net.minecraft.world.level.block.Blocks.RED_SAND)) {
+            tone = new DustTone(0.64F, 0.38F, 0.24F);
+        } else if (state.is(net.minecraft.world.level.block.Blocks.SNOW)
+                || state.is(net.minecraft.world.level.block.Blocks.SNOW_BLOCK)
+                || state.is(net.minecraft.world.level.block.Blocks.POWDER_SNOW)
+                || state.is(net.minecraft.world.level.block.Blocks.ICE)
+                || state.is(net.minecraft.world.level.block.Blocks.PACKED_ICE)
+                || state.is(net.minecraft.world.level.block.Blocks.BLUE_ICE)) {
+            tone = new DustTone(0.70F, 0.73F, 0.76F);
+        } else if (state.is(net.minecraft.world.level.block.Blocks.MUD)) {
+            tone = new DustTone(0.25F, 0.20F, 0.16F);
+        } else if (state.is(net.minecraft.world.level.block.Blocks.DIRT)
+                || state.is(net.minecraft.world.level.block.Blocks.COARSE_DIRT)
+                || state.is(net.minecraft.world.level.block.Blocks.ROOTED_DIRT)
+                || state.is(net.minecraft.world.level.block.Blocks.GRASS_BLOCK)
+                || state.is(net.minecraft.world.level.block.Blocks.PODZOL)) {
+            tone = new DustTone(0.42F, 0.32F, 0.20F);
+        } else {
+            tone = new DustTone(0.50F, 0.42F, 0.32F);
+        }
+        return new DustTone(
+                Mth.clamp(tone.red() + lift, 0.05F, 0.92F),
+                Mth.clamp(tone.green() + lift, 0.05F, 0.92F),
+                Mth.clamp(tone.blue() + lift, 0.05F, 0.92F)
+        );
+    }
+
+    private static BlockState surfaceState(ClientLevel level, Vec3 pos) {
+        BlockPos surface = BlockPos.containing(pos.x, vortexGroundY(level, pos), pos.z);
+        BlockState state = level.getBlockState(surface);
+        if (!state.isAir() || state.getFluidState().is(FluidTags.WATER)) {
+            return state;
+        }
+        return level.getBlockState(surface.below());
+    }
+
     private static double horizontalDistance(Vec3 first, Vec3 second) {
         double dx = first.x - second.x;
         double dz = first.z - second.z;
         return Math.sqrt(dx * dx + dz * dz);
+    }
+
+    private static int vortexGroundY(ClientLevel level, Vec3 pos) {
+        return level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, BlockPos.containing(pos)).getY();
     }
 
     private static double visualY(ClientLevel level, Vec3 base, double offset) {
@@ -555,17 +1002,79 @@ public final class ClientWeatherEffects {
         }
         EntityRotFX particle = new EntityRotFX(level, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
         particle.setSprite(sprite);
-        particle.setScale(scale);
-        particle.setColor(red, green, blue);
-        particle.setAlpha(alpha);
+        particle.setScale(Mth.clamp(scale, 0.15F, 180.0F));
+        particle.setColor(Mth.clamp(red, 0.0F, 1.0F), Mth.clamp(green, 0.0F, 1.0F), Mth.clamp(blue, 0.0F, 1.0F));
+        boolean downfallSheet = sprite == ParticleRegistry.downfall3;
+        boolean cloudSheet = sprite == ParticleRegistry.cloud || sprite == ParticleRegistry.cloud256;
+        float clampedAlpha = weatherParticleAlpha(sprite, alpha);
+        particle.setAlpha(clampedAlpha);
+        particle.setFullAlphaTarget(clampedAlpha);
+        particle.setTicksFadeInMax(downfallSheet ? 2.0F : 4.0F);
+        particle.setTicksFadeOutMax(downfallSheet ? 6.0F : 8.0F);
         particle.setMaxAge(maxAge);
         particle.setGravity(0.0F);
         particle.setCanCollide(false);
-        particle.setFacePlayer(true);
-        particle.facePlayerYaw = true;
-        particle.windWeight = windWeight;
+        particle.setFacePlayer(!downfallSheet);
+        particle.facePlayerYaw = !downfallSheet;
+        particle.isTransparent = true;
+        particle.renderOrder = downfallSheet ? 2 : cloudSheet ? 1 : 2;
+        particle.windWeight = effectiveWindWeight(windWeight);
+        if (downfallSheet) {
+            float yaw = (float) Math.toDegrees(Math.atan2(velocity.x, velocity.z));
+            particle.prevRotationYaw = yaw;
+            particle.rotationYaw = yaw;
+            particle.prevRotationPitch = 82.0F;
+            particle.rotationPitch = 82.0F;
+            particle.quatControl = true;
+            particle.useRotationAroundCenter = true;
+        }
         particle.spawnAsWeatherEffect();
         return true;
+    }
+
+    private static float effectiveWindWeight(float windWeight) {
+        return windWeight <= 0.0F ? LOCAL_PARTICLE_WIND_WEIGHT : windWeight;
+    }
+
+    private static float weatherParticleAlpha(TextureAtlasSprite sprite, float alpha) {
+        boolean downfallSheet = sprite == ParticleRegistry.downfall3;
+        boolean cloudSheet = sprite == ParticleRegistry.cloud || sprite == ParticleRegistry.cloud256;
+        if (downfallSheet) {
+            return Mth.clamp(alpha * 1.16F + 0.08F, 0.20F, 0.82F);
+        }
+        if (cloudSheet) {
+            return Mth.clamp(alpha * 1.32F + 0.12F, 0.24F, 0.96F);
+        }
+        return Mth.clamp(alpha, 0.04F, 0.96F);
+    }
+
+    private static void spawnCloudShadowParticle(ClientLevel level, Vec3 pos, float scale, float shade, float alpha, int maxAge) {
+        EntityRotFX particle = new EntityRotFX(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D);
+        particle.setSprite(ParticleRegistry.cloud256);
+        particle.setScale(Mth.clamp(scale, 14.0F, 168.0F));
+        particle.setColor(shade, shade * 1.04F, shade * 1.12F);
+        float clampedAlpha = Mth.clamp(alpha, 0.14F, 0.44F);
+        particle.setAlpha(clampedAlpha);
+        particle.setFullAlphaTarget(clampedAlpha);
+        particle.setTicksFadeInMax(18.0F);
+        particle.setTicksFadeOutMax(34.0F);
+        particle.setMaxAge(maxAge);
+        particle.setGravity(0.0F);
+        particle.setCanCollide(false);
+        particle.setFacePlayer(false);
+        particle.facePlayerYaw = false;
+        particle.isTransparent = true;
+        particle.renderOrder = 0;
+        particle.windWeight = LOCAL_PARTICLE_WIND_WEIGHT;
+        particle.quatControl = true;
+        particle.useRotationAroundCenter = true;
+        float yaw = level.random.nextFloat() * 360.0F;
+        particle.prevRotationYaw = yaw;
+        particle.rotationYaw = yaw;
+        particle.prevRotationPitch = 90.0F;
+        particle.rotationPitch = 90.0F;
+        particle.setRenderDistanceCull(Config.SUPERCELL_STRUCTURE_RENDER_RANGE_BLOCKS.get());
+        particle.spawnAsWeatherEffect();
     }
 
     private static float densityFor(AddonWeatherEvent event) {
@@ -577,6 +1086,9 @@ public final class ClientWeatherEffects {
         }
         if (event.type() == StormSubtype.WATERSPOUT) {
             return Config.WATERSPOUT_STICK_DENSITY.get().floatValue();
+        }
+        if (event.type() == StormSubtype.FIRE_WHIRL) {
+            return Config.DUST_DEVIL_STICK_DENSITY.get().floatValue() * 0.25F;
         }
         if (event.type() == StormSubtype.SQUALL_LINE) {
             return Config.SQUALL_LINE_STICK_DENSITY.get().floatValue();
@@ -591,6 +1103,15 @@ public final class ClientWeatherEffects {
         if (event.type() == StormSubtype.DUST_DEVIL) {
             return 6;
         }
+        if (event.type() == StormSubtype.SNOW_DEVIL) {
+            return 6;
+        }
+        if (event.type() == StormSubtype.FIRE_WHIRL) {
+            return 16;
+        }
+        if (event.type() == StormSubtype.FLOATER_TORNADO) {
+            return 10;
+        }
         if (event.type() == StormSubtype.SQUALL_LINE) {
             return 8;
         }
@@ -599,10 +1120,19 @@ public final class ClientWeatherEffects {
 
     private static double vortexParticleHeight(ClientLevel level, AddonWeatherEvent event) {
         if (event.type() == StormSubtype.DUST_DEVIL) {
-            return level.random.nextDouble() * 6.0D;
+            return Math.pow(level.random.nextDouble(), 1.25D) * 42.0D;
+        }
+        if (event.type() == StormSubtype.SNOW_DEVIL) {
+            return Math.pow(level.random.nextDouble(), 1.30D) * 30.0D;
         }
         if (event.type() == StormSubtype.WATERSPOUT) {
             return level.random.nextDouble() * 7.5D;
+        }
+        if (event.type() == StormSubtype.FIRE_WHIRL) {
+            return Math.pow(level.random.nextDouble(), 1.10D) * 34.0D;
+        }
+        if (event.type() == StormSubtype.FLOATER_TORNADO) {
+            return Math.pow(level.random.nextDouble(), 1.20D) * 28.0D;
         }
         return level.random.nextDouble() * 14.0D;
     }
@@ -652,5 +1182,8 @@ public final class ClientWeatherEffects {
             this.pitch = pitch;
             this.delayTicks = delayTicks;
         }
+    }
+
+    private record DustTone(float red, float green, float blue) {
     }
 }

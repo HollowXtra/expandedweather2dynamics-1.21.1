@@ -8,14 +8,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 public record RadarSnapshotPayload(BlockPos origin, List<RadarStormSnapshot> storms) {
-    public void write(FriendlyByteBuf buf) {
-        List<RadarStormSnapshot> safeStorms = storms == null ? List.of() : storms.stream()
+    public RadarSnapshotPayload {
+        origin = origin == null ? BlockPos.ZERO : origin.immutable();
+        storms = storms == null ? List.of() : storms.stream()
                 .filter(snapshot -> snapshot != null)
                 .limit(96)
                 .toList();
-        buf.writeBlockPos(origin == null ? BlockPos.ZERO : origin);
-        buf.writeVarInt(safeStorms.size());
-        for (RadarStormSnapshot snapshot : safeStorms) {
+    }
+
+    public void write(FriendlyByteBuf buf) {
+        buf.writeBlockPos(origin);
+        buf.writeVarInt(storms.size());
+        for (RadarStormSnapshot snapshot : storms) {
             snapshot.write(buf);
         }
     }

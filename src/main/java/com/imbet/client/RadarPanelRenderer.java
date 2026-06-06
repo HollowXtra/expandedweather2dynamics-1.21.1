@@ -238,7 +238,7 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
     }
 
     private static void drawSubVortexMarkers(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, float rx, float rz, float size, float y) {
-        int count = Mth.clamp(storm.subVortices(), 1, 6);
+        int count = Mth.clamp(storm.subVortices(), 1, 10);
         for (int i = 0; i < count; i++) {
             float angle = (float) (i * Math.PI * 2.0D / count);
             float ox = Mth.cos(angle) * size * 1.55F;

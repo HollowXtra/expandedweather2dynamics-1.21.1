@@ -20,6 +20,8 @@ minecraft {
             workingDirectory project.file('run')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${buildDir}/createSrgToMcp/output.srg"
             mods {
                 "${mod_id}" {
                     source sourceSets.main
@@ -30,6 +32,8 @@ minecraft {
             workingDirectory project.file('run-server')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${buildDir}/createSrgToMcp/output.srg"
             args '--nogui'
             mods {
                 "${mod_id}" {
@@ -37,6 +41,12 @@ minecraft {
                 }
             }
         }
+    }
+}
+
+afterEvaluate {
+    tasks.matching { it.name == 'runClient' || it.name == 'runServer' }.configureEach {
+        dependsOn tasks.named('createSrgToMcp')
     }
 }
 

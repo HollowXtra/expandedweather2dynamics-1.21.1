@@ -373,14 +373,20 @@ public final class TornadoFearClient {
         }
         EntityRotFX particle = new EntityRotFX(level, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
         particle.setSprite(sprite);
-        particle.setScale(scale);
-        particle.setColor(red, green, blue);
-        particle.setAlpha(alpha);
+        particle.setScale(Mth.clamp(scale, 0.15F, 18.0F));
+        particle.setColor(Mth.clamp(red, 0.0F, 1.0F), Mth.clamp(green, 0.0F, 1.0F), Mth.clamp(blue, 0.0F, 1.0F));
+        float clampedAlpha = Mth.clamp(alpha, 0.03F, 0.55F);
+        particle.setAlpha(clampedAlpha);
+        particle.setFullAlphaTarget(clampedAlpha);
+        particle.setTicksFadeInMax(4.0F);
+        particle.setTicksFadeOutMax(8.0F);
         particle.setMaxAge(maxAge);
         particle.setGravity(0.0F);
         particle.setCanCollide(false);
         particle.setFacePlayer(true);
         particle.facePlayerYaw = true;
+        particle.isTransparent = true;
+        particle.renderOrder = 2;
         particle.windWeight = windWeight;
         particle.spawnAsWeatherEffect();
     }

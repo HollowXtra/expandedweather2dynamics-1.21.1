@@ -21,4 +21,10 @@ public final class ClientRadarStore {
         RadarSnapshotPayload payload = SNAPSHOTS.get(origin);
         return payload == null ? List.of() : payload.storms();
     }
+
+    public static List<RadarStormSnapshot> allStorms() {
+        return SNAPSHOTS.values().stream()
+                .flatMap(payload -> payload.storms().stream())
+                .toList();
+    }
 }

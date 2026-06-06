@@ -85,6 +85,10 @@ public final class TornadoSurveySavedData extends SavedData {
         return displayId == null ? null : tracksByDisplayId.get(displayId);
     }
 
+    public TornadoTrack trackByDisplayId(String displayId) {
+        return displayId == null ? null : tracksByDisplayId.get(displayId);
+    }
+
     public List<TornadoTrack> tracks() {
         return List.copyOf(tracksByDisplayId.values());
     }
@@ -192,7 +196,7 @@ public final class TornadoSurveySavedData extends SavedData {
                     .orElse(distanceTo(center));
         }
 
-        private float recentMaxWidthBlocks(long minTick) {
+        public float recentMaxWidthBlocks(long minTick) {
             float max = 0.0F;
             for (TrackPoint point : points) {
                 if (point.tick() >= minTick) {
@@ -299,6 +303,19 @@ public final class TornadoSurveySavedData extends SavedData {
 
         public List<TrackPoint> points() {
             return List.copyOf(points);
+        }
+
+        public float maxWindNear(Vec3 center, double radius) {
+            double radiusSqr = Math.max(1.0D, radius * radius);
+            float max = 0.0F;
+            for (TrackPoint point : points) {
+                double dx = point.x() - center.x;
+                double dz = point.z() - center.z;
+                if (dx * dx + dz * dz <= radiusSqr) {
+                    max = Math.max(max, point.windMph());
+                }
+            }
+            return max > 0.0F ? max : maxWindMph;
         }
 
         public List<String> mergeHistory() {

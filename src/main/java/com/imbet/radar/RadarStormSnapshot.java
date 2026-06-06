@@ -24,31 +24,57 @@ public record RadarStormSnapshot(
         double circulationZ,
         double hookX,
         double hookZ,
-        boolean hasConfirmedCirculation
+        boolean hasConfirmedCirculation,
+        int weatherStage,
+        String stageLabel
 ) {
+    public RadarStormSnapshot {
+        label = limit(label, 64);
+        risk = limit(risk, 32);
+        severity = Math.max(0, severity);
+        x = finite(x);
+        z = finite(z);
+        motionX = finite(motionX);
+        motionZ = finite(motionZ);
+        width = finite(width);
+        windMph = finite(windMph);
+        reflectivityDbz = finite(reflectivityDbz);
+        radialVelocityMps = finite(radialVelocityMps);
+        rotationMps = finite(rotationMps);
+        subVortices = Math.max(0, subVortices);
+        circulationX = finite(circulationX);
+        circulationZ = finite(circulationZ);
+        hookX = finite(hookX);
+        hookZ = finite(hookZ);
+        weatherStage = Math.max(0, weatherStage);
+        stageLabel = limit(stageLabel, 16);
+    }
+
     public void write(FriendlyByteBuf buf) {
         buf.writeLong(id);
-        buf.writeUtf(limit(label, 64), 64);
-        buf.writeUtf(limit(risk, 32), 32);
-        buf.writeVarInt(Math.max(0, severity));
+        buf.writeUtf(label, 64);
+        buf.writeUtf(risk, 32);
+        buf.writeVarInt(severity);
         buf.writeInt(color);
-        buf.writeDouble(finite(x));
-        buf.writeDouble(finite(z));
-        buf.writeDouble(finite(motionX));
-        buf.writeDouble(finite(motionZ));
-        buf.writeFloat(finite(width));
-        buf.writeDouble(finite(windMph));
-        buf.writeDouble(finite(reflectivityDbz));
-        buf.writeDouble(finite(radialVelocityMps));
-        buf.writeDouble(finite(rotationMps));
+        buf.writeDouble(x);
+        buf.writeDouble(z);
+        buf.writeDouble(motionX);
+        buf.writeDouble(motionZ);
+        buf.writeFloat(width);
+        buf.writeDouble(windMph);
+        buf.writeDouble(reflectivityDbz);
+        buf.writeDouble(radialVelocityMps);
+        buf.writeDouble(rotationMps);
         buf.writeBoolean(hookEcho);
-        buf.writeVarInt(Math.max(0, subVortices));
+        buf.writeVarInt(subVortices);
         buf.writeBoolean(vortex);
-        buf.writeDouble(finite(circulationX));
-        buf.writeDouble(finite(circulationZ));
-        buf.writeDouble(finite(hookX));
-        buf.writeDouble(finite(hookZ));
+        buf.writeDouble(circulationX);
+        buf.writeDouble(circulationZ);
+        buf.writeDouble(hookX);
+        buf.writeDouble(hookZ);
         buf.writeBoolean(hasConfirmedCirculation);
+        buf.writeVarInt(weatherStage);
+        buf.writeUtf(stageLabel, 16);
     }
 
     public static RadarStormSnapshot read(FriendlyByteBuf buf) {
@@ -74,7 +100,9 @@ public record RadarStormSnapshot(
                 buf.readDouble(),
                 buf.readDouble(),
                 buf.readDouble(),
-                buf.readBoolean()
+                buf.readBoolean(),
+                buf.readVarInt(),
+                buf.readUtf(16)
         );
     }
 

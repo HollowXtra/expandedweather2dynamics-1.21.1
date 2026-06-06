@@ -8,11 +8,18 @@ import com.imbet.anemometer.AnemometerBlockEntity;
 import com.imbet.radar.RadarBlock;
 import com.imbet.radar.RadarBlockEntity;
 import com.imbet.radar.RadarMenu;
+import com.imbet.radar.PortableRadarItem;
 import com.imbet.spc.SpcRiskBlock;
 import com.imbet.spc.SpcRiskBlockEntity;
 import com.imbet.survey.DamageSurveyorItem;
+import com.imbet.weather.DustDevilEntity;
+import com.imbet.weather.GustnadoEntity;
+import com.imbet.weather.LandspoutEntity;
+import com.imbet.weather.WaterspoutEntity;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvent;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.CreativeModeTabs;
@@ -36,6 +43,7 @@ public final class ModContent {
     private static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITIES = DeferredRegister.create(ForgeRegistries.BLOCK_ENTITY_TYPES, ExpandedWeather2Dynamics.MODID);
     private static final DeferredRegister<MenuType<?>> MENUS = DeferredRegister.create(ForgeRegistries.MENU_TYPES, ExpandedWeather2Dynamics.MODID);
     private static final DeferredRegister<SoundEvent> SOUNDS = DeferredRegister.create(ForgeRegistries.SOUND_EVENTS, ExpandedWeather2Dynamics.MODID);
+    private static final DeferredRegister<EntityType<?>> ENTITIES = DeferredRegister.create(ForgeRegistries.ENTITY_TYPES, ExpandedWeather2Dynamics.MODID);
 
     public static final RegistryObject<RadarBlock> RADAR_BLOCK = BLOCKS.register("radar_block", () ->
             new RadarBlock(BlockBehaviour.Properties.copy(Blocks.IRON_BLOCK)
@@ -46,6 +54,9 @@ public final class ModContent {
 
     public static final RegistryObject<BlockItem> RADAR_BLOCK_ITEM = ITEMS.register("radar_block", () ->
             new BlockItem(RADAR_BLOCK.get(), new Item.Properties()));
+
+    public static final RegistryObject<PortableRadarItem> PORTABLE_RADAR_ITEM = ITEMS.register("portable_radar", () ->
+            new PortableRadarItem(new Item.Properties().stacksTo(1)));
 
     public static final RegistryObject<BlockEntityType<RadarBlockEntity>> RADAR_BLOCK_ENTITY = BLOCK_ENTITIES.register("radar_block", () ->
             BlockEntityType.Builder.of(RadarBlockEntity::new, RADAR_BLOCK.get()).build(null));
@@ -98,6 +109,34 @@ public final class ModContent {
     public static final RegistryObject<SoundEvent> TORNADO_ROAR_SOUND = SOUNDS.register("tornado_roar", () ->
             SoundEvent.createVariableRangeEvent(new ResourceLocation(ExpandedWeather2Dynamics.MODID, "tornado_roar")));
 
+    public static final RegistryObject<EntityType<DustDevilEntity>> DUST_DEVIL_ENTITY = ENTITIES.register("dust_devil", () ->
+            EntityType.Builder.<DustDevilEntity>of(DustDevilEntity::new, MobCategory.MISC)
+                    .sized(0.8F, 1.8F)
+                    .clientTrackingRange(12)
+                    .updateInterval(2)
+                    .build(ExpandedWeather2Dynamics.MODID + ":dust_devil"));
+
+    public static final RegistryObject<EntityType<LandspoutEntity>> LANDSPOUT_ENTITY = ENTITIES.register("landspout", () ->
+            EntityType.Builder.<LandspoutEntity>of(LandspoutEntity::new, MobCategory.MISC)
+                    .sized(1.1F, 2.4F)
+                    .clientTrackingRange(10)
+                    .updateInterval(2)
+                    .build(ExpandedWeather2Dynamics.MODID + ":landspout"));
+
+    public static final RegistryObject<EntityType<WaterspoutEntity>> WATERSPOUT_ENTITY = ENTITIES.register("waterspout", () ->
+            EntityType.Builder.<WaterspoutEntity>of(WaterspoutEntity::new, MobCategory.MISC)
+                    .sized(1.0F, 2.2F)
+                    .clientTrackingRange(10)
+                    .updateInterval(2)
+                    .build(ExpandedWeather2Dynamics.MODID + ":waterspout"));
+
+    public static final RegistryObject<EntityType<GustnadoEntity>> GUSTNADO_ENTITY = ENTITIES.register("gustnado", () ->
+            EntityType.Builder.<GustnadoEntity>of(GustnadoEntity::new, MobCategory.MISC)
+                    .sized(0.9F, 1.6F)
+                    .clientTrackingRange(12)
+                    .updateInterval(2)
+                    .build(ExpandedWeather2Dynamics.MODID + ":gustnado"));
+
     private ModContent() {
     }
 
@@ -107,6 +146,7 @@ public final class ModContent {
         BLOCK_ENTITIES.register(modEventBus);
         MENUS.register(modEventBus);
         SOUNDS.register(modEventBus);
+        ENTITIES.register(modEventBus);
         modEventBus.addListener(ModContent::addCreative);
     }
 
@@ -118,6 +158,7 @@ public final class ModContent {
             event.accept(SPC_RISK_BLOCK_ITEM.get());
         }
         if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
+            event.accept(PORTABLE_RADAR_ITEM.get());
             event.accept(DAMAGE_SURVEYOR_ITEM.get());
         }
     }

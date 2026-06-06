@@ -64,43 +64,38 @@ public final class CirculationDamage {
             if (!level.isLoaded(base)) {
                 continue;
             }
-            BlockPos surface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, base).below();
+            BlockPos surface = BlockGrabSafety.safeSurface(level, base, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+            if (surface == null) {
+                continue;
+            }
+            surface = surface.below();
             BlockPos pos = surface.offset(0, level.random.nextInt(4) - 1, 0);
             if (!level.isLoaded(pos)) {
                 continue;
             }
-            BlockState state = level.getBlockState(pos);
-            if (!canEdit(level, pos, state)) {
+            BlockGrabSafety.BlockSample block = BlockGrabSafety.sample(level, pos, null);
+            if (!BlockGrabSafety.canEdit(block)) {
                 continue;
             }
+            BlockState state = block.state();
             TornadoWindField.WindSample sample = TornadoWindField.sample(parent, level, Vec3.atCenterOf(pos));
             double mph = Math.max(sample.strongestLocalMph(), DynamicStormController.satelliteWindMph(parent, circulation) * (1.0D - Math.min(1.0D, Vec3.atCenterOf(pos).distanceTo(center) / Math.max(1.0D, radius * 2.0D))));
             if (mph < 85.0D) {
                 continue;
             }
             if (state.is(BlockTags.CROPS) || state.is(BlockTags.FLOWERS) || state.is(BlockTags.LEAVES) || state.is(BlockTags.REPLACEABLE_BY_TREES)) {
-                level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+                BlockGrabSafety.safeSetBlock(level, pos, Blocks.AIR.defaultBlockState(), 3);
                 continue;
             }
             if (state.is(Blocks.GRASS_BLOCK) || state.is(Blocks.DIRT) || state.is(Blocks.COARSE_DIRT) || state.is(Blocks.FARMLAND) || state.is(Blocks.PODZOL)) {
-                level.setBlock(pos, Blocks.DIRT_PATH.defaultBlockState(), 3);
+                BlockGrabSafety.safeSetBlock(level, pos, Blocks.DIRT_PATH.defaultBlockState(), 3);
                 continue;
             }
-            float hardness = state.getDestroySpeed(level, pos);
+            float hardness = block.destroySpeed();
             double hardnessLimit = Math.max(0.8D, (mph - 80.0D) / 55.0D);
-            if (hardness >= 0.0F && hardness <= hardnessLimit) {
-                level.destroyBlock(pos, false);
+            if (hardness >= 0.0F && hardness <= hardnessLimit && BlockGrabSafety.canImpactDamageByWind(block, mph)) {
+                BlockGrabSafety.safeDestroyBlock(level, pos, false);
             }
         }
-    }
-
-    private static boolean canEdit(ServerLevel level, BlockPos pos, BlockState state) {
-        if (state.isAir() || !state.getFluidState().isEmpty()) {
-            return false;
-        }
-        if (state.is(Blocks.BEDROCK) || state.is(Blocks.END_PORTAL) || state.is(Blocks.END_PORTAL_FRAME) || state.is(Blocks.NETHER_PORTAL) || state.is(Blocks.COMMAND_BLOCK) || state.is(Blocks.CHAIN_COMMAND_BLOCK) || state.is(Blocks.REPEATING_COMMAND_BLOCK)) {
-            return false;
-        }
-        return !Config.DAMAGE_PRESERVE_INVENTORY_BLOCK_ENTITIES.get() || level.getBlockEntity(pos) == null;
     }
 }
