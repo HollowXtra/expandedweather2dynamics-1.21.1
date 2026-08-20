@@ -1,6 +1,8 @@
 package com.imbet.weather;
 
 import com.imbet.Config;
+import com.imbet.weather.vortex.MutableWindSample;
+import com.imbet.weather.vortex.VortexEngine;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
@@ -38,11 +40,13 @@ public final class CirculationDamage {
             if (entity instanceof Player player && player.isCreative()) {
                 continue;
             }
-            TornadoWindField.WindSample sample = TornadoWindField.sample(parent, level, entity.position());
-            if (sample.strongestLocalMph() < 45.0D) {
+            MutableWindSample sample = new MutableWindSample();
+            VortexEngine.sampleWeather2StormWind(parent, level, entity.getX(), entity.getY(), entity.getZ(), sample);
+            if (sample.speedMph < 45.0D) {
                 continue;
             }
-            entity.setDeltaMovement(entity.getDeltaMovement().add(TornadoWindField.mphToEntityDelta(sample.mphVector())));
+            double scale = Config.WINDFIELD_ENTITY_PUSH_SCALE.get();
+            entity.setDeltaMovement(entity.getDeltaMovement().add(sample.mphX * scale, sample.mphY * scale, sample.mphZ * scale));
             entity.hurtMarked = true;
         }
     }
@@ -73,8 +77,9 @@ public final class CirculationDamage {
             if (!canEdit(level, pos, state)) {
                 continue;
             }
-            TornadoWindField.WindSample sample = TornadoWindField.sample(parent, level, Vec3.atCenterOf(pos));
-            double mph = Math.max(sample.strongestLocalMph(), DynamicStormController.satelliteWindMph(parent, circulation) * (1.0D - Math.min(1.0D, Vec3.atCenterOf(pos).distanceTo(center) / Math.max(1.0D, radius * 2.0D))));
+            MutableWindSample sample = new MutableWindSample();
+            VortexEngine.sampleWeather2StormWind(parent, level, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, sample);
+            double mph = Math.max(sample.speedMph, DynamicStormController.satelliteWindMph(parent, circulation) * (1.0D - Math.min(1.0D, Vec3.atCenterOf(pos).distanceTo(center) / Math.max(1.0D, radius * 2.0D))));
             if (mph < 85.0D) {
                 continue;
             }

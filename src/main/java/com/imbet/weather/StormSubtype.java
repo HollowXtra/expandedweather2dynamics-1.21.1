@@ -12,7 +12,8 @@ public enum StormSubtype {
     SANDSTORM("Sandstorm"),
     SNOWSTORM("Snowstorm"),
     SQUALL_LINE("Squall Line"),
-    WEATHER2_PARTICLE_STORM("Particle Storm");
+    WEATHER2_PARTICLE_STORM("Particle Storm"),
+    FIRENADO("Firenado");
 
     private final String label;
 

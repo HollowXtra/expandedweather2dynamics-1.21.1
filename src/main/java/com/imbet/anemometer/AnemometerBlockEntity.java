@@ -2,11 +2,9 @@ package com.imbet.anemometer;
 
 import com.imbet.Config;
 import com.imbet.registry.ModContent;
-import com.imbet.weather.AddonWeatherEventService;
 import com.imbet.weather.AdvancementAwarder;
-import com.imbet.weather.DynamicStormController;
-import com.imbet.weather.SupercellStructureService;
-import com.imbet.weather.TornadoWindField;
+import com.imbet.weather.vortex.MutableWindSample;
+import com.imbet.weather.vortex.VortexEngine;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
@@ -15,10 +13,6 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
-import weather2.ServerTickHandler;
-import weather2.weathersystem.WeatherManagerServer;
-import weather2.weathersystem.storm.StormObject;
-import weather2.weathersystem.storm.WeatherObject;
 
 public class AnemometerBlockEntity extends BlockEntity {
     private float angle;
@@ -40,8 +34,9 @@ public class AnemometerBlockEntity extends BlockEntity {
         if (!Config.ANEMOMETER_ENABLED.get()) {
             return;
         }
-        TornadoWindField.WindSample sample = sampleWind(level, pos);
-        windMph = sample.speedMph();
+        MutableWindSample sample = new MutableWindSample();
+        VortexEngine.sampleWind(level, Vec3.atCenterOf(pos).x, Vec3.atCenterOf(pos).y, Vec3.atCenterOf(pos).z, sample);
+        windMph = sample.speedMph;
         rotationalVelocity = Math.min(55.0F, rotationalVelocity * 0.94F + (float) windMph * 0.055F);
         angle += rotationalVelocity;
         if (angle >= 360.0F) {
@@ -49,7 +44,7 @@ public class AnemometerBlockEntity extends BlockEntity {
             anglePrev -= 360.0F;
         }
         if (!level.isClientSide() && level.getGameTime() % 10L == 0L) {
-            int newPower = sample.redstonePower();
+            int newPower = (int) Math.min(15.0D, windMph / 8.0D);
             if (newPower != power) {
                 power = newPower;
                 setChanged();
@@ -75,28 +70,6 @@ public class AnemometerBlockEntity extends BlockEntity {
 
     public float getRenderAngle(float partialTick) {
         return anglePrev + (angle - anglePrev) * partialTick;
-    }
-
-    private TornadoWindField.WindSample sampleWind(Level level, BlockPos pos) {
-        Vec3 center = Vec3.atCenterOf(pos);
-        TornadoWindField.WindSample strongest = AddonWeatherEventService.sampleWind(level, center);
-        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
-        if (manager == null) {
-            return strongest;
-        }
-        for (WeatherObject object : manager.getStormObjects()) {
-            if (object instanceof StormObject storm && storm.pos != null && storm.pos.distanceTo(center) <= 512.0D && !DynamicStormController.isAbsorbedOrDecaying(storm)) {
-                TornadoWindField.WindSample sample = TornadoWindField.sample(storm, level, center);
-                if (sample.speedMph() > strongest.speedMph()) {
-                    strongest = sample;
-                }
-                TornadoWindField.WindSample supercellSample = SupercellStructureService.sampleWind(storm, level, center);
-                if (supercellSample.speedMph() > strongest.speedMph()) {
-                    strongest = supercellSample;
-                }
-            }
-        }
-        return strongest;
     }
 
     @Override

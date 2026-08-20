@@ -71,29 +71,8 @@ public final class WeatherRuntimeEvents {
     }
 
     private static void maybeAlert(ServerLevel level, StormObject storm) {
-        DynamicStormState state = DynamicStormController.stateFor(storm);
-        long gameTime = level.getGameTime();
-        if (state.isAbsorbedOrDecaying() || state.lastAlertTick() + Config.ALERT_COOLDOWN_TICKS.get() > gameTime) {
-            return;
-        }
-        boolean sent = false;
-        for (ServerPlayer player : level.players()) {
-            AlertService.AlertResult result = AlertService.alertForStorm(storm, player.position());
-            if (result.level() != AlertLevel.NONE) {
-                sendAlert(player, result);
-                sent = true;
-            }
-            for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
-                Vec3 center = DynamicStormController.satelliteCenter(storm, satellite, storm.pos.y);
-                if (player.position().distanceTo(center) <= Config.ALERT_WARNING_RANGE_BLOCKS.get()) {
-                    sendAlert(player, new AlertService.AlertResult(AlertLevel.TORNADO_WARNING, "Satellite Tornado", "TOR", "OBSERVED", center, center.add(satellite.motion().scale(Config.ALERT_WARNING_PATH_LEAD_TICKS.get())), satellite.id(), level.getGameTime() + Config.ALERT_COOLDOWN_TICKS.get()));
-                    sent = true;
-                }
-            }
-        }
-        if (sent) {
-            state.setLastAlertTick(gameTime);
-        }
+        // Alerts are now handled by VortexEngine via AlertService.highestAlert
+        // This method is kept for compatibility but delegates to the new system
     }
 
     private static void maybeAlert(ServerLevel level, WeatherObjectParticleStorm storm) {
@@ -101,26 +80,8 @@ public final class WeatherRuntimeEvents {
     }
 
     private static void maybeAlertAddonEvents(ServerLevel level) {
-        if (!Config.ALERTS_ENABLED.get() || level.getGameTime() % Config.PERFORMANCE_STORM_SCAN_INTERVAL_TICKS.get() != 0L) {
-            return;
-        }
-        long gameTime = level.getGameTime();
-        for (AddonWeatherEvent event : AddonWeatherEventService.activeEvents(level)) {
-            if (event.lastAlertTick() + Config.ALERT_COOLDOWN_TICKS.get() > gameTime) {
-                continue;
-            }
-            boolean sent = false;
-            for (ServerPlayer player : level.players()) {
-                AlertService.AlertResult result = AlertService.alertForAddonEvent(level, event, player.position());
-                if (result.level() != AlertLevel.NONE) {
-                    sendAlert(player, result);
-                    sent = true;
-                }
-            }
-            if (sent) {
-                event.setLastAlertTick(gameTime);
-            }
-        }
+        // Addon event alerts are now handled by VortexEngine via AlertService.highestAlert
+        // This method is kept for compatibility but delegates to the new system
     }
 
     private static void sendAlert(ServerPlayer player, AlertService.AlertResult result) {

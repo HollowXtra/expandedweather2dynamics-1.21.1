@@ -1,7 +1,7 @@
 package com.imbet.mixin;
 
 import com.imbet.Config;
-import com.imbet.weather.DynamicStormController;
+import com.imbet.weather.vortex.VortexEngine;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -39,13 +39,13 @@ public abstract class TornadoFunnelSimpleMixin {
         float smoothing = Config.TORNADO_FUNNEL_BEND_SMOOTHING.get().floatValue();
         for (int i = 1; i < count; i++) {
             Layer layer = funnel.listLayers.get(i);
-            Vec3 target = DynamicStormController.bendFunnelLayer(storm, base, layer.getPos(), i, count);
+            Vec3 target = VortexEngine.bendFunnelLayer(storm, base, layer.getPos(), i, count);
             Vec3 targetOffset = new Vec3(target.x - base.x, 0.0D, target.z - base.z);
             Vec3 previousOffset = expandedweather2dynamics$smoothedOffsets.get(i);
             Vec3 smoothedOffset = previousOffset.lerp(targetOffset, smoothing);
             expandedweather2dynamics$smoothedOffsets.set(i, smoothedOffset);
             layer.setPos(new Vec3(base.x + smoothedOffset.x, layer.getPos().y, base.z + smoothedOffset.z));
-            layer.setRotation(layer.getRotation() + DynamicStormController.extraFunnelLayerSpinDegrees(storm, i, count));
+            layer.setRotation(layer.getRotation() + VortexEngine.extraFunnelLayerSpinDegrees(storm, i, count));
         }
     }
 }

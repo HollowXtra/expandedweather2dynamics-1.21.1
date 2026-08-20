@@ -1,7 +1,7 @@
 package com.imbet.mixin;
 
 import com.imbet.Config;
-import com.imbet.weather.DynamicStormController;
+import com.imbet.weather.vortex.VortexEngine;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
@@ -17,7 +17,7 @@ public abstract class TornadoHelperMixin {
     @Inject(method = "getTornadoBaseSize", at = @At("RETURN"), cancellable = true)
     private void expandedweather2dynamics$variableWidth(CallbackInfoReturnable<Integer> cir) {
         TornadoHelper helper = (TornadoHelper) (Object) this;
-        cir.setReturnValue(DynamicStormController.adjustedTornadoBaseSize(helper.storm, cir.getReturnValue()));
+        cir.setReturnValue(VortexEngine.adjustedTornadoBaseSize(helper.storm, cir.getReturnValue()));
     }
 
     @Inject(method = "tryRip", at = @At("HEAD"), cancellable = true)
@@ -26,7 +26,7 @@ public abstract class TornadoHelperMixin {
             return;
         }
         TornadoHelper helper = (TornadoHelper) (Object) this;
-        if (!DynamicStormController.shouldTryRip(helper, level, new BlockPos(x, y, z))) {
+        if (!VortexEngine.shouldTryRip(helper, level, new BlockPos(x, y, z))) {
             cir.setReturnValue(false);
         }
     }
@@ -37,7 +37,7 @@ public abstract class TornadoHelperMixin {
             return;
         }
         TornadoHelper helper = (TornadoHelper) (Object) this;
-        if (!DynamicStormController.canGrabBlock(helper, level, state, pos)) {
+        if (!VortexEngine.canGrabBlock(helper, level, state, pos)) {
             cir.setReturnValue(false);
         }
     }
@@ -48,7 +48,7 @@ public abstract class TornadoHelperMixin {
             return;
         }
         TornadoHelper helper = (TornadoHelper) (Object) this;
-        if (!DynamicStormController.canGrabEntity(helper, entity)) {
+        if (!VortexEngine.canGrabEntity(helper, entity)) {
             cir.setReturnValue(false);
         }
     }

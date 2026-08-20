@@ -5,6 +5,7 @@ import com.imbet.radar.ClientRadarStore;
 import com.imbet.survey.ClientDamageSurveyStore;
 import com.imbet.weather.ClientAddonWeatherEventStore;
 import com.imbet.weather.ClientStormStateStore;
+import com.imbet.weather.vortex.ClientVortexStore;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 
 public final class ModNetworking {
@@ -21,6 +22,8 @@ public final class ModNetworking {
                 .playToClient(StormStateSyncPayload.TYPE, StormStateSyncPayload.STREAM_CODEC, (payload, context) ->
                         context.enqueueWork(() -> ClientStormStateStore.accept(payload)))
                 .playToClient(DamageSurveyResultPayload.TYPE, DamageSurveyResultPayload.STREAM_CODEC, (payload, context) ->
-                        context.enqueueWork(() -> ClientDamageSurveyStore.accept(payload)));
+                        context.enqueueWork(() -> ClientDamageSurveyStore.accept(payload)))
+                .playToClient(VortexSyncPayload.TYPE, VortexSyncPayload.STREAM_CODEC, (payload, context) ->
+                        context.enqueueWork(() -> ClientVortexStore.accept(payload)));
     }
 }
