@@ -562,7 +562,9 @@ public final class ClientWeatherEffects {
             double radius = DynamicStormController.satelliteRadius(storm, satellite);
             double satelliteWind = DynamicStormController.satelliteWindMph(storm, satellite);
             SatelliteTornadoFunnelRenderer.tick(level, storm, satellite, center, satelliteWind, rotationSign);
-            for (int i = 0; i < 1; i++) {
+            float lifecycle = satellite.lifecycleAt(level.getGameTime());
+            int stickAttempts = lifecycle <= 0.05F ? 0 : (int) Math.round(2.0D * lifecycle);
+            for (int i = 0; i < stickAttempts; i++) {
                 double angle = Math.toRadians(satellite.orbitDegrees()) + level.random.nextDouble() * Math.PI * 2.0D;
                 double distance = 1.5D + level.random.nextDouble() * radius;
                 int groundY = vortexGroundY(level, center);
@@ -597,13 +599,14 @@ public final class ClientWeatherEffects {
         double radiusOfMaxWind = Math.max(4.0D, DynamicStormController.radiusOfMaxWind(storm));
         double clearRadius = Mth.clamp(Math.max(visibleRadius + 10.0D, radiusOfMaxWind * 0.28D), 9.0D, 512.0D);
         double cloudRadius = clearRadius + Mth.clamp(Math.max(22.0D, visibleRadius * 0.64D + maxWind / 14.0D), 22.0D, 145.0D);
-        float density = Config.TORNADO_DEBRIS_CLOUD_DENSITY.get().floatValue();
+        DustCloudContext context = DustCloudContext.forStorm(level, storm);
+        float density = Config.TORNADO_DEBRIS_CLOUD_DENSITY.get().floatValue() * context.gust();
         int attempts = Mth.clamp((int) Math.round((12.0D + maxWind / 17.0D + (cloudRadius - clearRadius) / 3.6D) * density), 8, 74);
         if (!DynamicStormController.hasActiveMultivortexVisual(storm)) {
             double coreRadius = Mth.clamp(Math.max(visibleRadius * 0.76D, radiusOfMaxWind * 0.42D), 4.0D, 96.0D);
             int coreAttempts = Mth.clamp((int) Math.round((8.0D + maxWind / 20.0D + coreRadius / 6.0D) * density), 6, 44);
-            spawnDebrisCloudCore(level, storm, storm.pos, coreRadius, maxWind, coreAttempts, 1.0F);
-            spawnDebrisCloudAround(level, storm, storm.pos, clearRadius, cloudRadius, maxWind, attempts, 1.0F);
+            spawnDebrisCloudCore(level, storm, storm.pos, coreRadius, maxWind, coreAttempts, 1.0F, context);
+            spawnDebrisCloudAround(level, storm, storm.pos, clearRadius, cloudRadius, maxWind, attempts, 1.0F, context);
         }
 
         for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
@@ -611,86 +614,169 @@ public final class ClientWeatherEffects {
             if (center.distanceTo(playerPos) > Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()) {
                 continue;
             }
-            double satelliteWind = DynamicStormController.satelliteWindMph(storm, satellite);
-            double satelliteClearRadius = Mth.clamp(satellite.visibleFunnelWidth() + 4.0D, 4.0D, 80.0D);
-            double satelliteRadius = satelliteClearRadius + Mth.clamp(DynamicStormController.satelliteRadius(storm, satellite) * 0.26D, 6.0D, 34.0D);
-            int satelliteAttempts = Mth.clamp((int) Math.round((1.0D + satelliteWind / 80.0D + (satelliteRadius - satelliteClearRadius) / 12.0D) * density), 1, 6);
-            spawnDebrisCloudCore(level, storm, center, Mth.clamp(satelliteClearRadius * 0.65D, 2.0D, 18.0D), satelliteWind, Math.max(1, satelliteAttempts), 0.62F);
-            spawnDebrisCloudAround(level, storm, center, satelliteClearRadius, satelliteRadius, satelliteWind, satelliteAttempts, 0.72F);
+            spawnSatelliteDebrisCloud(level, storm, satellite, center, context);
         }
     }
 
-    private static void spawnDebrisCloudCore(ClientLevel level, StormObject storm, Vec3 center, double coreRadius, double maxWind, int attempts, float intensityScale) {
+    private static void spawnSatelliteDebrisCloud(ClientLevel level, StormObject storm, DynamicStormState.TornadoCirculationState satellite, Vec3 center, DustCloudContext context) {
+        float lifecycle = satellite.lifecycleAt(level.getGameTime());
+        if (lifecycle <= 0.03F) {
+            return;
+        }
         double rotationSign = DynamicStormController.visualRotationSign(storm);
+        double satelliteWind = DynamicStormController.satelliteWindMph(storm, satellite);
+        double clearRadius = Mth.clamp(satellite.visibleFunnelWidth() + 3.0D, 3.0D, 60.0D);
+        double cloudRadius = clearRadius + Mth.clamp(DynamicStormController.satelliteRadius(storm, satellite) * 0.30D, 5.0D, 30.0D);
+        boolean water = context.water();
+        float density = Config.TORNADO_DEBRIS_CLOUD_DENSITY.get().floatValue() * context.gust();
+        int attempts = Mth.clamp((int) Math.round((2.5D + satelliteWind / 70.0D + (cloudRadius - clearRadius) / 9.0D) * density * lifecycle), 1, 9);
         for (int i = 0; i < attempts; i++) {
             if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
                 return;
             }
+            boolean loftedSwirl = level.random.nextFloat() < 0.42F;
             double angle = level.random.nextDouble() * Math.PI * 2.0D;
-            double distance = Math.pow(level.random.nextDouble(), 0.78D) * Math.max(1.0D, coreRadius);
+            double distance = loftedSwirl
+                    ? clearRadius * (0.75D + level.random.nextDouble() * 0.45D)
+                    : Math.pow(level.random.nextDouble(), 0.80D) * clearRadius;
             Vec3 groundSample = center.add(Math.cos(angle) * distance, 0.0D, Math.sin(angle) * distance);
             int groundY = vortexGroundY(level, groundSample);
-            double nearCore = Mth.clamp(1.0D - distance / Math.max(1.0D, coreRadius), 0.0D, 1.0D);
-            double heightLimit = Mth.clamp(3.2D + maxWind / 28.0D + nearCore * 4.0D, 4.0D, 16.0D);
-            double height = Math.pow(level.random.nextDouble(), 1.85D) * heightLimit;
-            Vec3 pos = new Vec3(groundSample.x, groundY + 0.28D + height, groundSample.z);
-            boolean dustyFoot = height < 3.2D || nearCore > 0.68D;
+            double nearCore = Mth.clamp(1.0D - distance / Math.max(1.0D, clearRadius), 0.0D, 1.0D);
+            boolean raining = level.isRainingAt(BlockPos.containing(groundSample.x, groundY + 1, groundSample.z));
+            float rainFactor = raining ? 0.50F : 1.0F;
+            double height = loftedSwirl
+                    ? 1.0D + Math.pow(level.random.nextDouble(), 1.15D) * Mth.clamp(2.0D + satelliteWind / 34.0D, 2.5D, 12.0D)
+                    : Math.pow(level.random.nextDouble(), 1.95D) * Mth.clamp(2.2D + satelliteWind / 30.0D + nearCore * 3.0D, 2.5D, 9.0D);
+            Vec3 pos = new Vec3(groundSample.x, groundY + 0.25D + height, groundSample.z);
             Vec3 radial = new Vec3(Math.cos(angle), 0.0D, Math.sin(angle));
             Vec3 tangent = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign);
-            Vec3 velocity = tangent.scale(0.050D + maxWind * 0.00054D + nearCore * 0.030D)
-                    .add(radial.scale(-0.010D - nearCore * 0.018D))
-                    .add(0.0D, dustyFoot ? 0.006D + nearCore * 0.018D : 0.012D + nearCore * 0.026D, 0.0D);
-            float scale = (float) Mth.clamp(14.0D + coreRadius * 0.32D + nearCore * 21.0D + level.random.nextDouble() * 15.0D, 11.0D, 58.0D);
-            float alpha = (float) Mth.clamp((0.48D + nearCore * 0.25D + maxWind / 1450.0D + (dustyFoot ? 0.12D : 0.0D)) * intensityScale, 0.32D, 0.82D);
-            DustTone tone = dustyFoot ? tornadoFootTone(level, groundSample) : debrisTone(level, groundSample, true, false);
-            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 40 + level.random.nextInt(62));
+            Vec3 velocity = tangent.scale(loftedSwirl ? 0.10D + satelliteWind * 0.0008D : 0.05D + satelliteWind * 0.0005D + nearCore * 0.030D)
+                    .add(radial.scale(-0.012D - nearCore * 0.016D))
+                    .add(0.0D, loftedSwirl ? 0.016D + satelliteWind * 0.00022D : 0.008D + nearCore * 0.014D, 0.0D);
+            float scale = (float) Mth.clamp((loftedSwirl ? 5.5D : 9.0D) + clearRadius * 0.34D + nearCore * 7.0D + level.random.nextDouble() * 6.0D, 5.0D, 30.0D);
+            float alpha = (float) Mth.clamp((loftedSwirl ? 0.26D : 0.32D + nearCore * 0.20D) + satelliteWind / 1900.0D, 0.0F, 0.62F) * lifecycle * context.gust() * rainFactor;
+            if (water) {
+                scale *= 0.82F;
+                alpha *= 0.86F;
+            }
+            DustTone tone = toneFor(level, groundSample, !loftedSwirl, loftedSwirl, context);
+            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 24 + level.random.nextInt(40));
         }
     }
 
-    private static void spawnDebrisCloudAround(ClientLevel level, StormObject storm, Vec3 center, double clearRadius, double cloudRadius, double maxWind, int attempts, float intensityScale) {
+    private static void spawnDebrisCloudCore(ClientLevel level, StormObject storm, Vec3 center, double coreRadius, double maxWind, int attempts, float intensityScale, DustCloudContext context) {
         double rotationSign = DynamicStormController.visualRotationSign(storm);
-        double ringWidth = Math.max(2.0D, cloudRadius - clearRadius);
+        boolean water = context.water();
         for (int i = 0; i < attempts; i++) {
             if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
                 return;
             }
             double angle = level.random.nextDouble() * Math.PI * 2.0D;
-            boolean lowGroundBowl = level.random.nextFloat() < 0.68F;
-            boolean loftedCurtain = !lowGroundBowl && level.random.nextFloat() < 0.58F;
+            // Dust hugs the funnel wall as a thin veil; the innermost core stays clear enough to see the condensation funnel.
+            double wallBias = level.random.nextFloat() < 0.72F ? 0.60D + 0.40D * level.random.nextDouble() : 0.22D + 0.38D * level.random.nextDouble();
+            double distance = wallBias * Math.max(1.0D, coreRadius);
+            Vec3 groundSample = center.add(Math.cos(angle) * distance, 0.0D, Math.sin(angle) * distance);
+            int groundY = vortexGroundY(level, groundSample);
+            boolean raining = level.isRainingAt(BlockPos.containing(groundSample.x, groundY + 1, groundSample.z));
+            float rainFactor = raining ? 0.50F : 1.0F;
+            double wall = Mth.clamp(distance / Math.max(1.0D, coreRadius), 0.0D, 1.0D);
+            double heightLimit = Mth.clamp(3.0D + maxWind / 34.0D + wall * 3.6D, 3.6D, 13.5D);
+            double height = Math.pow(level.random.nextDouble(), 1.9D) * heightLimit;
+            Vec3 pos = new Vec3(groundSample.x, groundY + 0.28D + height, groundSample.z);
+            boolean dustyFoot = height < 2.6D || wall > 0.85D;
+            Vec3 radial = new Vec3(Math.cos(angle), 0.0D, Math.sin(angle));
+            Vec3 tangent = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign);
+            Vec3 velocity = tangent.scale(0.055D + maxWind * 0.00070D + wall * 0.045D)
+                    .add(radial.scale(-0.012D - wall * 0.016D))
+                    .add(0.0D, dustyFoot ? 0.008D + wall * 0.020D : 0.014D + wall * 0.030D, 0.0D);
+            float scale = (float) Mth.clamp(8.0D + coreRadius * 0.20D + wall * 12.0D + level.random.nextDouble() * 9.0D, 7.0D, 30.0D);
+            float alpha = (float) Mth.clamp((0.24D + wall * 0.14D + maxWind / 1600.0D + (dustyFoot ? 0.10D : 0.0D)) * intensityScale * context.gust() * rainFactor, 0.16D, 0.48D);
+            if (water) {
+                scale *= 0.72F;
+                alpha *= 0.86F;
+            }
+            DustTone tone = toneFor(level, groundSample, dustyFoot, false, context);
+            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 36 + level.random.nextInt(48));
+        }
+    }
+
+    private static void spawnDebrisCloudAround(ClientLevel level, StormObject storm, Vec3 center, double clearRadius, double cloudRadius, double maxWind, int attempts, float intensityScale, DustCloudContext context) {
+        double rotationSign = DynamicStormController.visualRotationSign(storm);
+        double ringWidth = Math.max(2.0D, cloudRadius - clearRadius);
+        boolean water = context.water();
+        for (int i = 0; i < attempts; i++) {
+            if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
+                return;
+            }
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            boolean lowGroundBowl = level.random.nextFloat() < 0.58F;
+            boolean loftedCurtain = !lowGroundBowl && level.random.nextFloat() < 0.55F;
+            // Mass the skirt near the funnel wall so the collar visibly rolls outward instead of floating evenly.
             double distance = level.random.nextFloat() < 0.62F
-                    ? clearRadius + Math.pow(level.random.nextDouble(), 1.70D) * ringWidth * 0.64D
+                    ? clearRadius + Math.pow(level.random.nextDouble(), 1.75D) * ringWidth * 0.52D
                     : clearRadius + Math.sqrt(level.random.nextDouble()) * ringWidth;
             Vec3 groundSample = center.add(Math.cos(angle) * distance, 0.0D, Math.sin(angle) * distance);
             int groundY = vortexGroundY(level, groundSample);
-            double heightLimit = lowGroundBowl ? Mth.clamp(maxWind / 40.0D, 1.8D, 7.0D) : loftedCurtain ? Mth.clamp(maxWind / 9.5D, 10.0D, 34.0D) : Mth.clamp(maxWind / 18.0D, 4.0D, 18.0D);
-            double height = Math.pow(level.random.nextDouble(), lowGroundBowl ? 2.2D : loftedCurtain ? 1.08D : 1.35D) * heightLimit;
+            boolean raining = level.isRainingAt(BlockPos.containing(groundSample.x, groundY + 1, groundSample.z));
+            float rainFactor = raining ? 0.50F : 1.0F;
+            double heightLimit = lowGroundBowl ? Mth.clamp(maxWind / 42.0D, 1.6D, 6.0D) : loftedCurtain ? Mth.clamp(maxWind / 9.5D, 10.0D, 34.0D) : Mth.clamp(maxWind / 18.0D, 4.0D, 18.0D);
+            if (water) {
+                heightLimit = Math.max(heightLimit, 6.0D);
+            }
+            double height = Math.pow(level.random.nextDouble(), lowGroundBowl ? 2.3D : loftedCurtain ? 1.08D : 1.35D) * heightLimit;
             Vec3 pos = new Vec3(groundSample.x, groundY + 0.35D + height, groundSample.z);
             double nearWall = Mth.clamp(1.0D - (distance - clearRadius) / ringWidth, 0.0D, 1.0D);
             double outerShelf = Mth.clamp((distance - clearRadius) / ringWidth, 0.0D, 1.0D);
             Vec3 radialOut = new Vec3(Math.cos(angle), 0.0D, Math.sin(angle));
             Vec3 tangent = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign);
-            Vec3 velocity = tangent.scale(0.030D + maxWind * 0.00042D + nearWall * 0.018D)
-                    .add(radialOut.scale(0.006D + outerShelf * 0.018D))
-                    .add(0.0D, lowGroundBowl ? 0.004D + nearWall * 0.012D : loftedCurtain ? 0.022D + nearWall * 0.030D : 0.014D + nearWall * 0.030D, 0.0D);
-            float scale = (float) Mth.clamp((lowGroundBowl ? 14.0D : loftedCurtain ? 12.0D : 8.0D) + ringWidth * 0.26D + outerShelf * 10.0D + level.random.nextDouble() * 11.0D, 8.0D, 42.0D);
-            float alpha = (float) Mth.clamp(((lowGroundBowl ? 0.40D : loftedCurtain ? 0.30D : 0.25D) + nearWall * 0.11D + outerShelf * 0.13D + maxWind / 1350.0D) * intensityScale, 0.20D, 0.58D);
+            Vec3 velocity = tangent.scale(0.040D + maxWind * 0.00052D + nearWall * 0.032D)
+                    .add(radialOut.scale(0.010D + outerShelf * 0.020D))
+                    .add(0.0D, lowGroundBowl ? 0.006D + nearWall * 0.014D : loftedCurtain ? 0.024D + nearWall * 0.032D : 0.016D + nearWall * 0.030D, 0.0D);
+            float scale = (float) Mth.clamp((lowGroundBowl ? 13.0D : loftedCurtain ? 10.0D : 7.0D) + ringWidth * 0.22D + outerShelf * 8.0D + level.random.nextDouble() * 10.0D, 7.0D, 40.0D);
+            float alpha = (float) Mth.clamp(((lowGroundBowl ? 0.34D : loftedCurtain ? 0.22D : 0.20D) + nearWall * 0.13D - outerShelf * 0.10D + maxWind / 1500.0D) * intensityScale * context.gust() * rainFactor, 0.12D, 0.52D);
             if (lowGroundBowl) {
-                scale = Mth.clamp(scale * 1.18F, 10.0F, 54.0F);
-                alpha = Mth.clamp(alpha + 0.08F, 0.24F, 0.68F);
+                scale = Mth.clamp(scale * 1.15F, 9.0F, 46.0F);
+                alpha = Mth.clamp(alpha + 0.07F, 0.16F, 0.60F);
             }
-            DustTone tone = lowGroundBowl ? tornadoFootTone(level, groundSample) : debrisTone(level, groundSample, false, loftedCurtain);
-            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 34 + level.random.nextInt(58));
+            if (water) {
+                scale *= 0.80F;
+            }
+            DustTone tone = toneFor(level, groundSample, lowGroundBowl, loftedCurtain, context);
+            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 30 + level.random.nextInt(52));
         }
     }
 
     private static void spawnDebrisCloudParticle(ClientLevel level, Vec3 pos, Vec3 velocity, float scale, float alpha, DustTone tone, int maxAge) {
+        spawnDustCloudParticle(level, pos, velocity, scale, alpha, tone, maxAge, ParticleTypes.POOF);
+    }
+
+    private static void spawnDustCloudParticle(ClientLevel level, Vec3 pos, Vec3 velocity, float scale, float alpha, DustTone tone, int maxAge, ParticleOptions fallback) {
         if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
             return;
         }
         debrisCloudSpawnedThisTick++;
-        if (!spawnWeather2Particle(level, pos, velocity, ParticleRegistry.cloud256, scale, tone.red(), tone.green(), tone.blue(), alpha, maxAge, 0.0F)) {
-            level.addParticle(ParticleTypes.POOF, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
+        if (ParticleRegistry.cloud256 == null) {
+            level.addParticle(fallback, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
+            return;
         }
+        EntityRotFX particle = new EntityRotFX(level, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
+        particle.setSprite(ParticleRegistry.cloud256);
+        particle.setScale(Mth.clamp(scale, 0.05F, 180.0F));
+        particle.setColor(tone.red(), tone.green(), tone.blue());
+        float clampedAlpha = Mth.clamp(alpha * 1.32F + 0.12F, 0.24F, 0.96F);
+        particle.setAlpha(clampedAlpha);
+        particle.setFullAlphaTarget(clampedAlpha);
+        particle.setTicksFadeInMax(Math.min(16.0F, maxAge * 0.30F));
+        particle.setTicksFadeOutMax(Math.max(10.0F, maxAge * 0.42F));
+        particle.setMaxAge(maxAge);
+        particle.setGravity(0.0F);
+        particle.setCanCollide(false);
+        particle.setFacePlayer(true);
+        particle.facePlayerYaw = true;
+        particle.isTransparent = true;
+        particle.renderOrder = 1;
+        particle.windWeight = LOCAL_PARTICLE_WIND_WEIGHT;
+        particle.spawnAsWeatherEffect();
     }
 
     private static void spawnSubVortexVisuals(ClientLevel level, StormObject storm, Vec3 playerPos) {
@@ -738,13 +824,7 @@ public final class ClientWeatherEffects {
     }
 
     private static void spawnSubVortexCloudParticle(ClientLevel level, Vec3 pos, Vec3 velocity, float scale, float alpha, DustTone tone, int maxAge) {
-        if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
-            return;
-        }
-        debrisCloudSpawnedThisTick++;
-        if (!spawnWeather2Particle(level, pos, velocity, ParticleRegistry.cloud256, scale, tone.red(), tone.green(), tone.blue(), alpha, maxAge, 0.0F)) {
-            level.addParticle(ParticleTypes.CLOUD, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
-        }
+        spawnDustCloudParticle(level, pos, velocity, scale, alpha, tone, maxAge, ParticleTypes.CLOUD);
     }
 
     private static void spawnHorizontalVortexVisuals(ClientLevel level, StormObject storm, Vec3 playerPos) {
@@ -1547,6 +1627,36 @@ public final class ClientWeatherEffects {
     }
 
     private record DustTone(float red, float green, float blue) {
+    }
+
+    private record DustCloudContext(boolean fire, boolean water, float gust) {
+        private static DustCloudContext forStorm(ClientLevel level, StormObject storm) {
+            double phase = (storm.ID % 90L) * 0.69D;
+            float gust = (float) (0.78D + 0.30D * Math.sin(level.getGameTime() * 0.07D + phase));
+            // Fire whirls are addon events on this branch, so StormObject vortices never render fire-toned dust here.
+            return new DustCloudContext(false, storm.attrib_waterSpout, gust);
+        }
+    }
+
+    private static DustTone toneFor(ClientLevel level, Vec3 pos, boolean lowGroundBowl, boolean loftedCurtain, DustCloudContext context) {
+        if (context.fire()) {
+            return fireDustTone(level);
+        }
+        if (context.water()) {
+            return waterDustTone();
+        }
+        return lowGroundBowl ? tornadoFootTone(level, pos) : debrisTone(level, pos, false, loftedCurtain);
+    }
+
+    private static DustTone fireDustTone(ClientLevel level) {
+        if (level.random.nextFloat() < 0.16F) {
+            return new DustTone(0.94F, 0.48F, 0.18F);
+        }
+        return new DustTone(0.26F, 0.23F, 0.21F);
+    }
+
+    private static DustTone waterDustTone() {
+        return new DustTone(0.58F, 0.66F, 0.74F);
     }
 
     private static final class PendingThunder {

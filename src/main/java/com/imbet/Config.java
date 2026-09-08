@@ -373,9 +373,9 @@ public final class Config {
         BUILDER.push("dynamics");
         DYNAMICS_ENABLED = BUILDER.comment("Enables unpredictable Weather2 tornado motion.")
                 .define("enabled", true);
-        TORNADO_WANDER_MAX_DEGREES = BUILDER.comment("Maximum random steering angle added to Weather2 tornado movement.")
+        TORNADO_WANDER_MAX_DEGREES = BUILDER.comment("Maximum continuous sinuous heading wander added to Weather2 tornado movement (used when atmospheric steering is off). Weaker and rope tornadoes wander up to this; violent wedges track much straighter.")
                 .defineInRange("tornadoWanderMaxDegrees", 38.0D, 0.0D, 120.0D);
-        TORNADO_WANDER_SMOOTHING = BUILDER.comment("How quickly tornadoes turn toward the next random steering target.")
+        TORNADO_WANDER_SMOOTHING = BUILDER.comment("Legacy smoothing rate for the old stepwise wander target; the continuous wander no longer uses it.")
                 .defineInRange("tornadoWanderSmoothing", 0.045D, 0.001D, 1.0D);
         TORNADO_WANDER_MIN_RETARGET_TICKS = BUILDER.defineInRange("tornadoWanderMinRetargetTicks", 60, 1, 20 * 60 * 10);
         TORNADO_WANDER_MAX_RETARGET_TICKS = BUILDER.defineInRange("tornadoWanderMaxRetargetTicks", 180, 1, 20 * 60 * 10);
@@ -428,7 +428,7 @@ public final class Config {
                 .defineInRange("atmosphericSteeringRightBiasDegrees", 15.0D, -90.0D, 90.0D);
         ATMOSPHERIC_STEERING_ENE_BIAS_STRENGTH = BUILDER.comment("Blends the rotated wind toward an east-northeast storm track. Set 0 for pure Weather2 wind-grid flow.")
                 .defineInRange("atmosphericSteeringEneBiasStrength", 0.55D, 0.0D, 1.0D);
-        ATMOSPHERIC_STEERING_WOBBLE_FRACTION = BUILDER.comment("Slow steering-current variability. This is deterministic meander, not per-tick random jitter; hurricanes use a stronger minimum.")
+        ATMOSPHERIC_STEERING_WOBBLE_FRACTION = BUILDER.comment("Slow steering-current variability. This is deterministic meander, not per-tick random jitter; hurricanes use a stronger minimum. Tornado meander scales with strength: violent wedges track straight (as low as ~0.4x), weak and rope tornadoes dance harder (up to ~1.5x).")
                 .defineInRange("atmosphericSteeringWobbleFraction", 0.32D, 0.0D, 1.5D);
         ATMOSPHERIC_STEERING_MIN_SPEED = BUILDER.comment("Minimum natural drift speed while atmospheric steering is active.")
                 .defineInRange("atmosphericSteeringMinSpeed", 0.055D, 0.0D, 2.0D);
@@ -707,8 +707,8 @@ public final class Config {
         SATELLITE_TORNADOES_ENABLED = BUILDER.define("enabled", true);
         SATELLITE_TORNADOES_REAL_CIRCULATION = BUILDER.comment("Models satellite tornadoes as addon-owned circulations with their own position, motion, windfield, and damage.")
                 .define("realCirculation", true);
-        SATELLITE_TORNADOES_MAX_ACTIVE = BUILDER.comment("Maximum active satellite tornadoes per parent tornado. Hard-capped to one in runtime so satellites stay rare and readable.")
-                .defineInRange("maxActive", 1, 0, 1);
+        SATELLITE_TORNADOES_MAX_ACTIVE = BUILDER.comment("Maximum active satellite tornadoes per parent tornado. The runtime count also scales with parent wind (one at 110+ mph, two at 160+, three at 210+). Satellites now form, wander, and spiral into the parent to be absorbed, so several stay readable.")
+                .defineInRange("maxActive", 2, 0, 4);
         SATELLITE_TORNADOES_MIN_PARENT_STAGE = BUILDER.defineInRange("minParentStage", 5, 4, 9);
         SATELLITE_TORNADOES_MAX_WIND_FRACTION = BUILDER.defineInRange("maxWindFraction", 0.60D, 0.05D, 1.0D);
         SATELLITE_TORNADOES_SPAWN_CHANCE = BUILDER.comment("Per-attempt satellite tornado chance. Runtime also caps this to a rare maximum for existing configs.")

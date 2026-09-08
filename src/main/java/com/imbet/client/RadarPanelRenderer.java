@@ -19,7 +19,7 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
 
     @Override
     public void render(RadarBlockEntity radar, float partialTick, PoseStack stack, MultiBufferSource buffer, int packedLight, int packedOverlay) {
-        if (!Config.RADAR_WORLD_PANEL_ENABLED.get()) {
+        if (!Config.RADAR_WORLD_PANEL_ENABLED.get() || RenderingCompat.isShaderPackActive()) {
             return;
         }
         VertexConsumer consumer = buffer.getBuffer(RadarShader.radarPanel());

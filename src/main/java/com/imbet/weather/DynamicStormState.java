@@ -113,9 +113,6 @@ public final class DynamicStormState {
     }
 
     void tickServer(ServerLevel level, StormObject storm, long gameTime) {
-        if (gameTime >= nextWanderRetargetTick) {
-            retargetWander(gameTime);
-        }
         if (gameTime >= nextWidthRetargetTick) {
             retargetWidth(level, storm, gameTime);
         }
@@ -149,7 +146,7 @@ public final class DynamicStormState {
             vortex.pulse += vortex.pulseRate;
         }
         for (TornadoCirculationState satellite : satelliteTornadoes) {
-            satellite.tickVisual(rotationDirection);
+            satellite.tickVisual(gameTime, rotationDirection);
         }
         if (mergeOrbitPartnerId != Long.MIN_VALUE) {
             mergeOrbitPhase = wrapDegrees(mergeOrbitPhase + mergeOrbitDirection * 4.5F);
@@ -214,9 +211,18 @@ public final class DynamicStormState {
         nextWidthRetargetTick = gameTime + nextIntInclusive(minTicks, maxTicks);
     }
 
-    void smooth() {
+    void smooth(long gameTime) {
         enforceExclusiveVisualTags();
-        wanderAngle += (targetWanderAngle - wanderAngle) * Config.TORNADO_WANDER_SMOOTHING.get().floatValue();
+        // Continuous sinuous heading drift instead of stepwise random retargets: tracks meander smoothly,
+        // and weak/rope tornadoes dance harder than violent wedges, which track nearly straight.
+        double phase = (stormId % 97L) * 0.271D;
+        double slow = Math.sin(gameTime * 0.0016D + phase) * 0.45D;
+        double medium = Math.sin(gameTime * 0.0043D + phase * 2.31D) * 0.28D;
+        double fast = Math.sin(gameTime * 0.0120D + phase * 1.63D) * 0.10D;
+        double curve = Math.sin(gameTime * 0.00011D + phase * 0.67D) * 0.17D;
+        double wanderRange = Config.TORNADO_WANDER_MAX_DEGREES.get();
+        double widthWeakness = Mth.clamp(1.0D - (damagePathWidth - 12.0D) / 450.0D, 0.0D, 1.0D);
+        wanderAngle = (float) ((slow + medium + fast + curve) * wanderRange * (0.35D + 0.65D * widthWeakness));
         widthMultiplier += (targetWidthMultiplier - widthMultiplier) * Config.TORNADO_WIDTH_SMOOTHING.get().floatValue();
         damagePathWidth += (targetDamagePathWidth - damagePathWidth) * Config.TORNADO_WIDTH_SMOOTHING.get().floatValue();
         visibleFunnelWidth += (targetVisibleFunnelWidth - visibleFunnelWidth) * Config.TORNADO_WIDTH_SMOOTHING.get().floatValue();
@@ -663,8 +669,11 @@ public final class DynamicStormState {
 
     void updateSatelliteTornadoes(long gameTime, int desiredMax, int parentStage, int minParentStage, float parentRadius, Vec3 parentPos, Vec3 parentMotion, double maxWindFraction) {
         expireSatelliteTornadoes(gameTime);
+        for (TornadoCirculationState satellite : satelliteTornadoes) {
+            satellite.tickServer(gameTime);
+        }
         steerSatelliteTornadoes(parentPos, parentMotion);
-        int activeLimit = Mth.clamp(desiredMax, 0, 1);
+        int activeLimit = Mth.clamp(desiredMax, 0, 4);
         while (satelliteTornadoes.size() > activeLimit) {
             satelliteTornadoes.remove(satelliteTornadoes.size() - 1);
         }
@@ -706,7 +715,7 @@ public final class DynamicStormState {
                 damageWidth,
                 visibleWidth,
                 windFraction,
-                true,
+                false,
                 gameTime,
                 gameTime + lifetime
         ));
@@ -1691,13 +1700,19 @@ public final class DynamicStormState {
         private double motionY;
         private double motionZ;
         private float orbitDegrees;
-        private final float orbitSpeedDegrees;
-        private final float orbitRadius;
+        private float orbitSpeedDegrees;
+        private float orbitRadius;
+        private float baseOrbitRadius;
+        private float baseOrbitSpeedDegrees;
         private float damagePathWidth;
         private float visibleFunnelWidth;
         private float coreRadius;
         private float radiusOfMaxWind;
+        private final float fullDamagePathWidth;
+        private final float fullVisibleFunnelWidth;
         private final float windFraction;
+        private float currentWindFraction;
+        private float lifecycle;
         private boolean touchedDown;
         private boolean absorbed;
         private final long spawnTick;
@@ -1716,21 +1731,69 @@ public final class DynamicStormState {
             this.orbitDegrees = orbitDegrees;
             this.orbitSpeedDegrees = orbitSpeedDegrees;
             this.orbitRadius = orbitRadius;
+            this.baseOrbitRadius = Math.max(6.0F, orbitRadius);
+            this.baseOrbitSpeedDegrees = Math.max(0.6F, orbitSpeedDegrees);
             this.damagePathWidth = damagePathWidth;
             this.visibleFunnelWidth = visibleFunnelWidth;
+            this.fullDamagePathWidth = damagePathWidth;
+            this.fullVisibleFunnelWidth = visibleFunnelWidth;
             this.coreRadius = Math.max(2.0F, damagePathWidth * 0.16F);
             this.radiusOfMaxWind = Math.max(3.0F, damagePathWidth * 0.28F);
             this.windFraction = windFraction;
+            this.currentWindFraction = windFraction;
             this.touchedDown = touchedDown;
             this.spawnTick = spawnTick;
             this.expireTick = expireTick;
         }
 
-        private void tickVisual(float rotationDirection) {
+        private void tickVisual(long gameTime, float rotationDirection) {
+            updateLifecycle(gameTime);
+            // Kepler-ish spin-up as the orbit tightens, with a slow speed wobble for organic motion.
+            float radiusScale = baseOrbitRadius / Math.max(4.0F, orbitRadius);
+            float speedWobble = 0.88F + 0.12F * (float) Math.sin(gameTime * 0.021D + id * 1.31D);
+            orbitSpeedDegrees = Mth.clamp(baseOrbitSpeedDegrees * (0.35F + 0.65F * radiusScale) * speedWobble, 0.6F, 14.0F);
+            // Orbit breathes: radius wanders organically and tightens as the vortex decays into the parent.
+            float wander = 0.82F + 0.18F * (float) Math.sin(gameTime * 0.013D + id * 1.7D);
+            float decayScale = 0.16F + 0.84F * lifecycle;
+            float targetRadius = Math.max(4.0F, baseOrbitRadius * wander * decayScale);
+            orbitRadius += (targetRadius - orbitRadius) * 0.02F;
             orbitDegrees = wrapOrbit(orbitDegrees + orbitSpeedDegrees * rotationDirection);
             motionX *= 0.82D;
             motionY *= 0.78D;
             motionZ *= 0.82D;
+        }
+
+        private void tickServer(long gameTime) {
+            updateLifecycle(gameTime);
+            float scale = Math.max(0.25F, lifecycle);
+            float targetDamage = Math.max(6.0F, fullDamagePathWidth * scale);
+            float targetVisible = Math.max(3.0F, fullVisibleFunnelWidth * scale);
+            damagePathWidth += (targetDamage - damagePathWidth) * 0.06F;
+            visibleFunnelWidth += (targetVisible - visibleFunnelWidth) * 0.06F;
+            coreRadius = Math.max(2.0F, damagePathWidth * 0.16F);
+            radiusOfMaxWind = Math.max(3.0F, damagePathWidth * 0.28F);
+            currentWindFraction = windFraction * Math.max(0.15F, lifecycle);
+            if (!touchedDown && lifecycle > 0.85F) {
+                touchedDown = true;
+            }
+        }
+
+        private void updateLifecycle(long gameTime) {
+            lifecycle = lifecycleAt(gameTime);
+        }
+
+        public float lifecycleAt(long gameTime) {
+            long lifetime = Math.max(1L, expireTick - spawnTick);
+            float formDuration = Math.min(Math.max(40.0F, lifetime * 0.14F), lifetime * 0.5F);
+            float decayDuration = Math.min(Math.max(60.0F, lifetime * 0.18F), lifetime * 0.5F);
+            float formPhase = Mth.clamp((float) (gameTime - spawnTick) / formDuration, 0.0F, 1.0F);
+            float remaining = Math.max(0.0F, (float) (expireTick - gameTime));
+            float decayPhase = 1.0F - Mth.clamp(remaining / decayDuration, 0.0F, 1.0F);
+            return Mth.clamp(Math.min(0.30F + 0.70F * smoothstep(formPhase), 1.0F - smoothstep(decayPhase)), 0.0F, 1.0F);
+        }
+
+        private static float smoothstep(float t) {
+            return t * t * (3.0F - 2.0F * t);
         }
 
         private void steerAroundParent(Vec3 parentPos, Vec3 parentMotion) {
@@ -1764,7 +1827,6 @@ public final class DynamicStormState {
             motionX = snapped ? (parentMotion == null ? 0.0D : parentMotion.x) : x - oldX;
             motionY = snapped ? (parentMotion == null ? 0.0D : parentMotion.y) : y - oldY;
             motionZ = snapped ? (parentMotion == null ? 0.0D : parentMotion.z) : z - oldZ;
-            touchedDown = true;
         }
 
         private void mergeFromSync(TornadoCirculationState incoming) {
@@ -1792,10 +1854,13 @@ public final class DynamicStormState {
             if (angularDelta > 90.0F) {
                 orbitDegrees = Mth.rotLerp(0.10F, orbitDegrees, incoming.orbitDegrees);
             }
+            orbitRadius = Mth.lerp(0.30F, orbitRadius, incoming.orbitRadius);
+            orbitSpeedDegrees = Mth.lerp(0.30F, orbitSpeedDegrees, incoming.orbitSpeedDegrees);
             damagePathWidth = Mth.lerp(0.35F, damagePathWidth, incoming.damagePathWidth);
             visibleFunnelWidth = Mth.lerp(0.35F, visibleFunnelWidth, incoming.visibleFunnelWidth);
             coreRadius = Mth.lerp(0.35F, coreRadius, incoming.coreRadius);
             radiusOfMaxWind = Mth.lerp(0.35F, radiusOfMaxWind, incoming.radiusOfMaxWind);
+            currentWindFraction = Mth.lerp(0.35F, currentWindFraction, incoming.currentWindFraction);
             touchedDown = touchedDown || incoming.touchedDown;
             absorbed = absorbed || incoming.absorbed;
         }
@@ -1833,7 +1898,11 @@ public final class DynamicStormState {
         }
 
         public float windFraction() {
-            return windFraction;
+            return currentWindFraction;
+        }
+
+        public float fullDamagePathWidth() {
+            return fullDamagePathWidth;
         }
 
         public float damagePathWidth() {
@@ -1899,11 +1968,16 @@ public final class DynamicStormState {
             tag.putFloat("OrbitDegrees", orbitDegrees);
             tag.putFloat("OrbitSpeedDegrees", orbitSpeedDegrees);
             tag.putFloat("OrbitRadius", orbitRadius);
+            tag.putFloat("BaseOrbitRadius", baseOrbitRadius);
+            tag.putFloat("BaseOrbitSpeedDegrees", baseOrbitSpeedDegrees);
             tag.putFloat("DamagePathWidth", damagePathWidth);
             tag.putFloat("VisibleFunnelWidth", visibleFunnelWidth);
+            tag.putFloat("FullDamagePathWidth", fullDamagePathWidth);
+            tag.putFloat("FullVisibleFunnelWidth", fullVisibleFunnelWidth);
             tag.putFloat("CoreRadius", coreRadius);
             tag.putFloat("RadiusOfMaxWind", radiusOfMaxWind);
             tag.putFloat("WindFraction", windFraction);
+            tag.putFloat("CurrentWindFraction", currentWindFraction);
             tag.putBoolean("TouchedDown", touchedDown);
             tag.putBoolean("Absorbed", absorbed);
             tag.putLong("SpawnTick", spawnTick);
@@ -1914,6 +1988,12 @@ public final class DynamicStormState {
         private static TornadoCirculationState load(CompoundTag tag) {
             float damageWidth = tag.contains("DamagePathWidth") ? tag.getFloat("DamagePathWidth") : Math.max(12.0F, tag.getFloat("OrbitRadius") * 0.55F);
             float visibleWidth = tag.contains("VisibleFunnelWidth") ? tag.getFloat("VisibleFunnelWidth") : Math.max(5.0F, damageWidth * Math.max(0.25F, tag.getFloat("WidthMultiplier")));
+            float fullDamage = tag.contains("FullDamagePathWidth") ? tag.getFloat("FullDamagePathWidth") : damageWidth;
+            float fullVisible = tag.contains("FullVisibleFunnelWidth") ? tag.getFloat("FullVisibleFunnelWidth") : visibleWidth;
+            float orbitRadius = tag.getFloat("OrbitRadius");
+            float orbitSpeed = tag.getFloat("OrbitSpeedDegrees");
+            float baseOrbitRadius = tag.contains("BaseOrbitRadius") ? tag.getFloat("BaseOrbitRadius") : Math.max(6.0F, orbitRadius);
+            float baseOrbitSpeed = tag.contains("BaseOrbitSpeedDegrees") ? tag.getFloat("BaseOrbitSpeedDegrees") : Math.max(0.6F, orbitSpeed);
             TornadoCirculationState state = new TornadoCirculationState(
                     tag.getLong("Id"),
                     tag.contains("X") ? tag.getDouble("X") : Double.NaN,
@@ -1923,17 +2003,24 @@ public final class DynamicStormState {
                     tag.getDouble("MotionY"),
                     tag.getDouble("MotionZ"),
                     tag.getFloat("OrbitDegrees"),
-                    tag.getFloat("OrbitSpeedDegrees"),
-                    tag.getFloat("OrbitRadius"),
-                    damageWidth,
-                    visibleWidth,
+                    orbitSpeed,
+                    orbitRadius,
+                    fullDamage,
+                    fullVisible,
                     tag.getFloat("WindFraction"),
                     tag.contains("TouchedDown") ? tag.getBoolean("TouchedDown") : true,
                     tag.getLong("SpawnTick"),
                     tag.getLong("ExpireTick")
             );
+            state.damagePathWidth = damageWidth;
+            state.visibleFunnelWidth = visibleWidth;
+            state.orbitRadius = orbitRadius;
+            state.orbitSpeedDegrees = orbitSpeed;
+            state.baseOrbitRadius = baseOrbitRadius;
+            state.baseOrbitSpeedDegrees = baseOrbitSpeed;
             state.coreRadius = tag.contains("CoreRadius") ? tag.getFloat("CoreRadius") : Math.max(2.0F, damageWidth * 0.16F);
             state.radiusOfMaxWind = tag.contains("RadiusOfMaxWind") ? tag.getFloat("RadiusOfMaxWind") : Math.max(3.0F, damageWidth * 0.28F);
+            state.currentWindFraction = tag.contains("CurrentWindFraction") ? tag.getFloat("CurrentWindFraction") : state.windFraction;
             state.absorbed = tag.getBoolean("Absorbed");
             return state;
         }

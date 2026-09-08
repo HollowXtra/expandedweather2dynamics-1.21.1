@@ -68,7 +68,7 @@ public final class TornadoMergeService {
                 continue;
             }
             satellite.absorb();
-            state.recordMerge(level.getGameTime(), satellite.damagePathWidth(), satellite.windFraction());
+            state.recordMerge(level.getGameTime(), Math.max(satellite.damagePathWidth(), satellite.fullDamagePathWidth() * 0.45F), satellite.windFraction());
             TornadoTrackService.recordSatelliteMerge(level, storm.ID, satellite.id());
         }
     }

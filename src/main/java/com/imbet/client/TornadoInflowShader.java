@@ -62,6 +62,10 @@ public final class TornadoInflowShader {
                 || !Config.TORNADO_IMMERSION_INFLOW_SHADER_OVERLAY.get()) {
             return;
         }
+        // With an Iris shaderpack active the custom program is replaced by Iris's fallback; skip rather than render wrong.
+        if (RenderingCompat.isShaderPackActive()) {
+            return;
+        }
         Minecraft minecraft = Minecraft.getInstance();
         Player player = minecraft.player;
         if (minecraft.level == null || player == null) {

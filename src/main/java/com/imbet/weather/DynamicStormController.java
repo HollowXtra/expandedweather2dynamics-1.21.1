@@ -62,7 +62,7 @@ public final class DynamicStormController {
             state.tickVisual(gameTime);
             state.steerSatelliteTornadoes(storm.pos, storm.motion);
         }
-        state.smooth();
+        state.smooth(gameTime);
         SupercellStructureService.tick(world, storm, state);
         state.setSubtype(StormClassifier.classify(storm, state));
         if (state.isAbsorbedOrDecaying()) {
@@ -980,8 +980,19 @@ public final class DynamicStormController {
             state.updateSatelliteTornadoes(0L, 0, storm == null ? 0 : storm.levelCurIntensityStage, Config.SATELLITE_TORNADOES_MIN_PARENT_STAGE.get(), 0.0F, storm == null ? null : storm.pos, storm == null ? null : storm.motion, Config.SATELLITE_TORNADOES_MAX_WIND_FRACTION.get());
             return;
         }
-        int configuredMax = Config.SATELLITE_TORNADOES_MAX_ACTIVE.get();
-        int desiredMax = Mth.clamp(configuredMax, 0, 1);
+        int configuredMax = Mth.clamp(Config.SATELLITE_TORNADOES_MAX_ACTIVE.get(), 0, 4);
+        double maxWind = TornadoWindField.maxWindMph(storm);
+        int desiredMax = 0;
+        if (maxWind >= 110.0D) {
+            desiredMax = 1;
+        }
+        if (maxWind >= 160.0D) {
+            desiredMax = 2;
+        }
+        if (maxWind >= 210.0D) {
+            desiredMax = 3;
+        }
+        desiredMax = Math.min(desiredMax, configuredMax);
         int minParentStage = Mth.clamp(Math.min(Config.SATELLITE_TORNADOES_MIN_PARENT_STAGE.get(), StormObject.STATE_STAGE1), StormObject.STATE_FORMING, StormObject.STATE_STAGE5);
         state.updateSatelliteTornadoes(
                 storm.manager.getWorld().getGameTime(),

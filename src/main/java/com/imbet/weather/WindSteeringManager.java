@@ -72,6 +72,14 @@ public final class WindSteeringManager {
         double windMagnitude = globalWindVector(storm).horizontalDistance();
         double targetSpeed = windMagnitude * Config.ATMOSPHERIC_STEERING_COEFFICIENT.get();
         targetSpeed *= speedPulse(storm.manager.getWorld().getGameTime(), storm.ID, isTropicalSteeringStorm(storm));
+        double weakness = tornadoWeakness(storm);
+        if (weakness > 0.0D) {
+            // Weak and rope tornadoes surge forward and nearly stall; violent tornadoes hold a steadier pace.
+            long gameTime = storm.manager.getWorld().getGameTime();
+            double erratic = weakness * (0.22D * Math.sin(gameTime * 0.0039D + storm.ID * 0.53D)
+                    + 0.14D * Math.sin(gameTime * 0.00052D + storm.ID * 0.37D));
+            targetSpeed *= Mth.clamp(1.0D + erratic, 0.45D, 1.55D);
+        }
         targetSpeed = Mth.clamp(targetSpeed, Config.ATMOSPHERIC_STEERING_MIN_SPEED.get(), Config.ATMOSPHERIC_STEERING_MAX_SPEED.get());
         return steeringDirection(storm).scale(targetSpeed);
     }
@@ -143,11 +151,13 @@ public final class WindSteeringManager {
     private static Vec3 applySteeringMeander(Vec3 direction, long gameTime, long seed, double variability) {
         double amount = Math.max(MIN_STEERING_VARIABILITY, Mth.clamp(variability, 0.0D, 1.5D));
         double phase = seed * 0.173D;
-        double slow = Math.sin(gameTime * 0.00135D + phase) * 0.56D;
-        double medium = Math.sin(gameTime * 0.00310D + phase * 2.17D) * 0.31D;
-        double pulse = Math.sin(gameTime * 0.00048D + phase * 0.41D) * 0.13D;
+        double slow = Math.sin(gameTime * 0.00135D + phase) * 0.50D;
+        double medium = Math.sin(gameTime * 0.00310D + phase * 2.17D) * 0.28D;
+        double pulse = Math.sin(gameTime * 0.00048D + phase * 0.41D) * 0.12D;
+        // Very long-period track curvature: paths hook and curve with the parent storm over tens of minutes.
+        double curve = Math.sin(gameTime * 0.00012D + phase * 0.73D) * 0.30D;
         double maxDegrees = Mth.clamp(46.0D * amount, 4.0D, 72.0D);
-        return rotateHorizontal(direction, (slow + medium + pulse) * maxDegrees).normalize();
+        return rotateHorizontal(direction, (slow + medium + pulse + curve) * maxDegrees).normalize();
     }
 
     private static Vec3 rotateHorizontal(Vec3 vector, double degrees) {
@@ -182,7 +192,27 @@ public final class WindSteeringManager {
     }
 
     private static double steeringVariability(StormObject storm) {
-        return Math.max(MIN_STEERING_VARIABILITY, Mth.clamp(Config.ATMOSPHERIC_STEERING_WOBBLE_FRACTION.get(), 0.0D, 1.5D));
+        double base = Mth.clamp(Config.ATMOSPHERIC_STEERING_WOBBLE_FRACTION.get(), 0.0D, 1.5D);
+        if (storm == null || isTropicalSteeringStorm(storm)) {
+            return Math.max(MIN_STEERING_VARIABILITY, base);
+        }
+        double weakness = tornadoWeakness(storm);
+        if (weakness <= 0.0D) {
+            return Math.max(MIN_STEERING_VARIABILITY, base);
+        }
+        // Weak and rope tornadoes dance harder around the steering flow; violent wedges track nearly straight.
+        return Math.max(MIN_STEERING_VARIABILITY, Mth.clamp(base * (0.38D + 1.15D * weakness), 0.0D, 1.5D));
+    }
+
+    private static double tornadoWeakness(StormObject storm) {
+        if (storm == null || storm.attrib_waterSpout || !DynamicStormController.isDynamicVortex(storm) || !storm.isTornadoFormingOrGreater()) {
+            return 0.0D;
+        }
+        double maxWind = TornadoWindField.maxWindMph(storm);
+        double width = DynamicStormController.stateFor(storm).damagePathWidth();
+        double stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
+        double strength = Mth.clamp(0.18D + maxWind / 320.0D + width / 420.0D + stage * 0.15D, 0.05D, 1.0D);
+        return 1.0D - strength;
     }
 
     private static double speedPulse(long gameTime, long seed, boolean tropical) {

@@ -62,7 +62,12 @@ public final class FoliageWindController {
     }
 
     public static boolean enabled() {
-        return Config.VISUALS_ENABLED.get() && Config.FOLIAGE_WIND_SHADER.get();
+        if (!Config.VISUALS_ENABLED.get() || !Config.FOLIAGE_WIND_SHADER.get()) {
+            return false;
+        }
+        // Sodium renders chunks with its own shaders (our rendertype_cutout override never runs on them),
+        // and an active Iris shaderpack replaces the vanilla core programs the sway shader hooks into.
+        return !RenderingCompat.isSodiumLoaded() && !RenderingCompat.isShaderPackActive();
     }
 
     private static WindCandidate sampleWind(ClientLevel level, Player player) {
