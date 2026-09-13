@@ -13,7 +13,10 @@
   "client": [
     "BlockRenderDispatcherMixin",
     "EntityRotFXPauseMixin",
-    "LevelRendererMixin"
+    "GameRendererMixin",
+    "LevelRendererMixin",
+    "LivingEntityRendererMixin",
+    "StormObjectCloudDeckMixin"
   ],
   "injectors": {
     "defaultRequire": 1

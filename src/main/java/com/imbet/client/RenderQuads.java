@@ -51,17 +51,6 @@ final class RenderQuads {
         consumer.addVertex(pose, x4, y, z4).setColor(r, g, b, a);
     }
 
-    static void topPolyQuadUv(VertexConsumer consumer, PoseStack.Pose pose, float x1, float z1, float x2, float z2, float x3, float z3, float x4, float z4, float y, int color) {
-        int a = color >>> 24 & 255;
-        int r = color >>> 16 & 255;
-        int g = color >>> 8 & 255;
-        int b = color & 255;
-        consumer.addVertex(pose, x1, y, z1).setUv(0.0F, 0.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, x2, y, z2).setUv(1.0F, 0.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, x3, y, z3).setUv(1.0F, 1.0F).setColor(r, g, b, a);
-        consumer.addVertex(pose, x4, y, z4).setUv(0.0F, 1.0F).setColor(r, g, b, a);
-    }
-
     static void topLine(VertexConsumer consumer, PoseStack.Pose pose, float x1, float z1, float x2, float z2, float halfWidth, float y, int color) {
         float dx = x2 - x1;
         float dz = z2 - z1;
@@ -100,6 +89,28 @@ final class RenderQuads {
         consumer.addVertex(pose, x1 - px, y, z1 - pz).setUv(0.0F, 1.0F).setColor(r, g, b, a);
         consumer.addVertex(pose, x2 - px, y, z2 - pz).setUv(1.0F, 1.0F).setColor(r, g, b, a);
         consumer.addVertex(pose, x2 + px, y, z2 + pz).setUv(1.0F, 0.0F).setColor(r, g, b, a);
+    }
+
+    /**
+     * A vertical rectangle standing on the line from one point to another, spanning a height range.
+     *
+     * <p>The wall-shaped counterpart to {@link #topLine}: meant for the colour-only render types, which
+     * draw without back-face culling, so one winding is visible from both sides and no normals or
+     * lightmap are needed. Use it for anything that has to read from the side rather than from above.
+     */
+    static void ribbon(VertexConsumer consumer, PoseStack.Pose pose,
+                       float x1, float z1, float x2, float z2, float y0, float y1, int color) {
+        if (Math.abs(x1 - x2) < 1.0E-5F && Math.abs(z1 - z2) < 1.0E-5F) {
+            return;
+        }
+        int a = color >>> 24 & 255;
+        int r = color >>> 16 & 255;
+        int g = color >>> 8 & 255;
+        int b = color & 255;
+        consumer.addVertex(pose, x1, y0, z1).setColor(r, g, b, a);
+        consumer.addVertex(pose, x2, y0, z2).setColor(r, g, b, a);
+        consumer.addVertex(pose, x2, y1, z2).setColor(r, g, b, a);
+        consumer.addVertex(pose, x1, y1, z1).setColor(r, g, b, a);
     }
 
     static void topRotatedQuadUv(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float halfX, float halfZ, float angle, float y, int color) {

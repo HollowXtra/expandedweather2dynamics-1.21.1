@@ -21,6 +21,13 @@ public class SpcRiskBlockEntity extends BlockEntity {
     private SpcRisk tornado = SpcRisk.NONE;
     private SpcRisk wind = SpcRisk.NONE;
     private SpcRisk hail = SpcRisk.NONE;
+    private int tornadoProbability;
+    private int windProbability;
+    private int hailProbability;
+    private int tornadoCig;
+    private int windCig;
+    private int hailCig;
+    private String issuance = "D1 0600Z";
     private String hazard = "None";
     private int stormCount;
     private int severeCount;
@@ -76,6 +83,55 @@ public class SpcRiskBlockEntity extends BlockEntity {
         return hazard;
     }
 
+    /** The issuance in force, e.g. "D1 1630Z". */
+    public String issuance() {
+        return issuance;
+    }
+
+    /** The issued probability level for the mode this panel is showing. */
+    public int probabilityForMode() {
+        return switch (mode) {
+            case 1 -> tornadoProbability;
+            case 2 -> windProbability;
+            case 3 -> hailProbability;
+            default -> 0;
+        };
+    }
+
+    /** The conditional intensity group for the mode this panel is showing. */
+    public int cigForMode() {
+        return switch (mode) {
+            case 1 -> tornadoCig;
+            case 2 -> windCig;
+            case 3 -> hailCig;
+            default -> 0;
+        };
+    }
+
+    public int tornadoProbability() {
+        return tornadoProbability;
+    }
+
+    public int windProbability() {
+        return windProbability;
+    }
+
+    public int hailProbability() {
+        return hailProbability;
+    }
+
+    public int tornadoCig() {
+        return tornadoCig;
+    }
+
+    public int windCig() {
+        return windCig;
+    }
+
+    public int hailCig() {
+        return hailCig;
+    }
+
     public int stormCount() {
         return stormCount;
     }
@@ -112,6 +168,13 @@ public class SpcRiskBlockEntity extends BlockEntity {
                 || tornado != outlook.tornado()
                 || wind != outlook.wind()
                 || hail != outlook.hail()
+                || tornadoProbability != outlook.tornadoProbability()
+                || windProbability != outlook.windProbability()
+                || hailProbability != outlook.hailProbability()
+                || tornadoCig != outlook.tornadoCig()
+                || windCig != outlook.windCig()
+                || hailCig != outlook.hailCig()
+                || !issuance.equals(outlook.issuance())
                 || !hazard.equals(outlook.hazard())
                 || stormCount != outlook.stormCount()
                 || severeCount != outlook.severeCount()
@@ -120,6 +183,13 @@ public class SpcRiskBlockEntity extends BlockEntity {
         tornado = outlook.tornado();
         wind = outlook.wind();
         hail = outlook.hail();
+        tornadoProbability = outlook.tornadoProbability();
+        windProbability = outlook.windProbability();
+        hailProbability = outlook.hailProbability();
+        tornadoCig = outlook.tornadoCig();
+        windCig = outlook.windCig();
+        hailCig = outlook.hailCig();
+        issuance = outlook.issuance();
         hazard = outlook.hazard();
         stormCount = outlook.stormCount();
         severeCount = outlook.severeCount();
@@ -149,6 +219,13 @@ public class SpcRiskBlockEntity extends BlockEntity {
         tag.putString("Tornado", tornado.name());
         tag.putString("Wind", wind.name());
         tag.putString("Hail", hail.name());
+        tag.putInt("TornadoProbability", tornadoProbability);
+        tag.putInt("WindProbability", windProbability);
+        tag.putInt("HailProbability", hailProbability);
+        tag.putInt("TornadoCig", tornadoCig);
+        tag.putInt("WindCig", windCig);
+        tag.putInt("HailCig", hailCig);
+        tag.putString("Issuance", issuance);
         tag.putString("Hazard", hazard);
         tag.putInt("StormCount", stormCount);
         tag.putInt("SevereCount", severeCount);
@@ -164,6 +241,13 @@ public class SpcRiskBlockEntity extends BlockEntity {
         tornado = readRisk(tag, "Tornado");
         wind = readRisk(tag, "Wind");
         hail = readRisk(tag, "Hail");
+        tornadoProbability = tag.getInt("TornadoProbability");
+        windProbability = tag.getInt("WindProbability");
+        hailProbability = tag.getInt("HailProbability");
+        tornadoCig = tag.getInt("TornadoCig");
+        windCig = tag.getInt("WindCig");
+        hailCig = tag.getInt("HailCig");
+        issuance = tag.contains("Issuance") ? tag.getString("Issuance") : "D1 0600Z";
         hazard = tag.contains("Hazard") ? tag.getString("Hazard") : "None";
         stormCount = tag.getInt("StormCount");
         severeCount = tag.getInt("SevereCount");

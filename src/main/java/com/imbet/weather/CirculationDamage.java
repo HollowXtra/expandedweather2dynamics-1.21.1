@@ -24,7 +24,12 @@ public final class CirculationDamage {
             return;
         }
         if (Config.MULTIVORTEX_ENABLED.get()) {
+            long gameTime = level.getGameTime();
             for (DynamicStormState.SubVortex vortex : state.subVortices()) {
+                // A descending breakdown bubble only damages once it reaches the surface circulation.
+                if (!vortex.isGroundContact(gameTime)) {
+                    continue;
+                }
                 Vec3 center = TornadoWindField.subVortexGroundCenter(level, parent, vortex, parent.pos.y);
                 applySubVortexEntityWind(level, parent, vortex, center);
                 applySubVortexBlockDamage(level, parent, vortex, center);
@@ -43,7 +48,9 @@ public final class CirculationDamage {
     }
 
     private static void applySubVortexEntityWind(ServerLevel level, StormObject parent, DynamicStormState.SubVortex vortex, Vec3 center) {
-        double radius = Math.max(10.0D, DynamicStormController.baseRadiusForWind(parent) * Math.max(0.24D, vortex.radiusFraction()) * 1.35D);
+        // Peripheral vortices sweep a much wider, weaker swath; inner-core spots a tight vicious one.
+        double radius = Math.max(10.0D, DynamicStormController.baseRadiusForWind(parent)
+                * Math.max(0.24D, vortex.radiusFraction()) * 1.35D * vortex.type().damageScale());
         AABB box = new AABB(center.x - radius, center.y - 10.0D, center.z - radius, center.x + radius, center.y + 72.0D, center.z + radius);
         for (Entity entity : level.getEntities((Entity) null, box, entity -> entity.isAlive())) {
             if (entity instanceof Player player && player.isCreative()) {
@@ -63,7 +70,8 @@ public final class CirculationDamage {
         if (cap <= 0 || level.getGameTime() % 2L != 0L) {
             return;
         }
-        double radius = Mth.clamp(DynamicStormController.baseRadiusForWind(parent) * Math.max(0.24D, vortex.radiusFraction()) * 0.72D, 4.0D, 26.0D);
+        double radius = Mth.clamp(DynamicStormController.baseRadiusForWind(parent)
+                * Math.max(0.24D, vortex.radiusFraction()) * 0.72D * vortex.type().damageScale(), 3.0D, 32.0D);
         double vortexMaxWind = DynamicStormController.subVortexWindMph(parent, vortex);
         int changed = 0;
         int attempts = Math.max(8, cap * 4);
@@ -101,7 +109,10 @@ public final class CirculationDamage {
                 continue;
             }
             if (blockState.is(Blocks.GRASS_BLOCK) || blockState.is(Blocks.DIRT) || blockState.is(Blocks.COARSE_DIRT) || blockState.is(Blocks.FARMLAND) || blockState.is(Blocks.PODZOL) || blockState.is(Blocks.MYCELIUM)) {
-                BlockState replacement = mph >= 165.0D ? Blocks.COARSE_DIRT.defaultBlockState() : Blocks.DIRT_PATH.defaultBlockState();
+                BlockState replacement = scourReplacement(level, pos, mph);
+                if (replacement == null) {
+                    continue;
+                }
                 if (!blockState.is(replacement.getBlock()) && BlockGrabSafety.safeSetBlock(level, pos, replacement, Block.UPDATE_ALL)) {
                     changed++;
                 }
@@ -177,7 +188,10 @@ public final class CirculationDamage {
                 continue;
             }
             if (state.is(Blocks.GRASS_BLOCK) || state.is(Blocks.DIRT) || state.is(Blocks.COARSE_DIRT) || state.is(Blocks.FARMLAND) || state.is(Blocks.PODZOL)) {
-                BlockGrabSafety.safeSetBlock(level, pos, Blocks.DIRT_PATH.defaultBlockState(), 3);
+                BlockState replacement = scourReplacement(level, pos, mph);
+                if (replacement != null) {
+                    BlockGrabSafety.safeSetBlock(level, pos, replacement, 3);
+                }
                 continue;
             }
             float hardness = block.destroySpeed();
@@ -186,6 +200,23 @@ public final class CirculationDamage {
                 BlockGrabSafety.safeDestroyBlock(level, pos, false);
             }
         }
+    }
+
+    /**
+     * Wind-tiered soil scouring, matching the main swath: light winds flatten to
+     * a path, violent circulations expose coarse earth or scour the topsoil off.
+     */
+    private static BlockState scourReplacement(ServerLevel level, BlockPos pos, double mph) {
+        if (Config.DAMAGE_SCOURING_EXCAVATION.get() && mph >= 185.0D) {
+            BlockState below = level.getBlockState(pos.below());
+            if (!below.isAir() && below.getFluidState().isEmpty() && !below.is(Blocks.BEDROCK)) {
+                return Blocks.AIR.defaultBlockState(); // topsoil scoured clean off
+            }
+        }
+        if (mph >= 150.0D) {
+            return level.random.nextFloat() < 0.30F ? Blocks.ROOTED_DIRT.defaultBlockState() : Blocks.COARSE_DIRT.defaultBlockState();
+        }
+        return Blocks.DIRT_PATH.defaultBlockState();
     }
 
     private static boolean canEdit(BlockGrabSafety.BlockSample sample) {

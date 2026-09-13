@@ -4,6 +4,7 @@ import com.imbet.Config;
 import com.imbet.radar.ClientRadarStore;
 import com.imbet.radar.RadarBlockEntity;
 import com.imbet.radar.RadarStormSnapshot;
+import com.imbet.weather.SpcRisk;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -306,7 +307,9 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
     }
 
     private static int riskColor(RadarStormSnapshot storm) {
-        return switch (Mth.clamp(storm.severity(), 0, 6)) {
+        return switch (Mth.clamp(storm.severity(), 0, SpcRisk.maxSeverity())) {
+            case 8 -> withAlpha(0xE9D9FF, 236);
+            case 7 -> withAlpha(0x9B1FE0, 230);
             case 6 -> withAlpha(0xFF5BFF, 226);
             case 5 -> withAlpha(0xE83B2F, 220);
             case 4 -> withAlpha(0xF08E24, 214);

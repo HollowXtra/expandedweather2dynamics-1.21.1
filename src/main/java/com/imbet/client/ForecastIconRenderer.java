@@ -784,20 +784,20 @@ public final class ForecastIconRenderer {
         ForecastRiskSnapshot safe = risk == null ? ForecastRiskSnapshot.EMPTY : risk;
         if (outbreakPotential(safe, storms)) {
             return new String[]{
-                    "SPC Risk " + safe.categoricalLabel(),
+                    "SPC " + safe.categoricalLabel() + " " + safe.issuance(),
                     "OUTBREAK SETUP",
-                    "TOR " + safe.tornadoLabel() + " / WIND " + safe.windLabel(),
-                    "HAIL " + safe.hailLabel() + " / max " + Math.round(safe.maxWindMph()) + " MPH",
+                    safe.tornadoLabel() + " / " + safe.windLabel() + " / " + safe.hailLabel(),
+                    safe.productLine(),
                     safe.hazard(),
-                    safe.stormCount() + " storms / " + safe.severeCount() + " severe"
+                    safe.stormCount() + " storms / " + safe.severeCount() + " severe, max " + Math.round(safe.maxWindMph()) + " MPH"
             };
         }
         return new String[]{
-                "SPC Risk " + safe.categoricalLabel(),
-                "TOR " + safe.tornadoLabel() + " / WIND " + safe.windLabel(),
-                "HAIL " + safe.hailLabel() + " / max " + Math.round(safe.maxWindMph()) + " MPH",
+                "SPC " + safe.categoricalLabel() + " " + safe.issuance(),
+                safe.tornadoLabel() + " / " + safe.windLabel() + " / " + safe.hailLabel(),
+                safe.productLine(),
                 safe.hazard(),
-                safe.stormCount() + " storms / " + safe.severeCount() + " severe"
+                safe.stormCount() + " storms / " + safe.severeCount() + " severe, max " + Math.round(safe.maxWindMph()) + " MPH"
         };
     }
 
@@ -852,6 +852,9 @@ public final class ForecastIconRenderer {
         }
         if (label.contains("hurricane")) {
             return "Hurricane";
+        }
+        if (label.contains("cyclone")) {
+            return "Cyclone";
         }
         if (label.contains("squall")) {
             return "Squall Line";

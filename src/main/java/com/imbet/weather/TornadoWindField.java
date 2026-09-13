@@ -5,10 +5,53 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
+import weather2.ServerTickHandler;
+import weather2.weathersystem.WeatherManagerServer;
 import weather2.weathersystem.storm.StormObject;
+import weather2.weathersystem.storm.WeatherObject;
 
 public final class TornadoWindField {
+    /** Storms further than this from the sample point contribute nothing to the local wind. */
+    private static final double STORM_SAMPLE_RANGE_BLOCKS = 512.0D;
+
     private TornadoWindField() {
+    }
+
+    /**
+     * Strongest wind at a point from every source the addon models together: ambient addon events
+     * (dust devils, landspouts, squall lines, cyclones), each nearby Weather2 storm's tornado
+     * windfield, and that storm's supercell structure wind.
+     *
+     * <p>Shared by the anemometer and the weather balloon so every instrument in the addon reads the
+     * same wind instead of each one growing its own slightly different sampling loop. Storms already
+     * absorbed or decaying are skipped, matching the rest of the storm code.
+     */
+    public static WindSample sampleStrongest(Level level, Vec3 position) {
+        if (level == null || position == null) {
+            return WindSample.CALM;
+        }
+        WindSample strongest = AddonWeatherEventService.sampleWind(level, position);
+        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
+        if (manager == null) {
+            return strongest;
+        }
+        for (WeatherObject object : manager.getStormObjects()) {
+            if (!(object instanceof StormObject storm) || storm.pos == null) {
+                continue;
+            }
+            if (storm.pos.distanceTo(position) > STORM_SAMPLE_RANGE_BLOCKS || DynamicStormController.isAbsorbedOrDecaying(storm)) {
+                continue;
+            }
+            WindSample tornado = sample(storm, level, position);
+            if (tornado.speedMph() > strongest.speedMph()) {
+                strongest = tornado;
+            }
+            WindSample supercell = SupercellStructureService.sampleWind(storm, level, position);
+            if (supercell.speedMph() > strongest.speedMph()) {
+                strongest = supercell;
+            }
+        }
+        return strongest;
     }
 
     public static WindSample sample(StormObject storm, Level level, Vec3 position) {
@@ -31,8 +74,18 @@ public final class TornadoWindField {
             tangentialMph = maxWindMph * Math.pow(radiusMaxWind / radius, 0.72D);
         }
 
+        // A ground swarm barely puts its parent circulation on the ground: the condensation stops short
+        // and the violent surfaces are the sub-vortices turning underneath it. So the parent's broad
+        // swath is weakened here, and the swarm's own contributions below are what scour the ground
+        // in patches. The storm's reported strength is untouched - radar still sees the parent.
+        double parentSurfaceFraction = state.groundSwarmActive()
+                ? Mth.clamp(Config.MULTIVORTEX_GROUND_SWARM_PARENT_WIND_FRACTION.get(), 0.05D, 1.0D)
+                : 1.0D;
+        tangentialMph *= parentSurfaceFraction;
         double inflowMph = tangentialMph * Config.WINDFIELD_RADIAL_INFLOW_FRACTION.get();
-        double verticalMph = maxWindMph * Config.WINDFIELD_VERTICAL_LIFT_FRACTION.get() * Mth.clamp((float) (1.0D - radius / (baseRadius * 1.8D)), 0.0F, 1.0F);
+        double verticalMph = maxWindMph * Config.WINDFIELD_VERTICAL_LIFT_FRACTION.get()
+                * Mth.clamp((float) (1.0D - radius / (baseRadius * 1.8D)), 0.0F, 1.0F)
+                * parentSurfaceFraction;
 
         double rotationSign = DynamicStormController.rotationSign(storm);
         Vec3 radialOut = fromCenter.scale(1.0D / radius);
@@ -41,12 +94,17 @@ public final class TornadoWindField {
         Vec3 mphVector = tangent.scale(tangentialMph).add(inward.scale(inflowMph)).add(0.0D, verticalMph, 0.0D);
         double strongestLocalMph = mphVector.length();
 
+        long subVortexGameTime = level == null ? 0L : level.getGameTime();
         for (DynamicStormState.SubVortex vortex : state.subVortices()) {
+            // A breakdown bubble contributes nothing to the surface wind while it is still aloft.
+            if (!vortex.isGroundContact(subVortexGameTime)) {
+                continue;
+            }
             Vec3 groundedCenter = subVortexGroundCenter(level, storm, vortex, position.y);
             Vec3 vortexCenter = new Vec3(groundedCenter.x, position.y, groundedCenter.z);
             Vec3 fromSub = new Vec3(position.x - vortexCenter.x, 0.0D, position.z - vortexCenter.z);
             double subRadius = Math.max(0.35D, Math.sqrt(fromSub.x * fromSub.x + fromSub.z * fromSub.z));
-            double subCoreRadius = Math.max(1.5D, baseRadius * vortex.radiusFraction() * 0.28D);
+            double subCoreRadius = Math.max(1.2D, baseRadius * vortex.radiusFraction() * 0.28D * vortex.type().coreScale());
             if (subRadius > subCoreRadius * 3.5D) {
                 continue;
             }
@@ -99,6 +157,23 @@ public final class TornadoWindField {
         );
     }
 
+    /**
+     * Where a sub-vortex should be drawn. Ground-based vortices render at their ring position on the
+     * ground, but a descending vortex breakdown bubble instead sits on the funnel wall at whatever
+     * height it has fallen to, so it visibly travels down the condensation funnel.
+     */
+    public static Vec3 subVortexVisualCenter(Level level, StormObject storm, DynamicStormState.SubVortex vortex, double fallbackY) {
+        if (storm == null || vortex == null || !vortex.type().descends()) {
+            return subVortexGroundCenter(level, storm, vortex, fallbackY);
+        }
+        long gameTime = level == null ? 0L : level.getGameTime();
+        Vec3 funnelCenter = DynamicStormController.funnelLayerCenterAt(storm, vortex.heightFraction(gameTime));
+        if (funnelCenter == null) {
+            return new Vec3(storm.pos.x, fallbackY, storm.pos.z);
+        }
+        return funnelCenter;
+    }
+
     public static Vec3 subVortexGroundCenter(Level level, StormObject storm, DynamicStormState.SubVortex vortex, double fallbackY) {
         Vec3 center = subVortexCenter(storm, vortex, fallbackY);
         if (level == null) {
@@ -125,6 +200,21 @@ public final class TornadoWindField {
     }
 
     public static Vec3 horizontalVortexGroundCenter(Level level, StormObject storm, DynamicStormState.HorizontalVortex vortex, double fallbackY) {
+        // Anchor on the ACTUAL funnel wall: the live layer centre line plus the wall radius at
+        // that height. A circle drawn around the storm position lands in open air whenever the
+        // funnel leans, bends or flares, which is why the tentacles used to float beside it.
+        if (storm != null && storm.getTornadoFunnelSimple() != null) {
+            Vec3 layerCenter = DynamicStormController.funnelLayerCenterAt(storm, vortex.heightFraction());
+            if (layerCenter != null) {
+                double angle = Math.toRadians(vortex.orbitDegrees());
+                double wallRadius = Math.max(2.0D, DynamicStormController.funnelWallRadiusAt(storm, vortex.heightFraction()))
+                        * vortex.wallHugFactor();
+                return new Vec3(
+                        layerCenter.x + Math.cos(angle) * wallRadius,
+                        layerCenter.y,
+                        layerCenter.z + Math.sin(angle) * wallRadius);
+            }
+        }
         Vec3 center = horizontalVortexCenter(storm, vortex, fallbackY);
         if (level == null) {
             return center;
@@ -137,8 +227,15 @@ public final class TornadoWindField {
         if (ground == null) {
             return center;
         }
-        double height = Math.max(1.35D, DynamicStormController.baseRadiusForWind(storm) * vortex.heightFraction());
-        return new Vec3(center.x, ground.getY() + 0.45D + height, center.z);
+        // Tentacles curl off the UPPER part of the funnel: a fraction of the funnel's
+        // height (cloud base down to the ground), like real horizontal vortices that
+        // wrap around the top of the tornado rather than hugging the ground.
+        double groundY = ground.getY();
+        double funnelTop = storm.posBaseFormationPos != null && Double.isFinite(storm.posBaseFormationPos.y)
+                ? storm.posBaseFormationPos.y
+                : groundY + Math.max(24.0D, DynamicStormController.baseRadiusForWind(storm) * 6.0D);
+        double height = Math.max(4.0D, (funnelTop - groundY) * vortex.heightFraction());
+        return new Vec3(center.x, groundY + 0.45D + height, center.z);
     }
 
     public static double maxWindMph(StormObject storm) {

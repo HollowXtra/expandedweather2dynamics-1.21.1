@@ -55,13 +55,21 @@ public final class MorningFogClient {
     }
 
     public static void onRenderFog(ViewportEvent.RenderFog event) {
-        if (fogIntensity <= 0.02F) {
+        if (!fogActive()) {
             return;
         }
         float pressure = Mth.clamp(fogIntensity, 0.0F, 1.0F);
         float farPlane = Mth.lerp(pressure, 180.0F, 42.0F);
         event.setFarPlaneDistance(Math.min(event.getFarPlaneDistance(), farPlane));
         event.setNearPlaneDistance(Math.min(event.getNearPlaneDistance(), 0.0F));
+    }
+
+    /**
+     * Whether morning fog is currently pulling the far plane in. Exposed so the LOD compat fog
+     * handler can stand down rather than stretching a fog this system deliberately created.
+     */
+    public static boolean fogActive() {
+        return fogIntensity > 0.02F;
     }
 
     private static float morningWindow(long dayTime) {

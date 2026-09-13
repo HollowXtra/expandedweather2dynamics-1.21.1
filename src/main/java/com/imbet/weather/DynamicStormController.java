@@ -1,6 +1,7 @@
 package com.imbet.weather;
 
 import com.imbet.Config;
+import com.imbet.ExpandedWeather2Dynamics;
 import com.imbet.compat.immersiveaircraft.ImmersiveAircraftStormCompat;
 import com.imbet.network.NetworkSafety;
 import com.imbet.network.StormStateSyncPayload;
@@ -17,10 +18,16 @@ import net.minecraft.world.entity.vehicle.Boat;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import weather2.ServerTickHandler;
 import weather2.weathersystem.WeatherManagerServer;
 import weather2.weathersystem.storm.StormObject;
 import weather2.weathersystem.storm.TornadoHelper;
+import weather2.weathersystem.storm.WeatherObject;
+import weather2.weathersystem.tornado.ActiveTornadoConfig;
+import weather2.weathersystem.tornado.simple.Layer;
+import weather2.weathersystem.tornado.simple.TornadoFunnelSimple;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -39,6 +46,16 @@ public final class DynamicStormController {
         synchronized (STATES) {
             return STATES.computeIfAbsent(storm, key -> new DynamicStormState(key.ID));
         }
+    }
+
+    /**
+     * The game tick this storm's funnel last began forming, or {@link Long#MIN_VALUE} when it has no
+     * funnel or the value is not known yet (a save from before it was tracked, or a client that has
+     * not received the synced state). Callers must treat the unknown case as "assume the ramp is
+     * finished" - treating it as newborn is what replayed the birth animation on every rejoin.
+     */
+    public static long funnelBirthTick(StormObject storm) {
+        return storm == null ? Long.MIN_VALUE : stateFor(storm).funnelBirthTick();
     }
 
     public static void tickStorm(StormObject storm) {
@@ -62,7 +79,7 @@ public final class DynamicStormController {
             state.tickVisual(gameTime);
             state.steerSatelliteTornadoes(storm.pos, storm.motion);
         }
-        state.smooth(gameTime);
+        state.smooth(storm, gameTime);
         SupercellStructureService.tick(world, storm, state);
         state.setSubtype(StormClassifier.classify(storm, state));
         if (state.isAbsorbedOrDecaying()) {
@@ -78,6 +95,7 @@ public final class DynamicStormController {
             TornadoMergeService.tick(serverLevel, storm, state);
             CirculationDamage.tick(serverLevel, storm, state);
             FlyingBlockImpactDamage.tick(serverLevel, storm, state);
+            StructureLift.tick(serverLevel, storm, state);
             applyEnvironmentalIntensity(serverLevel, storm, state);
             TreeDamage.tick(serverLevel, storm, state);
             if (CycloidalMarks.tick(serverLevel, storm, state)) {
@@ -140,28 +158,38 @@ public final class DynamicStormController {
             return layerPos;
         }
         double effectiveFraction = Mth.clamp((fraction - anchor) / Math.max(0.05D, 1.0D - anchor), 0.0D, 1.0D);
-        double configuredMax = Math.max(36.0D, Config.TORNADO_FUNNEL_BEND_MAX_BLOCKS.get());
-        double widthFreedom = Math.max(baseRadiusForWind(storm) * 1.35D, state.visibleFunnelWidth() * 0.62D);
         double sidewinding = Mth.clamp(state.sidewindingBendBlend(), 0.0F, 1.0F);
-        double curveIntensity = 0.34D + sidewinding * 0.66D;
-        double localYawIntensity = 0.18D + sidewinding * 0.82D;
-        double maxBend = Math.min(Math.max(configuredMax, widthFreedom), configuredMax * 2.75D) * state.bendStrength() * curveIntensity;
-        double sway = Math.max(14.0D, Config.TORNADO_FUNNEL_BEND_SWAY_BLOCKS.get()) * (0.30D + sidewinding * 0.70D);
         double phase = state.bendPhase();
-        double yawFlex = Math.sin(phase * 0.54D + effectiveFraction * Math.PI * 1.55D) * 0.62D;
-        yawFlex += Math.sin(phase * 0.93D - effectiveFraction * Math.PI * 2.90D) * 0.34D * Math.sin(effectiveFraction * Math.PI);
-        double localRadians = radians + yawFlex * Math.min(1.35D, state.bendStrength()) * localYawIntensity;
-        Vec3 localLean = new Vec3(Math.cos(localRadians), 0.0D, Math.sin(localRadians));
-        Vec3 localCross = new Vec3(-localLean.z, 0.0D, localLean.x);
-        double heightEase = Math.pow(effectiveFraction, 0.92D);
-        double midBody = Math.sin(effectiveFraction * Math.PI) * sway * 0.92D;
-        double freeSnake = Math.sin(phase * 1.18D + effectiveFraction * Math.PI * 2.95D) * sway * (0.20D + sidewinding * 0.22D + effectiveFraction * (0.34D + sidewinding * 0.68D));
-        double counterSnake = Math.cos(phase * 0.76D + effectiveFraction * Math.PI * 3.85D) * sway * (0.16D + sidewinding * 0.36D) * Math.sin(effectiveFraction * Math.PI);
-        double reverseCurl = Math.sin(phase * 1.31D + effectiveFraction * Math.PI * 4.20D) * sway * (0.10D + sidewinding * 0.38D) * Math.sin(effectiveFraction * Math.PI);
-        double upperKink = Math.sin(effectiveFraction * Math.PI * 2.0D + phase * 0.72D) * sway * (0.16D + sidewinding * 0.30D) * effectiveFraction * effectiveFraction;
-        double primaryLean = maxBend * heightEase + upperKink + counterSnake;
-        Vec3 offset = localLean.scale(primaryLean).add(localCross.scale(midBody + freeSnake + reverseCurl));
-        return new Vec3(basePos.x + offset.x, layerPos.y, basePos.z + offset.z);
+        double strength = Mth.clamp(state.bendStrength(), 0.0D, 1.0D);
+
+        // Downshear tilt: the dominant shape. The funnel leans over along its
+        // motion direction, growing top-heavy with height (the top lags
+        // downwind). Weak and rope tornadoes lean much harder than violent
+        // wedges, which stay near vertical.
+        double weakness = Mth.clamp(1.0D - (state.damagePathWidth() - 12.0D) / 450.0D, 0.0D, 1.0D);
+        double weaknessScale = Config.TORNADO_FUNNEL_TILT_WEAKNESS_SCALE.get();
+        double tiltMax = Math.max(20.0D, Config.TORNADO_FUNNEL_TILT_BLOCKS.get()) * strength * (1.0D + weakness * weaknessScale);
+        double tilt = tiltMax * Math.pow(effectiveFraction, 1.6D);
+
+        // Bend: ONE clean traveling sway mode drifting up the funnel, plus a
+        // slow whole-funnel lateral sweep. No competing snake modes fighting
+        // the lean. Rope/weak funnels dance a bit more, wedges stay straight.
+        double sway = Math.max(14.0D, Config.TORNADO_FUNNEL_BEND_SWAY_BLOCKS.get()) * (0.30D + sidewinding * 0.70D);
+        double wave = Math.sin(phase * 0.55D + effectiveFraction * Math.PI * 2.3D) * Math.sin(effectiveFraction * Math.PI);
+        double sweep = Math.sin(phase * 0.90D) * effectiveFraction * effectiveFraction;
+        double bend = (wave * 0.85D + sweep * 0.45D) * sway * (0.65D + weakness * 0.35D);
+
+        Vec3 leanDir = new Vec3(Math.cos(radians), 0.0D, Math.sin(radians));
+        Vec3 cross = new Vec3(-leanDir.z, 0.0D, leanDir.x);
+        double offsetX = leanDir.x * tilt + cross.x * bend;
+        double offsetZ = leanDir.z * tilt + cross.z * bend;
+        double cap = Math.max(36.0D, Config.TORNADO_FUNNEL_BEND_MAX_BLOCKS.get());
+        double length = Math.hypot(offsetX, offsetZ);
+        if (length > cap) {
+            offsetX *= cap / length;
+            offsetZ *= cap / length;
+        }
+        return new Vec3(basePos.x + offsetX, layerPos.y, basePos.z + offsetZ);
     }
 
     public static Vec3 funnelLayerMorphologyOffset(StormObject storm, int layerIndex, int layerCount) {
@@ -215,6 +243,28 @@ public final class DynamicStormController {
             double hook = Math.cos(effective * Math.PI * 1.60D + state.trunkCurvePhase()) * floatScale * 0.12D * effective;
             return lean.scale(hook * blend).add(cross.scale(weave * blend));
         }
+        if (morphology == FunnelMorphology.ROPE) {
+            // thin sinuous rope: a strong traveling snake that grows near the ground
+            double ropeScale = Math.max(2.2D, Math.min(widthScale * 0.22D, 5.0D));
+            double wiggle = Math.sin(effective * Math.PI * 3.2D + state.trunkCurvePhase() * 1.6D) * ropeScale * (0.35D + effective * 0.65D);
+            double snake = Math.sin(effective * Math.PI * 1.7D + state.trunkCurvePhase() * 0.9D) * ropeScale * 0.5D * Math.sin(effective * Math.PI);
+            return lean.scale(snake * 0.6D * blend).add(cross.scale((wiggle * 0.72D + snake * 0.42D) * blend));
+        }
+        if (morphology == FunnelMorphology.CORKSCREW) {
+            // pronounced helical twist around the axis on a moderate body
+            double twistScale = Math.max(3.5D, Math.min(widthScale * 0.34D, 9.0D));
+            double helix = Math.sin(effective * Math.PI * 4.2D + state.trunkCurvePhase() * 2.1D) * twistScale * (0.30D + effective * 0.45D);
+            double wobble = Math.cos(effective * Math.PI * 2.6D + state.trunkCurvePhase()) * twistScale * 0.35D * Math.sin(effective * Math.PI);
+            return lean.scale(wobble * blend).add(cross.scale(helix * blend));
+        }
+        if (morphology == FunnelMorphology.BOWL) {
+            // the bowl shape lives in the width profile; just a gentle sway
+            double sway = Math.sin(effective * Math.PI * 1.8D + state.trunkCurvePhase() * 0.8D) * widthScale * 0.16D * Math.sin(effective * Math.PI);
+            return cross.scale(sway * blend);
+        }
+        if (morphology == FunnelMorphology.CONE || morphology == FunnelMorphology.STOVEPIPE) {
+            return Vec3.ZERO; // pure width-profile shapes
+        }
         double strength = blend * state.trunkCurveStrength() * Math.max(1.12D, Config.TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH.get());
         double neck = Mth.clamp(state.trunkNeckFraction(), 0.28F, 0.70F);
         double neckPull = Math.sin(Mth.clamp((effective - neck + 0.32D) / 0.64D, 0.0D, 1.0D) * Math.PI);
@@ -226,7 +276,30 @@ public final class DynamicStormController {
         return lean.scale((middleBow + upperLean + lowerHook) * strength).add(cross.scale((curl + neckCurl) * strength));
     }
 
+    /**
+     * Funnel layer radius scale including any vortex breakdown pinch currently travelling down it.
+     * The pinch multiplies the morphology scale so a breakdown bubble visibly necks the funnel as
+     * it descends, and anything anchored to the wall (horizontal vortices, radar) follows it.
+     */
     public static float funnelLayerRadiusScale(StormObject storm, int layerIndex, int layerCount) {
+        float scale = funnelMorphologyRadiusScale(storm, layerIndex, layerCount);
+        float pinch = funnelBreakdownPinch(storm, layerIndex, layerCount);
+        return pinch >= 0.999F ? scale : scale * pinch;
+    }
+
+    private static float funnelBreakdownPinch(StormObject storm, int layerIndex, int layerCount) {
+        if (storm == null || storm.manager == null || storm.manager.getWorld() == null || layerCount <= 1) {
+            return 1.0F;
+        }
+        DynamicStormState state = stateFor(storm);
+        if (state.subVortices().isEmpty()) {
+            return 1.0F;
+        }
+        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        return state.funnelPinchAt(fraction, storm.manager.getWorld().getGameTime());
+    }
+
+    private static float funnelMorphologyRadiusScale(StormObject storm, int layerIndex, int layerCount) {
         float multivortexScale = multivortexParentLowerScale(storm, layerIndex, layerCount);
         if (storm == null || !storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout || layerCount <= 1) {
             return multivortexScale;
@@ -276,6 +349,48 @@ public final class DynamicStormController {
             floaterScale = Mth.clamp(floaterScale, 0.14F, 0.60F);
             return Mth.lerp(blend, 1.0F, floaterScale) * multivortexScale;
         }
+        if (morphology == FunnelMorphology.CONE) {
+            // textbook cone: narrow top, steadily widening to a solid ground base
+            float coneScale = Mth.lerp(fraction, 0.42F, 1.32F);
+            return Mth.lerp(blend, 1.0F, coneScale) * multivortexScale;
+        }
+        if (morphology == FunnelMorphology.STOVEPIPE) {
+            // tall uniform column with a slight taper at the top and a base flare
+            float topTaper = smoothstep(Mth.clamp((fraction - 0.80F) / 0.20F, 0.0F, 1.0F));
+            float baseFlare = 1.0F - smoothstep(Mth.clamp(fraction / 0.16F, 0.0F, 1.0F));
+            float pipe = 1.0F - topTaper * 0.20F + baseFlare * 0.18F;
+            pipe = Mth.clamp(pipe, 0.72F, 1.22F);
+            return Mth.lerp(blend, 1.0F, pipe) * multivortexScale;
+        }
+        if (morphology == FunnelMorphology.ROPE) {
+            // thin writhing rope: narrow all the way, slight taper to the ground
+            float pulse = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 3.0D + state.trunkCurvePhase() * 1.7D);
+            float rope = 0.24F + (1.0F - fraction) * 0.10F + pulse * 0.08F;
+            rope = Mth.clamp(rope, 0.20F, 0.46F);
+            return Mth.lerp(blend, 1.0F, rope) * multivortexScale;
+        }
+        if (morphology == FunnelMorphology.CORKSCREW) {
+            // helical body: the radius pulses around a moderate core as it twists
+            float twist = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 4.0D + state.trunkCurvePhase() * 2.0D);
+            float cork = 0.62F + twist * 0.22F - fraction * 0.10F;
+            cork = Mth.clamp(cork, 0.45F, 0.95F);
+            return Mth.lerp(blend, 1.0F, cork) * multivortexScale;
+        }
+        if (morphology == FunnelMorphology.BOWL) {
+            // Top flares into the wall cloud, narrows to a waist, then a firm base. The flare is a
+            // RIM that peaks just under the cloud base and feathers back in at the very top, rather
+            // than a ramp that keeps growing all the way up: otherwise the topmost layer became the
+            // widest ring in the whole funnel, so the top layer visibly swelled past every layer
+            // below it (and snapped back whenever the shape ended). A bowl's widest ring belongs
+            // under the wall cloud, where it merges into the cloud base.
+            float topFlare = smoothstep(Mth.clamp((fraction - 0.55F) / 0.45F, 0.0F, 1.0F));
+            float rimTaper = smoothstep(Mth.clamp((fraction - 0.90F) / 0.10F, 0.0F, 1.0F));
+            float waist = 1.0F - smoothstep(Mth.clamp(Math.abs(fraction - 0.38F) / 0.24F, 0.0F, 1.0F));
+            float base = 1.0F - smoothstep(Mth.clamp(fraction / 0.18F, 0.0F, 1.0F));
+            float bowl = 0.62F + topFlare * 0.66F - rimTaper * 0.22F + waist * 0.22F + base * 0.30F;
+            bowl = Mth.clamp(bowl, 0.55F, 1.35F);
+            return Mth.lerp(blend, 1.0F, bowl) * multivortexScale;
+        }
         float neck = Mth.clamp(state.trunkNeckFraction(), 0.28F, 0.70F);
         float neckNarrow = 1.0F - Mth.clamp(Math.abs(fraction - neck) / 0.31F, 0.0F, 1.0F);
         float upperBase = smoothstep(Mth.clamp((fraction - 0.62F) / 0.38F, 0.0F, 1.0F));
@@ -285,6 +400,91 @@ public final class DynamicStormController {
         float trunkScale = 0.44F - neckNarrow * 0.20F + upperBase * 0.42F - upperCapNarrow * 0.16F + lowerContact * 0.08F - lowerRope * 0.06F;
         trunkScale = Mth.clamp(trunkScale, 0.30F, 0.88F);
         return Mth.lerp(blend, 1.0F, trunkScale) * multivortexScale;
+    }
+
+    /**
+     * Lifecycle alpha for funnel layers, driven by the funnel's own age.
+     *
+     * BIRTH: the condensation extends downward out of the cloud base over the storm's own genesis
+     * timeline - the real-time formation clock, which by default runs about 75 seconds and is carried
+     * in the storm's synced state. A layer only condenses once the descending sheath has passed its
+     * height, so the funnel visibly reaches down while the surface dust whirl turns underneath it and
+     * clear air is still between the two. A funnel whose genesis length is unknown (a save written
+     * before the timeline existed) keeps the legacy eight-second build-in.
+     *
+     * DECAY: the funnel ropes out from the ground up - the bottom lifts first,
+     * then the whole funnel thins before it is removed.
+     */
+    public static float funnelLayerFormationAlpha(StormObject storm, float ageTicks, int layerIndex, int layerCount) {
+        if (storm == null || layerCount <= 1 || !Config.TORNADO_FORMING_ANIMATION_ENABLED.get() || storm.attrib_waterSpout) {
+            return 1.0F;
+        }
+        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
+        float intensity = Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F);
+        boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
+        if (decaying) {
+            // rope-out: bottom layers lift first, the top hangs on longest
+            float rope = Mth.clamp((1.0F - intensity) * 1.55F, 0.0F, 1.0F);
+            float bottomLift = (1.0F - fraction) * (1.0F - fraction);
+            float layerFade = 1.0F - bottomLift * rope;
+            // late in the rope the whole funnel thins toward nothing
+            float globalThin = Mth.clamp(rope * 1.18F - 0.42F, 0.0F, 1.0F);
+            return Mth.clamp(layerFade * (1.0F - globalThin * 0.55F), 0.0F, 1.0F);
+        }
+        float descend = condensationDescent(storm, ageTicks, fraction);
+        float fadeIn = descend * descend * (3.0F - 2.0F * descend);
+        // stage still gates overall strength: an early-stage funnel is wispy
+        // even after it has reached the ground, a violent one solidifies fully
+        float overall = Mth.lerp(Mth.clamp(stage / 0.25F, 0.0F, 1.0F), 0.5F, 1.0F);
+        return Mth.clamp(fadeIn * overall, 0.0F, 1.0F);
+    }
+
+    /**
+     * How condensed a funnel layer is right now: 0 while the descending condensation is still above it,
+     * 1 once the sheath has fully passed it. Layer fraction 1 is the cloud base and 0 is the ground, so
+     * the bottom of the funnel is the last thing to condense - which is exactly the order real
+     * tornadoes form in.
+     */
+    private static float condensationDescent(StormObject storm, float ageTicks, float fraction) {
+        DynamicStormState state = stateFor(storm);
+        float reach = TornadoGenesis.condensationReachOrLegacy(
+                state.funnelBirthTick(), stormGameTime(storm), state.genesisDurationTicks(), ageTicks);
+        float requiredReach = (1.0F - fraction) * 0.78F;
+        return Mth.clamp((reach - requiredReach) / 0.26F, 0.0F, 1.0F);
+    }
+
+    private static long stormGameTime(StormObject storm) {
+        if (storm == null || storm.manager == null || storm.manager.getWorld() == null) {
+            return Long.MIN_VALUE;
+        }
+        return storm.manager.getWorld().getGameTime();
+    }
+
+    /**
+     * Lifecycle scale for funnel layers. During birth the descending
+     * condensation narrows toward the ground (bottom layers start thin and
+     * widen as the funnel reaches down); while roping out the whole funnel
+     * thins. Mirrors the alpha ramp in timing.
+     */
+    public static float funnelLayerFormationScale(StormObject storm, float ageTicks, int layerIndex, int layerCount) {
+        if (storm == null || layerCount <= 1 || !Config.TORNADO_FORMING_ANIMATION_ENABLED.get() || storm.attrib_waterSpout) {
+            return 1.0F;
+        }
+        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
+        float intensity = Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F);
+        boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
+        if (decaying) {
+            float rope = Mth.clamp((1.0F - intensity) * 1.55F, 0.0F, 1.0F);
+            float globalThin = Mth.clamp(rope * 1.18F - 0.42F, 0.0F, 1.0F);
+            return Mth.clamp(1.0F - globalThin * 0.38F, 0.35F, 1.0F);
+        }
+        // bottom layers start thin and widen as the condensation reaches down
+        float descend = condensationDescent(storm, ageTicks, fraction);
+        float baseWiden = Mth.lerp(descend, 0.45F, 1.0F);
+        float overall = Mth.lerp(Mth.clamp(stage * 0.55F + intensity * 0.45F, 0.0F, 1.0F), 0.78F, 1.0F);
+        return Mth.clamp(overall * baseWiden, 0.30F, 1.25F);
     }
 
     public static float funnelParticleScale(StormObject storm, int layerIndex, int layerCount) {
@@ -299,14 +499,32 @@ public final class DynamicStormController {
     }
 
     public static boolean shouldCullMultivortexParentLayer(StormObject storm, int layerIndex, int layerCount) {
-        return hasActiveMultivortexParent(storm, layerCount);
+        if (!hasActiveMultivortexParent(storm, layerCount)) {
+            return false;
+        }
+        DynamicStormState state = stateFor(storm);
+        return switch (state.multiVortexFlavour()) {
+            // Lifted: the parent is out of the way entirely, which is what the vortices are for.
+            case LIFTED -> true;
+            // Ground swarm: only the layers below the tip are cut, so the condensation visibly stops
+            // short of the ground with the swirls turning in the gap under it.
+            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmCulled(state.parentTipFraction(), layerFraction(layerIndex, layerCount));
+            // Embedded: the parent is planted on the ground exactly as usual. Nothing is cut.
+            case EMBEDDED -> false;
+        };
     }
 
     public static float multivortexParentLayerAlpha(StormObject storm, int layerIndex, int layerCount) {
         if (!hasActiveMultivortexParent(storm, layerCount)) {
             return 1.0F;
         }
-        return 0.0F;
+        DynamicStormState state = stateFor(storm);
+        float fraction = layerFraction(layerIndex, layerCount);
+        return switch (state.multiVortexFlavour()) {
+            case LIFTED -> 0.0F;
+            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmAlpha(state.parentTipFraction(), fraction);
+            case EMBEDDED -> MultiVortexParentProfile.embeddedAlpha(fraction);
+        };
     }
 
     public static boolean hasActiveMultivortexVisual(StormObject storm) {
@@ -317,7 +535,45 @@ public final class DynamicStormController {
     }
 
     public static boolean shouldHideMultivortexParentFunnel(StormObject storm) {
-        return hasActiveMultivortexVisual(storm);
+        if (!hasActiveMultivortexVisual(storm)) {
+            return false;
+        }
+        // Only a lifted parent is hidden. A ground swarm's parent still has to tick - it is drawn as a
+        // thin rope that stops short - and an embedded one is the parent a tornado normally has.
+        return stateFor(storm).multiVortexFlavour() == MultiVortexFlavour.LIFTED;
+    }
+
+    /**
+     * Whether Weather2's own condensation funnel should be suppressed on this storm entirely.
+     *
+     * <p>A hurricane is a broad rain core with rotating bands and no tornado hanging in its middle,
+     * but both of our hurricane storms are still real ticking StormObjects, and Weather2 draws its
+     * point funnel on any storm that reaches the forming stage: the helper rain core because its
+     * progression can climb there on its own, and the seeded native cyclone because it is DESIGNED
+     * to climb the ladder to stage 5. Weather2's funnel is a tornado's silhouette, so on either of
+     * those storms it reads as a tornado embedded in the hurricane's center. Our damage gates below
+     * refuse grabs and rips on the same storms, so nothing is being rendered hollow.</p>
+     */
+    public static boolean shouldSuppressHelperFunnel(StormObject storm) {
+        // Native waterspouts are exempt on purpose: they are also TYPE_WATER storms at the forming
+        // stage, but a waterspout IS a funnel - hiding it would erase the feature.
+        if (storm == null || storm.attrib_waterSpout) {
+            return false;
+        }
+        if (Config.HURRICANES_ENABLED.get() && AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+            return true;
+        }
+        return Config.CYCLONES_ENABLED.get() && isNativeCyclone(storm);
+    }
+
+    /**
+     * Whether the parent's own dust cloud and debris should be held back during an episode. They are:
+     * under a lifted parent there is nothing at the surface to raise them, and under a ground swarm the
+     * surface is the vortices' business. A planted parent keeps its own dust exactly as it always has -
+     * its base is on the ground and should look like it.
+     */
+    public static boolean suppressMultivortexParentDust(StormObject storm) {
+        return hasActiveMultivortexVisual(storm) && !stateFor(storm).multiVortexFlavour().parentOnTheGround();
     }
 
     public static double mainFunnelGroundLift(StormObject storm, int layerIndex, int layerCount) {
@@ -336,12 +592,9 @@ public final class DynamicStormController {
             double lift = Mth.clamp(18.0D + state.visibleFunnelWidth() * 0.22D, 18.0D, 64.0D);
             return lift * lowerWeight * blend;
         }
-        if (!Config.MULTIVORTEX_ENABLED.get()) {
-            return 0.0D;
-        }
-        if (state.subVortices().isEmpty()) {
-            return 0.0D;
-        }
+        // Every multi-vortex arrangement leaves the main funnel where it is. A lifted parent is culled
+        // layer by layer, a ground swarm's rope is culled below its tip, and an embedded parent is not
+        // moved at all - the vortices come to it. So there is no ground lift for any of them.
         return 0.0D;
     }
 
@@ -349,21 +602,44 @@ public final class DynamicStormController {
         if (storm == null || vortex == null) {
             return 0.0D;
         }
+        // A breakdown bubble aloft has left the surface circulation behind, so it only adds wind
+        // once it has descended into contact with the ground.
+        if (storm.manager != null && storm.manager.getWorld() != null
+                && !vortex.isGroundContact(storm.manager.getWorld().getGameTime())) {
+            return 0.0D;
+        }
         double parentWind = TornadoWindField.maxWindMph(storm);
         double intensity = Mth.clamp(vortex.intensityFraction(), 0.05F, 1.0F);
         double stageBlend = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0D, 0.0D, 1.0D);
         double physicsWind = parentWind * (0.58D + intensity * 0.86D);
         double explicitRangeWind = 100.0D + intensity * 155.0D + stageBlend * 74.0D;
-        return Mth.clamp(Math.max(physicsWind, explicitRangeWind), 100.0D, 335.0D);
+        double wind = Mth.clamp(Math.max(physicsWind, explicitRangeWind), 100.0D, 335.0D);
+        return wind * vortex.type().windScale();
     }
 
     private static float multivortexParentLowerScale(StormObject storm, int layerIndex, int layerCount) {
         if (!hasActiveMultivortexParent(storm, layerCount)) {
             return 1.0F;
         }
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(layerIndex, layerCount);
+        DynamicStormState state = stateFor(storm);
+        MultiVortexFlavour flavour = state.multiVortexFlavour();
+        if (flavour == MultiVortexFlavour.GROUND_SWARM) {
+            return MultiVortexParentProfile.groundSwarmWidthScale(state.parentTipFraction(), fraction);
+        }
+        if (flavour == MultiVortexFlavour.EMBEDDED) {
+            return MultiVortexParentProfile.embeddedWidthScale(fraction);
+        }
         float lowerBlend = 1.0F - smoothstep(Mth.clamp(fraction / MULTIVORTEX_PARENT_LIFT_FRACTION, 0.0F, 1.0F));
         return Mth.lerp(lowerBlend, 1.0F, 0.018F);
+    }
+
+    /**
+     * Height of a funnel layer as a fraction of the whole funnel: 0 is the ground and 1 the cloud base.
+     * Every layer index in the mod is interpreted this way, so the layer-profile helpers share it.
+     */
+    private static float layerFraction(int layerIndex, int layerCount) {
+        return Mth.clamp(layerIndex / (float) Math.max(1, layerCount - 1), 0.0F, 1.0F);
     }
 
     private static boolean hasActiveMultivortexParent(StormObject storm, int layerCount) {
@@ -503,6 +779,11 @@ public final class DynamicStormController {
         if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null) {
             return false;
         }
+        // A hurricane's Weather2 core is a rain engine, not a tornado: even if its progression
+        // creeps past the forming stage, it does not get to start ripping blocks out of the world.
+        if (shouldSuppressHelperFunnel(helper.storm)) {
+            return false;
+        }
         if (!CompatHooks.useVanillaBlockLifting()) {
             return false;
         }
@@ -513,6 +794,11 @@ public final class DynamicStormController {
         if (!BlockGrabSafety.canEdit(sample)) {
             return false;
         }
+        if (StructureLift.isCommitted(helper.storm, pos)) {
+            // Already committed to demolition as part of a whole building: the structure failed as a
+            // whole, so its individual blocks no longer get a vote.
+            return stateFor(helper.storm).tryConsumeBlockDamage(level.getGameTime(), helper.storm);
+        }
         TornadoWindField.WindSample wind = TornadoWindField.sample(helper.storm, level, Vec3.atCenterOf(pos));
         TornadoDamageModel.PickupDecision decision = TornadoDamageModel.evaluatePickup(helper.storm, level, sample, wind);
         if (decision.action() == TornadoDamageModel.PickupAction.OPEN && BlockGrabSafety.tryOpenDoor(level, sample)) {
@@ -521,11 +807,14 @@ public final class DynamicStormController {
         if (!decision.allowsWeather2Pickup()) {
             return false;
         }
-        return stateFor(helper.storm).tryConsumeBlockDamage(level.getGameTime());
+        return stateFor(helper.storm).tryConsumeBlockDamage(level.getGameTime(), helper.storm);
     }
 
     public static boolean canGrabBlock(TornadoHelper helper, Level level, BlockState state, BlockPos pos) {
         if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null) {
+            return false;
+        }
+        if (shouldSuppressHelperFunnel(helper.storm)) {
             return false;
         }
         if (!CompatHooks.useVanillaBlockLifting()) {
@@ -537,6 +826,11 @@ public final class DynamicStormController {
         }
         if (!BlockGrabSafety.canEdit(sample)) {
             return false;
+        }
+        if (StructureLift.isCommitted(helper.storm, pos)) {
+            // Committed demolition: masonry that out-resists the wind on its own still goes, because
+            // the tornado has already failed the building it belongs to.
+            return stateFor(helper.storm).tryConsumeBlockDamage(level.getGameTime(), helper.storm);
         }
         TornadoWindField.WindSample wind = TornadoWindField.sample(helper.storm, level, Vec3.atCenterOf(pos));
         TornadoDamageModel.PickupDecision decision = TornadoDamageModel.evaluatePickup(helper.storm, level, sample, wind);
@@ -573,6 +867,9 @@ public final class DynamicStormController {
         if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null) {
             return false;
         }
+        if (shouldSuppressHelperFunnel(helper.storm)) {
+            return false;
+        }
         if (isVehiclePickupTarget(entity)) {
             return shouldForceGrabEntity(helper, entity);
         }
@@ -587,6 +884,9 @@ public final class DynamicStormController {
 
     public static boolean shouldForceGrabEntity(TornadoHelper helper, Entity entity) {
         if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null || entity == null) {
+            return false;
+        }
+        if (shouldSuppressHelperFunnel(helper.storm)) {
             return false;
         }
         if (!isVehiclePickupTarget(entity)) {
@@ -795,6 +1095,16 @@ public final class DynamicStormController {
         boolean floater = state.targetFunnelMorphology() == FunnelMorphology.FLOATER || state.funnelMorphology() == FunnelMorphology.FLOATER;
         float spinDelta = Math.max(0.0F, state.visualSpinSpeed() - baseline) * (drillBit ? 108.0F : floater ? 84.0F : 70.0F);
         float spinLimit = drillBit ? 36.0F : floater ? 30.0F : 24.0F;
+        boolean antiCyclonic = rotationSign(storm) < 0.0D;
+        if (antiCyclonic) {
+            // Weather2's own funnel spin is hard-coded cyclonic and ignores spinSpeed, so
+            // the client neutralizes it for anti-cyclonic tornadoes (the funnel would
+            // otherwise twist against its own dust cloud). Give our signed spin a floor
+            // and extra range so the anti-cyclonic funnel spins at the same visual
+            // energy as a normal one instead of nearly standing still.
+            spinDelta = (Math.max(0.0F, state.visualSpinSpeed() - baseline) * 1.55F + 0.10F) * (drillBit ? 108.0F : floater ? 84.0F : 70.0F);
+            spinLimit = drillBit ? 58.0F : floater ? 52.0F : 46.0F;
+        }
         return Mth.clamp(spinDelta * layerScale * (float) rotationSign(storm), -spinLimit, spinLimit);
     }
 
@@ -807,6 +1117,63 @@ public final class DynamicStormController {
             return 8;
         }
         return Math.max(8, storm.tornadoHelper.getTornadoBaseSize());
+    }
+
+    /**
+     * Radius of the funnel's ACTUAL rendered wall at a given height fraction (0 = ground/
+     * funnel base, 1 = cloud base). Weather2's simple funnel flares upward - each layer is
+     * {@code radiusOfBase + radiusIncreasePerLayer * layerIndex} wide, so up where these
+     * horizontal vortices sit the wall is several times the base radius. Reading the live
+     * funnel (with our per-layer morphology scale) keeps the tentacle anchor on the wall
+     * rather than floating somewhere inside the cone.
+     */
+    public static float funnelWallRadiusAt(StormObject storm, float heightFraction) {
+        float fallback = storm == null ? 4.0F : Math.max(4.0F, rawBaseRadiusForWind(storm) * 0.5F);
+        if (storm == null) {
+            return fallback;
+        }
+        TornadoFunnelSimple funnel = storm.getTornadoFunnelSimple();
+        if (funnel == null || funnel.getConfig() == null) {
+            return fallback;
+        }
+        ActiveTornadoConfig config = funnel.getConfig();
+        int layerCount = funnel.listLayers == null ? 0 : funnel.listLayers.size();
+        if (layerCount <= 0) {
+            return Math.max(2.0F, config.getRadiusOfBase());
+        }
+        int layerIndex = Mth.clamp(Math.round(Mth.clamp(heightFraction, 0.0F, 1.0F) * (layerCount - 1)), 0, layerCount - 1);
+        float layerRadius = config.getRadiusOfBase() + config.getRadiusIncreasePerLayer() * layerIndex;
+        return Math.max(2.0F, layerRadius * funnelLayerRadiusScale(storm, layerIndex, layerCount));
+    }
+
+    /**
+     * Center line of the funnel at a given height fraction, read from Weather2's own rendered
+     * layers (interpolated between the two nearest ones) so anything anchored to the funnel
+     * stays on it even when the funnel leans or bends away from the storm coordinate.
+     */
+    public static Vec3 funnelLayerCenterAt(StormObject storm, float heightFraction) {
+        if (storm == null) {
+            return null;
+        }
+        TornadoFunnelSimple funnel = storm.getTornadoFunnelSimple();
+        if (funnel == null || funnel.listLayers == null || funnel.listLayers.isEmpty()) {
+            return storm.pos;
+        }
+        int layerCount = funnel.listLayers.size();
+        double scaled = Mth.clamp(heightFraction, 0.0F, 1.0F) * (layerCount - 1);
+        int lower = Mth.clamp((int) Math.floor(scaled), 0, layerCount - 1);
+        int upper = Mth.clamp(lower + 1, 0, layerCount - 1);
+        Layer low = funnel.listLayers.get(lower);
+        Layer high = funnel.listLayers.get(upper);
+        Vec3 lowPos = low == null ? null : low.getPos();
+        Vec3 highPos = high == null ? null : high.getPos();
+        if (lowPos == null) {
+            return highPos == null ? storm.pos : highPos;
+        }
+        if (highPos == null) {
+            return lowPos;
+        }
+        return lowPos.lerp(highPos, Mth.clamp(scaled - lower, 0.0D, 1.0D));
     }
 
     public static int baseRadiusForWind(StormObject storm) {
@@ -954,12 +1321,15 @@ public final class DynamicStormController {
         int effectiveMaxCount = Math.min(Math.max(0, Config.HORIZONTAL_VORTICES_MAX_COUNT.get()), 10);
         int effectiveMinStage = Math.max(Config.HORIZONTAL_VORTICES_MIN_STAGE.get(), StormObject.STATE_STAGE1);
         if (!Config.HORIZONTAL_VORTICES_ENABLED.get() || storm.levelCurIntensityStage < effectiveMinStage || !isDynamicVortex(storm) || effectiveMaxCount <= 0) {
-            state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), 0, baseRadiusForWind(storm), false);
+            state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), 0, funnelWallRadiusAt(storm, 0.0F), funnelWallRadiusAt(storm, 1.0F), false);
             return;
         }
         double maxWind = TornadoWindField.maxWindMph(storm);
-        int desired = maxWind >= 90.0D ? 1 : 0;
-        if (maxWind >= 135.0D) {
+        int desired = maxWind >= 60.0D ? 1 : 0;
+        if (maxWind >= 100.0D) {
+            desired++;
+        }
+        if (maxWind >= 140.0D) {
             desired++;
         }
         if (maxWind >= 180.0D) {
@@ -972,7 +1342,10 @@ public final class DynamicStormController {
             desired++;
         }
         desired = Mth.clamp(desired, 0, effectiveMaxCount);
-        state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), desired, baseRadiusForWind(storm), state.multiVortexVisualActive());
+        // Anchor the tubes to the real funnel wall: the funnel flares toward the cloud base,
+        // so the wall radius is read live at the base and at the top and interpolated by each
+        // tentacle's own height fraction.
+        state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), desired, funnelWallRadiusAt(storm, 0.0F), funnelWallRadiusAt(storm, 1.0F), state.multiVortexVisualActive());
     }
 
     private static void updateSatelliteTornadoes(StormObject storm, DynamicStormState state) {
@@ -1103,10 +1476,68 @@ public final class DynamicStormController {
 
     private static void syncAddonState(ServerLevel level, StormObject storm, DynamicStormState state, long gameTime) {
         int interval = Math.max(5, Config.MULTIPLAYER_STATE_SYNC_INTERVAL_TICKS.get());
-        if (!Config.PERSISTENCE_ENABLED.get() || !isDynamicVortex(storm) || gameTime % interval != 0L) {
+        if (gameTime % interval != 0L || !hasSyncableAddonState(storm)) {
             return;
         }
         NetworkSafety.sendToPlayersNear(level, storm.pos.x, storm.pos.y, storm.pos.z, Config.MULTIPLAYER_SYNC_RANGE_BLOCKS.get(), new StormStateSyncPayload(storm.ID, state.save()));
+    }
+
+    /**
+     * Whether this storm carries addon state a client needs. Kept as the single gate shared by the
+     * periodic push and the join push, so a joining player can never receive something the
+     * steady-state sync would not have sent them a moment later.
+     */
+    private static boolean hasSyncableAddonState(StormObject storm) {
+        return Config.PERSISTENCE_ENABLED.get()
+                && storm != null
+                && storm.pos != null
+                && isDynamicVortex(storm);
+    }
+
+    /**
+     * Push every nearby dynamic storm's addon state to a player immediately, instead of leaving them
+     * on the distance- and interval-gated {@link #syncAddonState} schedule.
+     *
+     * <p>That schedule only fires on every {@code multiplayer.stateSyncIntervalTicks} boundary and
+     * only for storms currently inside {@code multiplayer.syncRangeBlocks}, so a player who has just
+     * logged in renders whatever default the client holds until the next boundary: a mature wedge as
+     * a sliver, no satellites, no sub-vortices, no horizontal vortices, and its funnel replaying its
+     * birth ramp. The server state is correct the whole time - the client simply has not been handed
+     * it yet, and it only reads a payload on a storm's next tick, never mid-render.
+     *
+     * <p>Sending it at login closes that window: the states reach the client's pending map before
+     * Weather2 has even synced the storm objects, and each is applied on that storm's next tick, so
+     * the first frame the player sees already matches the server.
+     */
+    public static void pushAddonStateTo(ServerPlayer player) {
+        if (player == null || !(player.level() instanceof ServerLevel level)) {
+            return;
+        }
+        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
+        if (manager == null) {
+            return;
+        }
+        double range = Config.MULTIPLAYER_SYNC_RANGE_BLOCKS.get();
+        double rangeSqr = range * range;
+        int pushed = 0;
+        for (WeatherObject object : new ArrayList<>(manager.getStormObjects())) {
+            if (!(object instanceof StormObject storm) || !hasSyncableAddonState(storm)) {
+                continue;
+            }
+            if (player.distanceToSqr(storm.pos.x, storm.pos.y, storm.pos.z) > rangeSqr) {
+                continue;
+            }
+            if (NetworkSafety.sendToPlayer(player, new StormStateSyncPayload(storm.ID, stateFor(storm).save()))) {
+                pushed++;
+            }
+        }
+        if (pushed > 0 && Config.LOG_STARTUP.getAsBoolean()) {
+            ExpandedWeather2Dynamics.LOGGER.debug(
+                    "Pushed addon state for {} dynamic storm(s) to {} on join.",
+                    pushed,
+                    player.getGameProfile().getName()
+            );
+        }
     }
 
     private static void applyEnvironmentalIntensity(ServerLevel level, StormObject storm, DynamicStormState state) {

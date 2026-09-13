@@ -9,6 +9,7 @@ uniform float EyeIntensity;
 uniform vec2 WindDirection;
 uniform float EyeClearRadius;
 uniform float Opacity;
+uniform float WhiteoutIntensity;
 
 in vec2 texCoord0;
 in vec4 vertexColor;
@@ -56,7 +57,8 @@ void main() {
     float path = clamp(DamagePathIntensity, 0.0, 1.0);
     float core = clamp(CoreIntensity, 0.0, 1.0);
     float eye = clamp(EyeIntensity, 0.0, 1.0);
-    float strength = clamp((path * 0.55 + core * 0.78) * Opacity, 0.0, 1.0);
+    float whiteout = clamp(WhiteoutIntensity, 0.0, 1.0);
+    float strength = clamp((path * 0.55 + core * 0.78 + whiteout * 0.42) * Opacity, 0.0, 1.0);
     if (strength <= 0.01) {
         discard;
     }
@@ -67,19 +69,22 @@ void main() {
     }
     dir = normalize(dir);
 
-    float n1 = noise(p * (9.0 + core * 8.0) + vec2(GameTime * 0.42, -GameTime * 0.29));
-    float n2 = noise(p * (24.0 + core * 18.0) + vec2(-GameTime * 1.10, GameTime * 0.63));
+    // Deep inside the core everything whooshes past faster and denser
+    float whoosh = 1.0 + whiteout * 2.4;
+    float n1 = noise(p * (9.0 + core * 8.0) + vec2(GameTime * 0.42 * whoosh, -GameTime * 0.29 * whoosh));
+    float n2 = noise(p * (24.0 + core * 18.0) + vec2(-GameTime * 1.10 * whoosh, GameTime * 0.63 * whoosh));
     float dust = (n1 * 0.70 + n2 * 0.30) * (0.16 + path * 0.22 + core * 0.46);
+    dust = mix(dust, 0.62 + dust * 0.60, whiteout);
 
-    float streaks = streakField(p, dir, GameTime, core) * (0.18 + path * 0.42 + core * 0.74);
+    float streaks = streakField(p, dir, GameTime * whoosh, min(1.0, core + whiteout * 0.45)) * (0.18 + path * 0.42 + core * 0.74 + whiteout * 0.50);
     float radialWall = smoothstep(0.12, 0.48, radius) * (1.0 - smoothstep(0.84, 1.16, radius));
-    float spinWall = radialWall * (0.12 + core * 0.32) * (0.70 + noise(vec2(atan(p.y, p.x) * 3.0, radius * 9.0 - GameTime * 2.1)) * 0.45);
+    float spinWall = radialWall * (0.12 + core * 0.32 + whiteout * 0.22) * (0.70 + noise(vec2(atan(p.y, p.x) * 3.0, radius * 9.0 - GameTime * 2.1 * whoosh)) * 0.45);
 
     float clearRadius = clamp(EyeClearRadius, 0.05, 0.90) * (0.30 + eye * 0.58);
     float eyeCenter = eye * (1.0 - smoothstep(clearRadius * 0.42, clearRadius, screenRadius));
     float eyeRing = eye * (1.0 - smoothstep(0.035, 0.105, abs(screenRadius - clearRadius * 1.18)));
 
-    float centerFade = 1.0 - eyeCenter * 0.82;
+    float centerFade = 1.0 - eyeCenter * 0.82 * (1.0 - whiteout * 0.85);
     dust *= centerFade;
     streaks *= centerFade;
     spinWall = max(spinWall * centerFade, eyeRing * 0.42);
@@ -88,9 +93,11 @@ void main() {
     vec3 streakColor = mix(vec3(0.72, 0.78, 0.75), vec3(0.93, 0.94, 0.86), core);
     vec3 wallColor = mix(vec3(0.10, 0.14, 0.15), vec3(0.42, 0.47, 0.46), core);
     vec3 eyeColor = vec3(0.55, 0.60, 0.58) * eyeCenter;
+    vec3 whiteoutColor = vec3(0.79, 0.75, 0.67);
 
     vec3 color = dustColor * dust + streakColor * streaks + wallColor * spinWall + eyeColor;
-    float alpha = clamp(dust * 0.72 + streaks * 0.58 + spinWall * 0.54 + eyeCenter * 0.10, 0.0, 0.82) * strength;
+    color = mix(color, whiteoutColor, whiteout * 0.88);
+    float alpha = clamp((dust * 0.72 + streaks * 0.58 + spinWall * 0.54 + eyeCenter * 0.10) * (1.0 + whiteout * 0.18), 0.0, 0.82 + whiteout * 0.17) * strength;
     alpha += eyeRing * strength * 0.16;
 
     if (alpha < 0.015) {

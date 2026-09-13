@@ -70,7 +70,11 @@ public class SpcRiskBlock extends BaseEntityBlock {
         if (level.getBlockEntity(pos) instanceof SpcRiskBlockEntity spc) {
             spc.cycleMode(level, state);
             if (player instanceof ServerPlayer serverPlayer) {
-                serverPlayer.sendSystemMessage(Component.literal("SPC Risk Panel: " + spc.getModeLabel() + " / " + spc.currentRisk().label()));
+                String issued = spc.getMode() == 0
+                        ? spc.categoricalRisk().label() + " (" + spc.issuance() + ")"
+                        : spc.currentRisk().label() + " " + spc.probabilityForMode() + "%"
+                        + (spc.cigForMode() > 0 ? " CIG" + spc.cigForMode() : "");
+                serverPlayer.sendSystemMessage(Component.literal("SPC Risk Panel: " + spc.getModeLabel() + " / " + issued));
             }
         }
         return InteractionResult.SUCCESS;

@@ -186,6 +186,7 @@ public final class AddonWeatherEvent {
         return switch (type) {
             case FLAMMAGENITUS -> 0.9996D;
             case HURRICANE -> 0.9995D;
+            case CYCLONE -> 0.9995D;
             case WILDFIRE -> 0.999D;
             case FLOATER_TORNADO -> 0.9965D;
             case WATERSPOUT -> 0.9975D;

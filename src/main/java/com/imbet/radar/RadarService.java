@@ -4,6 +4,7 @@ import com.imbet.Config;
 import com.imbet.weather.AddonWeatherEventService;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.DynamicStormState;
+import com.imbet.weather.SpcIntensity;
 import com.imbet.weather.SpcRisk;
 import com.imbet.weather.StormClassifier;
 import com.imbet.weather.StormSubtype;
@@ -77,6 +78,9 @@ public final class RadarService {
                 boolean dynamicVortex = !tropicalSystem && DynamicStormController.isDynamicVortex(storm);
                 boolean tornadoLike = !tropicalSystem && (subtype == StormSubtype.TORNADO || subtype == StormSubtype.WATERSPOUT);
                 double snapshotWindMph = dynamicVortex ? TornadoWindField.maxWindMph(storm) : wind.speedMph();
+                // A measured violent vortex is off the published ladder, read through the same rule the
+                // SPC panel's live outlook uses, so the radar colours and the panel agree about it.
+                risk = SpcRisk.escalateObserved(risk, dynamicVortex ? SpcIntensity.tornadoCigForWind(snapshotWindMph) : 0);
                 double rotationMps = dynamicVortex
                         ? TornadoWindField.maxWindMph(storm) * 0.44704D * (0.46D + Math.min(0.18D, state.subVortices().size() * 0.03D))
                         : Math.max(state.mesocycloneStrength() * 28.0D, wind.speedMph() * 0.44704D * 0.25D);

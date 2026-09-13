@@ -7,6 +7,7 @@ import com.imbet.weather.ClientAddonWeatherEventStore;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.DynamicStormState;
 import com.imbet.weather.StormSubtype;
+import com.imbet.weather.TornadoDamageModel;
 import com.imbet.weather.TornadoWindField;
 import extendedrenderer.particle.ParticleRegistry;
 import extendedrenderer.particle.entity.EntityRotFX;
@@ -21,7 +22,9 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
@@ -30,8 +33,12 @@ import weather2.ClientTickHandler;
 import weather2.weathersystem.WeatherManagerClient;
 import weather2.weathersystem.storm.StormObject;
 import weather2.weathersystem.storm.WeatherObject;
+import weather2.weathersystem.tornado.simple.TornadoFunnelSimple;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 
 public final class TornadoFearClient {
     private static float fearIntensity;
@@ -39,6 +46,23 @@ public final class TornadoFearClient {
     private static float insideDamagePathIntensity;
     private static float insideCoreIntensity;
     private static float insideEyeIntensity;
+    private static float whiteoutIntensity;
+    private static float tumbleIntensity;
+    private static float tumbleYawAccum;
+    private static float tumbleFlipAccum;
+    private static boolean tumbleSpinning;
+    private static boolean cameraTumbleSeeded;
+    private static float cameraRollAccum;
+    private static float cameraPitchAccum;
+    private static float cameraRollSpeed;
+    private static float cameraPitchSpeed;
+    /**
+     * Per-entity roll (Z axis) state for captured models. Living entities have no roll
+     * field, so the renderer mixin applies this as a pose rotation around the body's
+     * vertical axis - combined with the yaw/pitch tumble it makes captured players and
+     * mobs tumble on all three axes like the grabbed blocks.
+     */
+    private static final Map<UUID, TumbleRollState> TUMBLE_ROLLS = new HashMap<>();
     private static FearSample activeSample = FearSample.NONE;
     private static TornadoRoarSound roarSound;
     private static int particlesThisTick;
@@ -62,6 +86,8 @@ public final class TornadoFearClient {
             fearIntensity = 0.0F;
         }
         updateInsideState();
+        spinCapturedPlayerYaw(minecraft);
+        tickCameraTumble(minecraft);
 
         tickRoar(minecraft);
         tickImpactSounds(minecraft.level, minecraft.player);
@@ -84,6 +110,288 @@ public final class TornadoFearClient {
         event.setRoll(event.getRoll() + roll);
         event.setYaw(event.getYaw() + yaw);
         event.setPitch(event.getPitch() + pitch);
+        if (Config.TORNADO_IMMERSION_CAMERA_TUMBLE.get() && tumbleIntensity > 0.01F) {
+            float tumble = tumbleIntensity;
+            float maxTumbleRoll = Config.TORNADO_IMMERSION_MAX_TUMBLE_ROLL_DEGREES.get().floatValue();
+            event.setRoll(event.getRoll() + (float) (Math.sin(tick * 1.32D) * maxTumbleRoll * tumble + Math.sin(tick * 3.71D) * maxTumbleRoll * 0.38F * tumble));
+            event.setPitch(event.getPitch() + (float) (Math.cos(tick * 1.94D) * maxTumbleRoll * 0.42F * tumble));
+            if (Minecraft.getInstance().options.getCameraType().isFirstPerson()) {
+                // continuous somersault: the view rolls over while captured, with a
+                // slow drifting pitch - both seeded randomly per capture so every
+                // tornado ride tumbles differently (third person gets the real
+                // model tumble instead, so this stays first-person only)
+                event.setRoll(event.getRoll() + cameraRollAccum * tumble);
+                event.setPitch(event.getPitch() + cameraPitchAccum * tumble);
+            }
+        }
+    }
+
+    /**
+     * Tumbles the LOCAL player's actual rotation while captured. The client is authoritative on its
+     * own rotation, so the server can never make this stick (movement packets overwrite it every tick).
+     * In third person the character does a continuous end-over-end FLIP like the grabbed blocks
+     * (pure pitch somersault, no yaw spin). In first person the pitch would hijack the camera, so
+     * there the yaw spin + viewport roll tumble the view instead.
+     */
+    private static void spinCapturedPlayerYaw(Minecraft minecraft) {
+        if (!Config.TORNADO_IMMERSION_CAMERA_TUMBLE.get()
+                || Config.TORNADO_IMMERSION_ACCESSIBILITY_REDUCED_MOTION.get()
+                || tumbleIntensity <= 0.01F
+                || !(minecraft.player instanceof net.minecraft.client.player.LocalPlayer player)) {
+            tumbleSpinning = false;
+            return;
+        }
+        boolean firstPerson = minecraft.options.getCameraType().isFirstPerson();
+        if (firstPerson) {
+            // First person: spin the view around the funnel axis (camera rides the yaw).
+            // Keep a floor on the spin: tumbleIntensity is small for most captures (it scales with
+            // how deep in the core you are), and letting it scale the whole rate made the spin
+            // crawl right when you get grabbed.
+            float degPerTick = Config.TORNADO_IMMERSION_TUMBLE_SPIN_DEGREES.get().floatValue() * 0.05F
+                    * (0.4F + tumbleIntensity * 0.6F) * Config.tumbleSpeedMultiplier();
+            if (degPerTick <= 0.0F) {
+                tumbleSpinning = false;
+                return;
+            }
+            if (!tumbleSpinning) {
+                tumbleYawAccum = player.getYRot();
+                tumbleSpinning = true;
+            }
+            float previous = tumbleYawAccum;
+            tumbleYawAccum = (tumbleYawAccum + degPerTick) % 360.0F;
+            player.yRotO = previous;
+            player.setYRot(tumbleYawAccum);
+            player.yHeadRotO = previous;
+            player.setYHeadRot(tumbleYawAccum);
+            player.yBodyRotO = previous;
+            player.setYBodyRot(tumbleYawAccum);
+        } else {
+            // Third person: a full TUMBLE - the model spins on yaw AND flips on pitch
+            // at randomized per-player rates (a somersault while spinning), plus the
+            // renderer rolls it around its vertical axis. Directions are seeded from
+            // the player's UUID so some tumble one way, some the other.
+            if (!tumbleSpinning) {
+                tumbleYawAccum = player.getYRot();
+                tumbleFlipAccum = player.getXRot();
+                tumbleSpinning = true;
+            }
+            int hash = player.getUUID().hashCode();
+            float yawDirection = (hash & 1) == 0 ? 1.0F : -1.0F;
+            float pitchDirection = ((hash >> 1) & 1) == 0 ? 1.0F : -1.0F;
+            float speed = (4.5F + tumbleIntensity * 8.0F) * Config.tumbleSpeedMultiplier();
+            float previousYaw = tumbleYawAccum;
+            tumbleYawAccum = (tumbleYawAccum + speed * yawDirection) % 360.0F;
+            if (tumbleYawAccum < 0.0F) {
+                tumbleYawAccum += 360.0F;
+            }
+            float previousPitch = tumbleFlipAccum;
+            tumbleFlipAccum = (tumbleFlipAccum + speed * 0.78F * pitchDirection) % 360.0F;
+            if (tumbleFlipAccum < 0.0F) {
+                tumbleFlipAccum += 360.0F;
+            }
+            player.yRotO = previousYaw;
+            player.setYRot(tumbleYawAccum);
+            player.yHeadRotO = previousYaw;
+            player.setYHeadRot(tumbleYawAccum);
+            player.yBodyRotO = previousYaw;
+            player.setYBodyRot(tumbleYawAccum);
+            player.xRotO = previousPitch;
+            player.setXRot(tumbleFlipAccum);
+        }
+    }
+
+    /**
+     * First-person camera somersault: a slow CONTINUOUS roll-over plus a drifting pitch,
+     * seeded randomly each capture so every tornado ride tumbles differently. Third
+     * person doesn't use this - there the model itself tumbles on all three axes.
+     */
+    private static void tickCameraTumble(Minecraft minecraft) {
+        if (minecraft.level == null) {
+            return;
+        }
+        boolean active = Config.TORNADO_IMMERSION_CAMERA_TUMBLE.get()
+                && !Config.TORNADO_IMMERSION_ACCESSIBILITY_REDUCED_MOTION.get()
+                && tumbleIntensity > 0.01F;
+        if (!active) {
+            cameraTumbleSeeded = false;
+            cameraRollAccum = 0.0F;
+            cameraPitchAccum = 0.0F;
+            return;
+        }
+        if (!cameraTumbleSeeded) {
+            RandomSource random = minecraft.level.random;
+            cameraRollSpeed = (2.2F + random.nextFloat() * 3.4F) * (random.nextBoolean() ? 1.0F : -1.0F);
+            cameraPitchSpeed = (0.5F + random.nextFloat() * 1.2F) * (random.nextBoolean() ? 1.0F : -1.0F);
+            cameraTumbleSeeded = true;
+        }
+        float tumbleRate = (0.35F + tumbleIntensity * 0.65F) * Config.tumbleSpeedMultiplier();
+        cameraRollAccum = (cameraRollAccum + cameraRollSpeed * tumbleRate) % 360.0F;
+        if (cameraRollAccum < 0.0F) {
+            cameraRollAccum += 360.0F;
+        }
+        cameraPitchAccum = Mth.clamp(cameraPitchAccum + cameraPitchSpeed * tumbleRate, -30.0F, 30.0F);
+    }
+
+    /**
+     * Roll (Z axis) for a captured entity's rendered model, in degrees. Living entities
+     * have no roll field, so the renderer mixin applies this as a pose rotation around
+     * the body's vertical axis - combined with the yaw/pitch tumble it makes captured
+     * players and mobs tumble on all three axes like the grabbed blocks. Returns 0 for
+     * entities that are not captured.
+     */
+    /**
+     * Whether a player should get the tornado tumble/roll at all. Survival only - creative and
+     * spectator players fly out of the funnel at will, so somersaulting their camera and model
+     * there just fights them. Mobs and other entities are unaffected by this. The local player is
+     * checked against the exact game mode; other players (whose mode is not sent) fall back to the
+     * synced creative/spectator abilities.
+     */
+    public static boolean tumblesInGameMode(Player player) {
+        if (player == null || player.isSpectator() || player.isCreative()) {
+            return false;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        if (player == minecraft.player && minecraft.gameMode != null) {
+            return minecraft.gameMode.getPlayerMode() == GameType.SURVIVAL;
+        }
+        return true;
+    }
+
+    public static float modelRollFor(LivingEntity entity) {
+        if (entity == null || !(entity.level() instanceof ClientLevel level)) {
+            return 0.0F;
+        }
+        long tick = level.getGameTime();
+        UUID id = entity.getUUID();
+        TumbleRollState state = TUMBLE_ROLLS.get(id);
+        if (state == null) {
+            state = new TumbleRollState(tick, 0.0F, 0.0F);
+            TUMBLE_ROLLS.put(id, state);
+        }
+        if (state.tick() != tick) {
+            float ramp = captureRampFor(entity, level);
+            float roll = state.roll();
+            float speed = state.speed();
+            if (ramp > 0.01F) {
+                if (speed == 0.0F) {
+                    int hash = id.hashCode() ^ (int) (tick & 0xFFFFL);
+                    float direction = (hash & 1) == 0 ? 1.0F : -1.0F;
+                    float rate = 3.5F + 6.5F * ((hash >> 3) & 0xF) / 15.0F;
+                    speed = direction * rate * (0.7F + ramp * 0.5F);
+                }
+                // The multiplier is applied here rather than baked into the seeded rate above, so
+                // turning it up speeds a tumble that is already in progress.
+                roll = (roll + speed * Config.tumbleSpeedMultiplier()) % 360.0F;
+                if (roll < 0.0F) {
+                    roll += 360.0F;
+                }
+            } else {
+                // released: ease the roll back to 0 so the model rights itself
+                speed = 0.0F;
+                roll *= 0.80F;
+            }
+            state = new TumbleRollState(tick, roll, speed);
+            TUMBLE_ROLLS.put(id, state);
+            if (TUMBLE_ROLLS.size() > 4096) {
+                TUMBLE_ROLLS.clear();
+            }
+        }
+        return state.roll();
+    }
+
+    /**
+     * Client-side capture ramp for a rendered entity, mirroring the server's mob gate
+     * (80+ mph core, same orbit geometry) so the render roll lines up with the synced
+     * yaw/pitch tumble. The local player uses the already-computed tumble intensity so
+     * the model roll matches its client-side yaw/pitch tumble.
+     */
+    private static float captureRampFor(LivingEntity entity, ClientLevel level) {
+        if (!Config.WINDFIELD_PLAYER_LAUNCH_ENABLED.get()) {
+            return 0.0F;
+        }
+        Player local = Minecraft.getInstance().player;
+        if (entity == local) {
+            // tumbleIntensity is already forced to 0 outside survival
+            return Config.TORNADO_IMMERSION_CAMERA_TUMBLE.get() ? tumbleIntensity : 0.0F;
+        }
+        if (entity instanceof Player otherPlayer && !tumblesInGameMode(otherPlayer)) {
+            return 0.0F;
+        }
+        double gate = TornadoDamageModel.mobCaptureGateMph();
+        Vec3 position = entity.position();
+        double best = 0.0D;
+        WeatherManagerClient manager = ClientTickHandler.weatherManager;
+        if (manager != null) {
+            for (WeatherObject object : new ArrayList<>(manager.getStormObjects())) {
+                if (!(object instanceof StormObject storm) || storm.pos == null
+                        || !DynamicStormController.isDynamicVortex(storm)
+                        || DynamicStormController.isAbsorbedOrDecaying(storm)) {
+                    continue;
+                }
+                if (horizontalDistance(position, storm.pos) < 64.0D) {
+                    TornadoWindField.WindSample wind = TornadoWindField.sample(storm, level, position);
+                    double localWindMph = Math.max(wind.speedMph(), wind.strongestLocalMph());
+                    best = Math.max(best, TornadoDamageModel.captureRamp(wind, localWindMph, gate));
+                }
+                DynamicStormState state = DynamicStormController.stateFor(storm);
+                for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
+                    Vec3 center = DynamicStormController.satelliteCenter(storm, satellite, storm.pos.y);
+                    if (horizontalDistance(position, center) < 48.0D) {
+                        TornadoWindField.WindSample wind = TornadoWindField.sample(storm, level, position);
+                        double localWindMph = Math.max(wind.speedMph(), wind.strongestLocalMph());
+                        best = Math.max(best, TornadoDamageModel.captureRamp(wind, localWindMph, gate));
+                    }
+                }
+            }
+        }
+        if (best <= 0.0D) {
+            best = tossedRamp(entity, manager);
+        }
+        return (float) Mth.clamp(best, 0.0D, 1.0D);
+    }
+
+    /**
+     * Weather2's OWN pick-up system runs alongside ours with completely different thresholds: it
+     * grabs entities from the forming stage up on its own pull radius, and its "tornado_shoot"
+     * branch flings entities at players. Anything it carries never passes our wind gate, so the
+     * model roll never switched on and those entities flew rigidly. An airborne entity that is
+     * actually moving inside a tornado's own pull radius is treated as tossed and tumbles too.
+     * The cheap motion test runs first so ordinary mobs cost nothing here.
+     */
+    private static double tossedRamp(LivingEntity entity, WeatherManagerClient manager) {
+        if (manager == null || entity.onGround()
+                || (entity instanceof Player player && !tumblesInGameMode(player))) {
+            return 0.0D;
+        }
+        Vec3 motion = entity.getDeltaMovement();
+        double horizontal = Math.sqrt(motion.x * motion.x + motion.z * motion.z);
+        if (horizontal < 0.14D && Math.abs(motion.y) < 0.24D) {
+            return 0.0D;
+        }
+        Vec3 position = entity.position();
+        double speed = Math.sqrt(horizontal * horizontal + motion.y * motion.y);
+        double best = 0.0D;
+        for (WeatherObject object : new ArrayList<>(manager.getStormObjects())) {
+            if (!(object instanceof StormObject storm) || storm.pos == null
+                    || !DynamicStormController.isDynamicVortex(storm)
+                    || DynamicStormController.isAbsorbedOrDecaying(storm)) {
+                continue;
+            }
+            if (horizontalDistance(position, storm.pos) > entityPullDistance(storm)) {
+                continue;
+            }
+            best = Math.max(best, Mth.clamp(speed * 2.2D - 0.30D, 0.0D, 0.85D));
+        }
+        return best;
+    }
+
+    /** Weather2's own entity pull radius for this storm, falling back to the funnel's width. */
+    private static double entityPullDistance(StormObject storm) {
+        TornadoFunnelSimple funnel = storm.getTornadoFunnelSimple();
+        if (funnel != null && funnel.getConfig() != null && funnel.getConfig().getEntityPullDistXZ() > 1.0F) {
+            return funnel.getConfig().getEntityPullDistXZ();
+        }
+        return Math.max(10.0D, DynamicStormController.baseRadiusForWind(storm) * 1.4D);
     }
 
     public static void onFov(ViewportEvent.ComputeFov event) {
@@ -101,11 +409,12 @@ public final class TornadoFearClient {
         float insideMultiplier = Config.TORNADO_IMMERSION_INSIDE_FOG_MULTIPLIER.get().floatValue();
         float corePressure = Config.TORNADO_IMMERSION_INSIDE_CORE_EFFECTS.get() ? insideCoreIntensity * 0.74F * insideMultiplier : 0.0F;
         float eyeRelief = Config.TORNADO_IMMERSION_EYE_EFFECT.get() ? insideEyeIntensity * 0.38F : 0.0F;
-        float pressure = Mth.clamp(fearIntensity * 0.48F + corePressure - eyeRelief, 0.0F, 0.86F);
-        float dust = Mth.clamp(insideCoreIntensity * 0.60F * insideMultiplier, 0.0F, 0.70F);
-        float redTarget = Mth.lerp(dust, event.getRed() * 0.50F, 0.70F);
-        float greenTarget = Mth.lerp(dust, event.getGreen() * 0.54F, 0.68F);
-        float blueTarget = Mth.lerp(dust, event.getBlue() * 0.64F, 0.66F);
+        float whiteout = Config.TORNADO_IMMERSION_WHITEOUT_ENABLED.get() ? whiteoutIntensity : 0.0F;
+        float pressure = Mth.clamp(fearIntensity * 0.48F + corePressure - eyeRelief + whiteout * 0.16F, 0.0F, 0.95F);
+        float dust = Mth.clamp(insideCoreIntensity * 0.60F * insideMultiplier + whiteout * 0.34F, 0.0F, 0.92F);
+        float redTarget = Mth.lerp(dust, event.getRed() * 0.50F, Mth.lerp(whiteout, 0.70F, 0.77F));
+        float greenTarget = Mth.lerp(dust, event.getGreen() * 0.54F, Mth.lerp(whiteout, 0.68F, 0.73F));
+        float blueTarget = Mth.lerp(dust, event.getBlue() * 0.64F, Mth.lerp(whiteout, 0.66F, 0.69F));
         if (insideEyeIntensity > 0.02F) {
             redTarget = Mth.lerp(insideEyeIntensity * 0.32F, redTarget, event.getRed() * 0.88F);
             greenTarget = Mth.lerp(insideEyeIntensity * 0.32F, greenTarget, event.getGreen() * 0.90F);
@@ -117,7 +426,7 @@ public final class TornadoFearClient {
     }
 
     public static void onRenderFog(ViewportEvent.RenderFog event) {
-        if (!Config.TORNADO_IMMERSION_ENABLED.get() || !Config.TORNADO_IMMERSION_FOG_PRESSURE.get() || fearIntensity <= 0.08F) {
+        if (!fogPressureActive()) {
             return;
         }
         float insideMultiplier = Config.TORNADO_IMMERSION_INSIDE_FOG_MULTIPLIER.get().floatValue();
@@ -126,8 +435,22 @@ public final class TornadoFearClient {
         if (Config.TORNADO_IMMERSION_EYE_EFFECT.get() && insideEyeIntensity > 0.02F) {
             targetFar = Mth.lerp(insideEyeIntensity * 0.55F, targetFar, 46.0F);
         }
+        if (Config.TORNADO_IMMERSION_WHITEOUT_ENABLED.get() && whiteoutIntensity > 0.01F) {
+            float whiteoutFar = Config.TORNADO_IMMERSION_WHITEOUT_FOG_BLOCKS.get().floatValue();
+            targetFar = Mth.lerp(whiteoutIntensity, targetFar, Math.max(0.5F, whiteoutFar));
+        }
         event.setFarPlaneDistance(Math.min(event.getFarPlaneDistance(), targetFar));
         event.setNearPlaneDistance(Math.min(event.getNearPlaneDistance(), 0.0F));
+    }
+
+    /**
+     * Whether tornado pressure fog is currently overriding the far plane. Exposed so the LOD compat
+     * fog handler can stand down instead of stretching a fog this system deliberately pulled in.
+     */
+    public static boolean fogPressureActive() {
+        return Config.TORNADO_IMMERSION_ENABLED.get()
+                && Config.TORNADO_IMMERSION_FOG_PRESSURE.get()
+                && fearIntensity > 0.08F;
     }
 
     public static float fearIntensity() {
@@ -146,6 +469,10 @@ public final class TornadoFearClient {
         return insideEyeIntensity;
     }
 
+    public static float whiteoutIntensity() {
+        return whiteoutIntensity;
+    }
+
     public static Vec3 activeWindVector() {
         return activeSample == null ? Vec3.ZERO : activeSample.windVector();
     }
@@ -158,6 +485,8 @@ public final class TornadoFearClient {
         float targetPath = 0.0F;
         float targetCore = 0.0F;
         float targetEye = 0.0F;
+        float targetWhiteout = 0.0F;
+        float targetTumble = 0.0F;
         if (Config.TORNADO_IMMERSION_INSIDE_CORE_EFFECTS.get() && activeSample != FearSample.NONE) {
             double pathDistance = Math.max(6.0D, activeSample.damageWidth() * 0.50D);
             double coreDistance = Math.max(Math.max(activeSample.coreRadius(), activeSample.radiusOfMaxWind() * 0.65F), 8.0F);
@@ -168,10 +497,52 @@ public final class TornadoFearClient {
                 float windGate = Mth.clamp((float) ((activeSample.windMph() - 95.0D) / 105.0D), 0.0F, 1.0F);
                 targetEye = Mth.clamp((float) (1.0D - activeSample.distance() / eyeDistance), 0.0F, 1.0F) * windGate;
             }
+            if (Config.TORNADO_IMMERSION_WHITEOUT_ENABLED.get()) {
+                double whiteoutDistance = Math.max(activeSample.coreRadius() * 0.50D, 4.0D);
+                float windGate = Mth.clamp((float) ((activeSample.windMph() - 70.0D) / 90.0D), 0.0F, 1.0F);
+                targetWhiteout = Mth.clamp((float) (1.0D - activeSample.distance() / whiteoutDistance), 0.0F, 1.0F) * windGate;
+            }
+            if (Config.TORNADO_IMMERSION_CAMERA_TUMBLE.get()) {
+                double tumbleDistance = Math.max(activeSample.coreRadius() * 0.78D, 6.0D);
+                float windGate = Mth.clamp((float) ((activeSample.windMph() - 85.0D) / 110.0D), 0.0F, 1.0F);
+                targetTumble = Mth.clamp((float) (1.0D - activeSample.distance() / tumbleDistance), 0.0F, 1.0F) * windGate;
+                if (targetTumble <= 0.01F) {
+                    targetTumble = playerCarriedRamp(activeSample.windMph());
+                }
+            }
+        }
+        if (!tumblesInGameMode(Minecraft.getInstance().player)) {
+            // Survival only: in creative and spectator the player can just fly out of the funnel,
+            // so tumbling the camera and model there only fights their own movement.
+            targetTumble = 0.0F;
         }
         insideDamagePathIntensity = lerpInsideState(insideDamagePathIntensity, targetPath);
         insideCoreIntensity = lerpInsideState(insideCoreIntensity, targetCore);
         insideEyeIntensity = lerpInsideState(insideEyeIntensity, targetEye);
+        whiteoutIntensity = lerpInsideState(whiteoutIntensity, targetWhiteout);
+        tumbleIntensity = lerpInsideState(tumbleIntensity, targetTumble);
+    }
+
+    /**
+     * Weather2's OWN pick-up carries players too (spinObject with forPlayer=true, gated only by its
+     * own entity pull radius and storm strength) at winds well under our camera-tumble gate - so a
+     * player being dragged by that system used to get no tumble at all. If the player is airborne
+     * and actually being carried (lifted or driven sideways) inside a tornado, tumble them too.
+     */
+    private static float playerCarriedRamp(double windMph) {
+        if (windMph < 55.0D) {
+            return 0.0F;
+        }
+        Player player = Minecraft.getInstance().player;
+        if (player == null || player.onGround() || player.isPassenger() || player.isSpectator()) {
+            return 0.0F;
+        }
+        Vec3 motion = player.getDeltaMovement();
+        double horizontal = Math.sqrt(motion.x * motion.x + motion.z * motion.z);
+        if (horizontal < 0.18D && motion.y < 0.05D) {
+            return 0.0F;
+        }
+        return (float) Mth.clamp(0.20D + (windMph - 55.0D) / 120.0D, 0.0F, 0.60D);
     }
 
     private static float lerpInsideState(float current, float target) {
@@ -210,6 +581,15 @@ public final class TornadoFearClient {
         insideDamagePathIntensity = 0.0F;
         insideCoreIntensity = 0.0F;
         insideEyeIntensity = 0.0F;
+        whiteoutIntensity = 0.0F;
+        tumbleIntensity = 0.0F;
+        tumbleYawAccum = 0.0F;
+        tumbleFlipAccum = 0.0F;
+        tumbleSpinning = false;
+        cameraTumbleSeeded = false;
+        cameraRollAccum = 0.0F;
+        cameraPitchAccum = 0.0F;
+        TUMBLE_ROLLS.clear();
         activeSample = FearSample.NONE;
         if (roarSound != null) {
             roarSound.requestStop();
@@ -406,6 +786,9 @@ public final class TornadoFearClient {
 
     private record FearSample(Vec3 center, Vec3 windVector, double windMph, double distance, float damageWidth, float coreRadius, float radiusOfMaxWind, float intensity) {
         private static final FearSample NONE = new FearSample(Vec3.ZERO, Vec3.ZERO, 0.0D, Double.MAX_VALUE, 0.0F, 0.0F, 0.0F, 0.0F);
+    }
+
+    private record TumbleRollState(long tick, float roll, float speed) {
     }
 
     private static final class TornadoRoarSound extends AbstractTickableSoundInstance {

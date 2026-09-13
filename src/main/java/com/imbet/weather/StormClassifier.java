@@ -101,6 +101,29 @@ public final class StormClassifier {
         if (subtype == StormSubtype.TORNADO && DynamicStormController.isAntiCyclonicTornado(storm)) {
             return "Anti-Cyclonic Tornado";
         }
+        if (storm != null && (subtype == StormSubtype.SUPERCELL || subtype == StormSubtype.TORNADO)) {
+            DynamicStormState state = DynamicStormController.stateFor(storm);
+            if (SupercellStructureService.isHighPrecipitation(storm, state)) {
+                // HP storms hide their tornado in the rain shield - and a rain-wrapped tornado hides an
+                // arrangement too, so this name wins over the multi-vortex one: you cannot see vortices
+                // through the rain, and a warning that described them would be describing nothing.
+                return subtype == StormSubtype.TORNADO ? "Rain-Wrapped Tornado" : "HP Supercell";
+            }
+            if (SupercellStructureService.isLowPrecipitation(storm, state)) {
+                return subtype == StormSubtype.TORNADO ? "LP Supercell Tornado" : "LP Supercell";
+            }
+        }
+        // A multi-vortex arrangement is not a different storm - it is the same tornado wearing its
+        // vortices a particular way, so it is named by what it is at the moment rather than by a
+        // subtype of its own. Nothing about the storm's identity, save data or severity changes when
+        // an episode starts. A lifted parent keeps the plain name: there, the vortices are the whole
+        // tornado and calling it anything else would describe what you see as a separate storm.
+        if (subtype == StormSubtype.TORNADO && storm != null) {
+            MultiVortexFlavour flavour = DynamicStormController.stateFor(storm).multiVortexFlavour();
+            if (flavour != MultiVortexFlavour.LIFTED) {
+                return flavour.label();
+            }
+        }
         if (subtype == StormSubtype.HURRICANE) {
             return "Hurricane";
         }

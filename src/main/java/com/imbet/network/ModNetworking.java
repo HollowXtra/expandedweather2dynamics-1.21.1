@@ -3,7 +3,9 @@ package com.imbet.network;
 import com.imbet.ExpandedWeather2Dynamics;
 import com.imbet.radar.ClientRadarStore;
 import com.imbet.survey.ClientDamageSurveyStore;
+import com.imbet.client.ClientStructureFlight;
 import com.imbet.weather.ClientAddonWeatherEventStore;
+import com.imbet.weather.ClientAlertStore;
 import com.imbet.weather.ClientForecastStore;
 import com.imbet.weather.ClientLowPressureStore;
 import com.imbet.weather.ClientStormStateStore;
@@ -29,6 +31,10 @@ public final class ModNetworking {
                         context.enqueueWork(() -> ClientLowPressureStore.accept(payload)))
                 .playToClient(ForecastSnapshotPayload.TYPE, ForecastSnapshotPayload.STREAM_CODEC, (payload, context) ->
                         context.enqueueWork(() -> ClientForecastStore.accept(payload)))
+                .playToClient(AlertBannerPayload.TYPE, AlertBannerPayload.STREAM_CODEC, (payload, context) ->
+                        context.enqueueWork(() -> ClientAlertStore.accept(payload)))
+                .playToClient(StructureFlightPayload.TYPE, StructureFlightPayload.STREAM_CODEC, (payload, context) ->
+                        context.enqueueWork(() -> ClientStructureFlight.accept(payload)))
                 .playToServer(ServerboundSubmitSurveyPacket.TYPE, ServerboundSubmitSurveyPacket.STREAM_CODEC, ServerboundSubmitSurveyPacket::handle);
     }
 }

@@ -1,19 +1,17 @@
 package com.imbet.weather;
 
 import com.imbet.Config;
+import com.imbet.alert.AlertStationNetwork;
 import com.imbet.compat.immersiveaircraft.ImmersiveAircraftStormCompat;
 import com.imbet.compat.mts.ImmersiveVehiclesStormCompat;
 import com.imbet.compat.treephysics.TreePhysicsStormCompat;
-import net.minecraft.ChatFormatting;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.sounds.SoundEvents;
-import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import com.imbet.registry.ModContent;
@@ -45,14 +43,22 @@ public final class WeatherRuntimeEvents {
         LowPressureService.tick(level);
         ForecastReadout.tick(level);
         TornadoTrackService.tick(level);
+        TornadoPlayerCapture.tick(level);
         ImmersiveVehiclesStormCompat.tick(level);
         ImmersiveAircraftStormCompat.tick(level);
         TreePhysicsStormCompat.tick(level);
-        maybeAlertAddonEvents(level);
+        // Alert stations run on their own refresh cadence, and keep broadcasting while unloaded, so
+        // this is called every tick rather than on the storm scan interval.
+        AlertStationNetwork.broadcast(level);
         if (!Config.ALERTS_ENABLED.get() || level.getGameTime() % Config.PERFORMANCE_STORM_SCAN_INTERVAL_TICKS.get() != 0L) {
             return;
         }
+        if (Config.ALERTS_REQUIRE_SIREN.get()) {
+            // Every alert belongs to a siren station now, so the global scan has nothing left to say.
+            return;
+        }
         pruneParticleAlertCooldowns(level.getGameTime());
+        maybeAlertAddonEvents(level);
         WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
         if (manager == null) {
             return;
@@ -63,6 +69,18 @@ public final class WeatherRuntimeEvents {
             } else if (object instanceof WeatherObjectParticleStorm particleStorm) {
                 maybeAlert(level, particleStorm);
             }
+        }
+    }
+
+    /**
+     * A player who has just joined has no addon storm state yet, and the steady-state push is gated
+     * both by distance and by {@code multiplayer.stateSyncIntervalTicks}. Until it comes round they
+     * would render a mature tornado as a fresh, narrow one with none of its satellites, sub-vortices
+     * or horizontal vortices. Pushing everything nearby on login makes their first frame correct.
+     */
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            DynamicStormController.pushAddonStateTo(player);
         }
     }
 
@@ -142,16 +160,12 @@ public final class WeatherRuntimeEvents {
         }
     }
 
+    /**
+     * The ungated path: used only when siren gating is switched off, where an alert goes to every
+     * player the storm reaches. A negative siren distance tells the banner no station covers them.
+     */
     private static void sendAlert(ServerPlayer player, AlertService.AlertResult result) {
-        int distance = (int) player.position().distanceTo(result.position());
-        int leadDistance = (int) player.position().distanceTo(result.projectedPosition());
-        player.sendSystemMessage(Component.literal("[Expanded Weather Fictional In-Game Alert] " + result.productCode() + " / " + result.level().label() + ": " + result.label() + " " + result.source() + ", " + distance + " blocks away, projected path " + leadDistance + " blocks away.")
-                .withStyle(result.level().isWarning() ? ChatFormatting.RED : ChatFormatting.GOLD));
-        player.displayClientMessage(Component.literal(result.level().label() + " - " + distance + " blocks away").withStyle(result.level().isWarning() ? ChatFormatting.RED : ChatFormatting.YELLOW), true);
-        if (result.level().activatesEas() && Config.ALERTS_FAUX_SOUND.get()) {
-            player.playNotifySound(SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.BLOCKS, 0.8F, result.level().isWarning() ? 0.55F : 0.82F);
-            player.playNotifySound(SoundEvents.NOTE_BLOCK_BELL.value(), SoundSource.BLOCKS, 0.7F, result.level().isWarning() ? 1.0F : 1.25F);
-        }
+        AlertBroadcaster.send(player, result, -1, "", true);
     }
 
     private static void pruneParticleAlertCooldowns(long gameTime) {

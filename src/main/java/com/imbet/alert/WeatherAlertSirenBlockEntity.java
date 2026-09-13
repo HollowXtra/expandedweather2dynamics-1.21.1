@@ -14,7 +14,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
-public class WeatherAlertSirenBlockEntity extends BlockEntity {
+public class WeatherAlertSirenBlockEntity extends BlockEntity implements AlertStation {
     private int mode;
     private int power;
     private long lastToneTick = -1_000_000L;
@@ -28,6 +28,36 @@ public class WeatherAlertSirenBlockEntity extends BlockEntity {
 
     public int getPower() {
         return power;
+    }
+
+    /** 0 = all alerts, 1 = warnings only, 2 = muted. */
+    public int mode() {
+        return mode;
+    }
+
+    @Override
+    public int alertMode() {
+        return mode;
+    }
+
+    @Override
+    public double alertRangeBlocks() {
+        return Math.max(32.0D, Config.ALERTS_SIREN_RANGE_BLOCKS.get());
+    }
+
+    /**
+     * False on purpose: the siren rings out of its own block position, so the network delivers its
+     * banners silently. Otherwise every alert a player standing beside their own siren receives
+     * would arrive with a second set of tones attached.
+     */
+    @Override
+    public boolean ringsTones() {
+        return false;
+    }
+
+    @Override
+    public String stationKind() {
+        return "SIREN";
     }
 
     public void cycleMode() {
@@ -44,14 +74,20 @@ public class WeatherAlertSirenBlockEntity extends BlockEntity {
     }
 
     public static void tick(Level level, BlockPos pos, BlockState state, WeatherAlertSirenBlockEntity entity) {
-        if (level.isClientSide() || !Config.ALERTS_ENABLED.get() || level.getGameTime() % 20L != 0L) {
+        if (level.isClientSide() || !(level instanceof ServerLevel serverLevel) || level.getGameTime() % 20L != 0L) {
+            return;
+        }
+        // Registered even while alerts are switched off, so the station network is already complete
+        // the moment they are switched back on. Registration is what tells the network we exist.
+        AlertStationNetwork.recordStation(serverLevel, pos, entity);
+        if (!Config.ALERTS_ENABLED.get()) {
+            entity.setAlert(level, state, AlertLevel.NONE);
             return;
         }
         if (entity.mode == 2) {
             entity.setAlert(level, state, AlertLevel.NONE);
             return;
         }
-        ServerLevel serverLevel = (ServerLevel) level;
         AlertService.AlertResult result = AlertService.highestAlert(serverLevel, Vec3.atCenterOf(pos), entity.mode == 1);
         entity.setAlert(level, state, result);
         if (result.level().activatesEas() && Config.ALERTS_FAUX_SOUND.get() && entity.lastToneTick + Config.ALERT_COOLDOWN_TICKS.get() / 3L <= level.getGameTime()) {
@@ -59,6 +95,14 @@ public class WeatherAlertSirenBlockEntity extends BlockEntity {
             float pitch = result.level() == AlertLevel.TORNADO_EMERGENCY ? 0.48F : result.level() == AlertLevel.SEVERE_STORM_WARNING ? 0.74F : 0.55F;
             serverLevel.playSound(null, pos, SoundEvents.NOTE_BLOCK_PLING.value(), SoundSource.BLOCKS, 1.0F, pitch);
             serverLevel.playSound(null, pos, SoundEvents.NOTE_BLOCK_BELL.value(), SoundSource.BLOCKS, 0.8F, pitch + 0.45F);
+        }
+    }
+
+    @Override
+    public void onLoad() {
+        super.onLoad();
+        if (level instanceof ServerLevel serverLevel) {
+            AlertStationNetwork.recordStation(serverLevel, worldPosition, this);
         }
     }
 

@@ -229,7 +229,8 @@ public final class TreePhysicsStormCompat {
                     && subtype != StormSubtype.WATERSPOUT
                     && subtype != StormSubtype.GUSTNADO
                     && subtype != StormSubtype.SQUALL_LINE
-                    && subtype != StormSubtype.HURRICANE) {
+                    && subtype != StormSubtype.HURRICANE
+                    && subtype != StormSubtype.CYCLONE) {
                 continue;
             }
             TornadoWindField.WindSample sample = snapshot.sampleAt(position);

@@ -16,11 +16,16 @@ public final class NetworkSafety {
     private NetworkSafety() {
     }
 
-    public static void sendToPlayer(ServerPlayer player, CustomPacketPayload payload) {
+    /**
+     * @return true when the payload was actually handed to the network layer, false when it was
+     *         dropped because it could not be encoded (or the arguments were unusable).
+     */
+    public static boolean sendToPlayer(ServerPlayer player, CustomPacketPayload payload) {
         if (player == null || payload == null || !canEncode(player, payload)) {
-            return;
+            return false;
         }
         PacketDistributor.sendToPlayer(player, payload);
+        return true;
     }
 
     public static void sendToPlayersNear(ServerLevel level, double x, double y, double z, double range, CustomPacketPayload payload) {
@@ -68,6 +73,8 @@ public final class NetworkSafety {
             StormStateSyncPayload.STREAM_CODEC.encode(buf, stormState);
         } else if (payload instanceof DamageSurveyResultPayload survey) {
             DamageSurveyResultPayload.STREAM_CODEC.encode(buf, survey);
+        } else if (payload instanceof StructureFlightPayload structure) {
+            StructureFlightPayload.STREAM_CODEC.encode(buf, structure);
         }
     }
 

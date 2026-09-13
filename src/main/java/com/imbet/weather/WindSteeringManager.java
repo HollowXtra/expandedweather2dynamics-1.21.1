@@ -8,6 +8,10 @@ import weather2.ServerTickHandler;
 import weather2.weathersystem.WeatherManagerServer;
 import weather2.weathersystem.storm.StormObject;
 
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+
 public final class WindSteeringManager {
     private static final Vec3 ENE_DIRECTION = new Vec3(0.9238795325D, 0.0D, -0.3826834324D);
     private static final double MIN_STEERING_VARIABILITY = 0.18D;
@@ -62,7 +66,11 @@ public final class WindSteeringManager {
             variability = Math.max(variability, TROPICAL_STEERING_VARIABILITY);
         }
         long gameTime = storm.manager.getWorld().getGameTime();
-        return steeringDirectionFrom(globalWind, storm.motion, gameTime, storm.ID, eneBias, variability);
+        Vec3 direction = steeringDirectionFrom(globalWind, storm.motion, gameTime, storm.ID, eneBias, variability);
+        // Real-track behaviour: deviant veer, the slow asymmetric arc and the multi-vortex scallop.
+        // All three are angles, so they compose with whatever meander the flow already produced.
+        double trackOffset = TornadoTrackModel.headingOffsetDegrees(storm, gameTime);
+        return trackOffset == 0.0D ? direction : rotateHorizontal(direction, trackOffset);
     }
 
     public static Vec3 steeringVector(StormObject storm) {
@@ -80,7 +88,13 @@ public final class WindSteeringManager {
                     + 0.14D * Math.sin(gameTime * 0.00052D + storm.ID * 0.37D));
             targetSpeed *= Mth.clamp(1.0D + erratic, 0.45D, 1.55D);
         }
-        targetSpeed = Mth.clamp(targetSpeed, Config.ATMOSPHERIC_STEERING_MIN_SPEED.get(), Config.ATMOSPHERIC_STEERING_MAX_SPEED.get());
+        if (TornadoTrackModel.appliesTo(storm)) {
+            // Honest miles-per-hour translation for tornadoes: the legacy block-per-tick clamp is
+            // deliberately bypassed, since its 0.54 ceiling is only ~24 mph.
+            targetSpeed = TornadoTrackModel.targetSpeedBlocksPerTick(storm, targetSpeed);
+        } else {
+            targetSpeed = Mth.clamp(targetSpeed, Config.ATMOSPHERIC_STEERING_MIN_SPEED.get(), Config.ATMOSPHERIC_STEERING_MAX_SPEED.get());
+        }
         return steeringDirection(storm).scale(targetSpeed);
     }
 
@@ -120,7 +134,14 @@ public final class WindSteeringManager {
     }
 
     public static void applyPositionCorrection(StormObject storm, Vec3 previousPos) {
-        if (!shouldSteer(storm) || previousPos == null) {
+        if (storm == null || previousPos == null || storm.manager == null || storm.manager.getWorld() == null) {
+            return;
+        }
+        if (storm.manager.getWorld().isClientSide()) {
+            applyClientPositionInterpolation(storm);
+            return;
+        }
+        if (!shouldSteer(storm)) {
             return;
         }
         Vec3 steering = steeringVector(storm);
@@ -128,10 +149,107 @@ public final class WindSteeringManager {
             return;
         }
         Vec3 smoothed = smoothMotion(storm.motion == null ? Vec3.ZERO : storm.motion, steering, isTropicalSteeringStorm(storm));
+        if (TornadoTrackModel.appliesTo(storm)) {
+            // Cap the curvature so the track can only bend, never kink. A merge orbit is already
+            // steering the storm deliberately, so it is allowed to curve freely.
+            DynamicStormState state = DynamicStormController.stateFor(storm);
+            long gameTime = storm.manager.getWorld().getGameTime();
+            if (!state.mergeOrbitActive(gameTime)) {
+                boolean newborn = storm.levelCurIntensityStage <= StormObject.STATE_FORMING;
+                smoothed = TornadoTrackModel.limitTurn(storm.motion, smoothed,
+                        TornadoTrackModel.maxTurnDegreesPerTick(storm), newborn);
+            }
+        }
         storm.motion = smoothed;
         storm.pos = previousPos.add(smoothed);
         if (storm.posGround != null) {
             storm.posGround = new Vec3(storm.pos.x, storm.posGround.y, storm.pos.z);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Client-side position smoothing between server NBT syncs.
+    //
+    // Weather2 client storms only receive a new position when an NBT sync
+    // packet arrives (every ~20 ticks). Steering those storms locally is
+    // wrong: the client's wind data is stale (synced every 60 ticks), so a
+    // locally steered path diverges from the server and the whole tornado
+    // (funnel, deck, dust, satellites) snaps back to the server position at
+    // every sync - the jitter. Instead the client lerps the storm position
+    // from the previous synced position to the newest one over the sync
+    // interval, so the funnel glides smoothly and meets the next synced
+    // position exactly when it arrives.
+    // ------------------------------------------------------------------
+
+    private record ClientSyncState(Vec3 prevPos, Vec3 targetPos, long startTime, long interval) {
+    }
+
+    private static final Map<Long, ClientSyncState> CLIENT_SYNC = new HashMap<>();
+    private static final long DEFAULT_SYNC_INTERVAL = 20L;
+
+    /** Called at the HEAD of StormObject.read() on the client, before the synced NBT is applied. */
+    public static void onClientSyncStart(StormObject storm, long gameTime, long lastSyncGameTime) {
+        if (storm == null || storm.pos == null) {
+            return;
+        }
+        long interval = lastSyncGameTime == Long.MIN_VALUE ? DEFAULT_SYNC_INTERVAL : Math.max(1L, gameTime - lastSyncGameTime);
+        CLIENT_SYNC.put(storm.ID, new ClientSyncState(storm.pos, storm.pos, gameTime, interval));
+    }
+
+    /** Called at the RETURN of StormObject.read() on the client, after the synced NBT applied. */
+    public static void onClientSyncComplete(StormObject storm, long gameTime) {
+        if (storm == null || storm.pos == null) {
+            return;
+        }
+        ClientSyncState state = CLIENT_SYNC.get(storm.ID);
+        if (state == null) {
+            return;
+        }
+        Vec3 prev = state.prevPos();
+        Vec3 target = storm.pos;
+        // Fresh storm (client storms start at 0,0,0): snap directly instead of
+        // dragging the funnel across the map from the origin.
+        if (prev.distanceToSqr(Vec3.ZERO) < 1.0D && target.distanceToSqr(prev) > 64.0D) {
+            CLIENT_SYNC.put(storm.ID, new ClientSyncState(target, target, gameTime, state.interval()));
+            return;
+        }
+        CLIENT_SYNC.put(storm.ID, new ClientSyncState(prev, target, gameTime, state.interval()));
+    }
+
+    public static void applyClientPositionInterpolation(StormObject storm) {
+        if (storm == null || storm.manager == null || storm.manager.getWorld() == null || !storm.manager.getWorld().isClientSide()) {
+            return;
+        }
+        // Weather2 dead-reckons weather-machine storms itself in tickMovementClient.
+        if (storm.weatherMachineControlled) {
+            CLIENT_SYNC.remove(storm.ID);
+            return;
+        }
+        ClientSyncState state = CLIENT_SYNC.get(storm.ID);
+        if (state == null || state.prevPos() == null || state.targetPos() == null) {
+            return;
+        }
+        long now = storm.manager.getWorld().getGameTime();
+        if (now - state.startTime() > 600L) {
+            CLIENT_SYNC.remove(storm.ID);
+            return;
+        }
+        float t = Mth.clamp((now - state.startTime()) / (float) state.interval(), 0.0F, 1.0F);
+        Vec3 interpolated = state.prevPos().lerp(state.targetPos(), t);
+        storm.pos = interpolated;
+        if (storm.posGround != null) {
+            storm.posGround = new Vec3(interpolated.x, storm.posGround.y, interpolated.z);
+        }
+        if (t >= 1.0F) {
+            // Arrived at the synced target; hold until the next sync refreshes it.
+            CLIENT_SYNC.put(storm.ID, new ClientSyncState(state.targetPos(), state.targetPos(), now, state.interval()));
+        }
+    }
+
+    public static void clearClientSyncState() {
+        Iterator<Map.Entry<Long, ClientSyncState>> iterator = CLIENT_SYNC.entrySet().iterator();
+        while (iterator.hasNext()) {
+            iterator.remove();
         }
     }
 

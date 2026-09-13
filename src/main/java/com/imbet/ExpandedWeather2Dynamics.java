@@ -26,8 +26,10 @@ public final class ExpandedWeather2Dynamics {
         modEventBus.addListener(ModNetworking::register);
         modEventBus.addListener(this::commonSetup);
         NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onLevelTick);
+        NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onPlayerLoggedIn);
         NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onBlockPlaced);
         NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onEntityJoinLevel);
+        NeoForge.EVENT_BUS.addListener(com.imbet.weather.TornadoPlayerCapture::onFall);
         NeoForge.EVENT_BUS.addListener(EwdCommand::register);
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }

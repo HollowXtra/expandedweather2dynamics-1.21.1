@@ -83,6 +83,16 @@ public final class FloodingService {
         if (storm.stormType == StormObject.TYPE_WATER || DynamicStormController.isNativeTropicalCyclone(storm) || DynamicStormController.isNativeHurricane(storm)) {
             intensity += 0.32D;
         }
+        // Rainfall is what actually floods ground, and it follows the storm's precipitation character:
+        // a dry LP supercell mostly hails and barely floods, a rain-wrapped HP storm soaks the map.
+        float character = SupercellStructureService.precipitationCharacter(storm, DynamicStormController.stateFor(storm));
+        intensity *= Mth.lerp(0.25F, 1.45F, Mth.clamp(character, 0.0F, 1.0F));
+        // Virga is precipitation that never lands, so it cannot flood anything: a shaft that evaporates
+        // a hundred blocks up wets the ground with nothing. This is the same strength the client draws
+        // its shafts from, scored from synced storm data, so what a player sees and what the world
+        // soaks up agree.
+        float virga = SupercellStructureService.virgaStrength(storm, DynamicStormController.stateFor(storm));
+        intensity *= 1.0F - Mth.clamp(virga, 0.0F, 1.0F);
         return Mth.clamp(intensity, 0.0D, 1.65D);
     }
 

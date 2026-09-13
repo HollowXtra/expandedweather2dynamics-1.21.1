@@ -7,7 +7,12 @@ public enum FunnelMorphology {
     WEDGE,
     ELEPHANT_TRUNK,
     DRILL_BIT,
-    FLOATER;
+    FLOATER,
+    CONE,
+    STOVEPIPE,
+    ROPE,
+    CORKSCREW,
+    BOWL;
 
     public boolean shaped() {
         return this != DEFAULT;
@@ -23,4 +28,4 @@ public enum FunnelMorphology {
             return DEFAULT;
         }
     }
-}
+}

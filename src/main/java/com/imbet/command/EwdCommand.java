@@ -100,7 +100,8 @@ public final class EwdCommand {
             case "squall", "squall_line", "qlcs", "line" -> StormSubtype.SQUALL_LINE;
             case "wildfire", "wild_fire", "brushfire" -> StormSubtype.WILDFIRE;
             case "flammagenitus", "pyrocumulus", "pyrocb", "pyrocumulonimbus" -> StormSubtype.FLAMMAGENITUS;
-            case "hurricane", "cyclone", "tropical_cyclone" -> StormSubtype.HURRICANE;
+            case "hurricane", "tropical_cyclone" -> StormSubtype.HURRICANE;
+            case "cyclone", "anti_cyclone", "anticyclone" -> StormSubtype.CYCLONE;
             default -> null;
         };
     }
@@ -114,7 +115,7 @@ public final class EwdCommand {
 
     private static double spawnOffset(StormSubtype type) {
         return switch (type) {
-            case HURRICANE -> 180.0D;
+            case HURRICANE, CYCLONE -> 180.0D;
             case SQUALL_LINE -> 96.0D;
             case WILDFIRE, FLAMMAGENITUS -> 64.0D;
             case WATERSPOUT, LANDSPOUT -> 28.0D;

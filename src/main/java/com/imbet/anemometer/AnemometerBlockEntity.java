@@ -2,10 +2,7 @@ package com.imbet.anemometer;
 
 import com.imbet.Config;
 import com.imbet.registry.ModContent;
-import com.imbet.weather.AddonWeatherEventService;
 import com.imbet.weather.AdvancementAwarder;
-import com.imbet.weather.DynamicStormController;
-import com.imbet.weather.SupercellStructureService;
 import com.imbet.weather.TornadoWindField;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
@@ -15,10 +12,6 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
-import weather2.ServerTickHandler;
-import weather2.weathersystem.WeatherManagerServer;
-import weather2.weathersystem.storm.StormObject;
-import weather2.weathersystem.storm.WeatherObject;
 
 public class AnemometerBlockEntity extends BlockEntity {
     private float angle;
@@ -42,7 +35,11 @@ public class AnemometerBlockEntity extends BlockEntity {
         }
         TornadoWindField.WindSample sample = sampleWind(level, pos);
         windMph = sample.speedMph();
-        rotationalVelocity = Math.min(55.0F, rotationalVelocity * 0.94F + (float) windMph * 0.055F);
+        // Cap the drawn spin well below where it would turn into a shimmer. The rotor has fourfold
+        // symmetry, so at ninety degrees a tick it would look perfectly still - and a tornado's wind can
+        // ask for far more than that. Thirty-six keeps a violent vortex obviously faster than a breeze
+        // while still reading as a spin.
+        rotationalVelocity = Math.min(36.0F, rotationalVelocity * 0.94F + (float) windMph * 0.055F);
         angle += rotationalVelocity;
         if (angle >= 360.0F) {
             angle -= 360.0F;
@@ -78,25 +75,8 @@ public class AnemometerBlockEntity extends BlockEntity {
     }
 
     private TornadoWindField.WindSample sampleWind(Level level, BlockPos pos) {
-        Vec3 center = Vec3.atCenterOf(pos);
-        TornadoWindField.WindSample strongest = AddonWeatherEventService.sampleWind(level, center);
-        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
-        if (manager == null) {
-            return strongest;
-        }
-        for (WeatherObject object : manager.getStormObjects()) {
-            if (object instanceof StormObject storm && storm.pos != null && storm.pos.distanceTo(center) <= 512.0D && !DynamicStormController.isAbsorbedOrDecaying(storm)) {
-                TornadoWindField.WindSample sample = TornadoWindField.sample(storm, level, center);
-                if (sample.speedMph() > strongest.speedMph()) {
-                    strongest = sample;
-                }
-                TornadoWindField.WindSample supercellSample = SupercellStructureService.sampleWind(storm, level, center);
-                if (supercellSample.speedMph() > strongest.speedMph()) {
-                    strongest = supercellSample;
-                }
-            }
-        }
-        return strongest;
+        // Shared with the weather balloon so both instruments always agree on the local wind.
+        return TornadoWindField.sampleStrongest(level, Vec3.atCenterOf(pos));
     }
 
     @Override

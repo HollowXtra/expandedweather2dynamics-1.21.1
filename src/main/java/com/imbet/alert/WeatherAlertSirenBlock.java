@@ -5,6 +5,7 @@ import com.imbet.weather.AdvancementAwarder;
 import com.mojang.serialization.MapCodec;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -70,6 +71,11 @@ public class WeatherAlertSirenBlock extends BaseEntityBlock {
         }
         if (level.getBlockEntity(pos) instanceof WeatherAlertSirenBlockEntity siren) {
             siren.cycleMode();
+            // Muting a siren has to take effect at once, so its stored state is refreshed here
+            // rather than waiting for the next broadcast sweep.
+            if (level instanceof ServerLevel serverLevel) {
+                AlertStationNetwork.recordStation(serverLevel, pos, siren);
+            }
             if (player instanceof ServerPlayer serverPlayer) {
                 AdvancementAwarder.award(serverPlayer, AdvancementAwarder.USE_RADAR);
                 serverPlayer.sendSystemMessage(Component.literal("Weather Alert Siren: " + siren.modeLabel()));

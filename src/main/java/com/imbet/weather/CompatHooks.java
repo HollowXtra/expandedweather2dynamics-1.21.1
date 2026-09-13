@@ -18,6 +18,15 @@ public final class CompatHooks {
     private static final boolean IMMERSIVE_AIRCRAFT_LOADED = ModList.get().isLoaded("immersive_aircraft");
     private static final boolean TREE_PHYSICS_LOADED = ModList.get().isLoaded("treephysics")
             || ModList.get().isLoaded("tree_physics");
+    /**
+     * Level-of-detail terrain renderers. Both draw terrain far beyond the vanilla render distance,
+     * which is what makes the render-distance-derived cutoffs on the weather particles wrong.
+     * Voxy is checked by mod id here and, separately, by its config class in the client probe, so an
+     * unofficial NeoForge port or a Sinytra Connector install under a different id is still caught.
+     */
+    private static final boolean DISTANT_HORIZONS_LOADED = ModList.get().isLoaded("distanthorizons")
+            || ModList.get().isLoaded("distant_horizons");
+    private static final boolean VOXY_LOADED = ModList.get().isLoaded("voxy");
     private static Method vsShipManagingPosMethod;
     private static boolean vsReflectionResolved;
 
@@ -52,6 +61,23 @@ public final class CompatHooks {
 
     public static boolean shaderPackLoaded() {
         return ModList.get().isLoaded("oculus") || ModList.get().isLoaded("iris");
+    }
+
+    public static boolean distantHorizonsLoaded() {
+        return DISTANT_HORIZONS_LOADED;
+    }
+
+    public static boolean voxyLoaded() {
+        return VOXY_LOADED;
+    }
+
+    /**
+     * Whether a level-of-detail terrain renderer is installed. Says nothing about whether it is
+     * currently drawing - that is the client's {@code LodViewDistance} probe, which also reads how
+     * far the renderer draws.
+     */
+    public static boolean lodRendererLoaded() {
+        return DISTANT_HORIZONS_LOADED || VOXY_LOADED;
     }
 
     public static boolean simpleBlockPhysicsLoaded() {

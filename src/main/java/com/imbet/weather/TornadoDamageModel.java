@@ -14,6 +14,10 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
 import weather2.weathersystem.storm.StormObject;
+import weather2.weathersystem.tornado.simple.TornadoFunnelSimple;
+
+import java.util.HashMap;
+import java.util.Map;
 
 public final class TornadoDamageModel {
     private static final double WEAK_WIND_DRAG_MPH = 50.0D;
@@ -31,7 +35,7 @@ public final class TornadoDamageModel {
             return PickupDecision.none();
         }
         BlockState state = sample.state();
-        double localWindMph = Math.max(wind.speedMph(), wind.strongestLocalMph());
+        double localWindMph = damageWindMph(storm, wind);
         double resistanceMph = BlockGrabSafety.resistanceMph(sample);
         if (Config.DAMAGE_NEVER_PICKUP_SOIL.get() && BlockGrabSafety.isNeverPickupTerrain(sample)) {
             return new PickupDecision(PickupAction.SCUFF, localWindMph, resistanceMph, localWindMph - resistanceMph, 0.0D, 0.0D, 0.0D, 0.0D);
@@ -81,6 +85,9 @@ public final class TornadoDamageModel {
             return base;
         }
         double localWindMph = Math.max(sample.speedMph(), sample.strongestLocalMph());
+        if (forPlayer && playerCaptureRamp(sample, localWindMph) > 0.0D) {
+            return capturePlayerMotion(sample, base, localWindMph);
+        }
         double scale = Config.WINDFIELD_ENTITY_PUSH_SCALE.get();
         double stageScale = Mth.clamp(TornadoWindField.maxWindMph(storm) / 135.0D, 0.70D, 2.45D);
         double actorScale = forCube ? 1.75D : forPlayer ? 0.68D : 1.08D;
@@ -112,11 +119,274 @@ public final class TornadoDamageModel {
         return adjusted;
     }
 
+    /**
+     * Capture ramp for the violent core: 0 outside the core or below the wind gate, ramping to 1
+     * deep inside a violent tornado. Shared by the player motion, the mob capture, and the fall-safe
+     * so they all agree on who is captured.
+     */
+    public static double captureRamp(TornadoWindField.WindSample sample, double localWindMph, double gateMph) {
+        if (sample == null || !Config.WINDFIELD_PLAYER_LAUNCH_ENABLED.get()) {
+            return 0.0D;
+        }
+        if (localWindMph < gateMph) {
+            return 0.0D;
+        }
+        double coreDistance = Math.max(sample.radiusMaxWind() * 1.8D, 8.0D);
+        double distanceFactor = Mth.clamp(1.0D - sample.distanceFromCore() / coreDistance, 0.0D, 1.0D);
+        if (distanceFactor <= 0.0D) {
+            return 0.0D;
+        }
+        double windFactor = Mth.clamp((localWindMph - gateMph) / 130.0D, 0.0D, 1.0D);
+        return Math.min(1.0D, distanceFactor * (0.35D + windFactor * 0.65D));
+    }
+
+    public static double playerCaptureRamp(TornadoWindField.WindSample sample, double localWindMph) {
+        return captureRamp(sample, localWindMph, Config.WINDFIELD_PLAYER_LAUNCH_MPH.get());
+    }
+
+    /**
+     * Mob capture opens slightly earlier than the player's so mobs get picked up and
+     * fly in with the block debris instead of standing in the wind until it is violent.
+     */
+    public static double mobCaptureGateMph() {
+        return Math.max(75.0D, Config.WINDFIELD_PLAYER_LAUNCH_MPH.get() - 35.0D);
+    }
+
+    public static double mobCaptureRamp(TornadoWindField.WindSample sample, double localWindMph) {
+        return captureRamp(sample, localWindMph, mobCaptureGateMph());
+    }
+
+    /**
+     * Target velocity of the capture: a real orbit around the funnel (tangent direction of the local
+     * wind) with strong upward lift. Returns null when the sample has no usable horizontal wind.
+     */
+    public static Vec3 captureTargetVelocity(TornadoWindField.WindSample sample, double ramp, double strength) {
+        if (sample == null || strength <= 0.0D) {
+            return null;
+        }
+        Vec3 windHorizontal = new Vec3(sample.mphVector().x, 0.0D, sample.mphVector().z);
+        double windSpeed = windHorizontal.length();
+        if (windSpeed <= 0.5D) {
+            return null;
+        }
+        double orbitSpeed = windSpeed * 0.0021D * (0.75D + ramp * 0.65D) * strength;
+        double liftTarget = (0.032D + ramp * 0.078D) * strength;
+        return windHorizontal.normalize().scale(orbitSpeed).add(0.0D, liftTarget, 0.0D);
+    }
+
+    /**
+     * Captured motion: instead of accumulating gentle pushes, converge the entity's velocity onto the
+     * capture orbit so they get launched up and rolled around the tornado like debris.
+     */
+    private static Vec3 captureConvergeMotion(Vec3 target, Vec3 base, double ramp) {
+        double k = 0.10D + ramp * 0.12D;
+        Vec3 delta = target.subtract(base).scale(k);
+        double cap = 0.38D + ramp * 0.26D;
+        if (delta.lengthSqr() > cap * cap) {
+            delta = delta.normalize().scale(cap);
+        }
+        return base.add(delta);
+    }
+
+    private static Vec3 capturePlayerMotion(TornadoWindField.WindSample sample, Vec3 base, double localWindMph) {
+        double ramp = playerCaptureRamp(sample, localWindMph);
+        Vec3 target = captureTargetVelocity(sample, ramp, Config.WINDFIELD_PLAYER_LAUNCH_STRENGTH.get());
+        if (target == null) {
+            return base;
+        }
+        return captureConvergeMotion(target, base, ramp);
+    }
+
+    /**
+     * Server-side mob capture, invoked from the spinEntityv2 mixin. Replaces Weather2's own toss for
+     * captured living entities so the mob orbits and rises with the funnel instead of being flung.
+     * Returns true when the capture handled the entity (caller should cancel Weather2's handling).
+     */
+    public static boolean applyMobCapture(StormObject storm, net.minecraft.world.entity.Entity entity) {
+        if (storm == null || entity == null || !(entity instanceof net.minecraft.world.entity.LivingEntity living)
+                || entity instanceof net.minecraft.world.entity.player.Player
+                || entity.isInWater()
+                || entity.getPersistentData().getBoolean("tornado_shoot")
+                || !Config.WINDFIELD_PLAYER_LAUNCH_ENABLED.get()) {
+            return false;
+        }
+        Level level = entity.level();
+        if (level == null || level.isClientSide() || !(level instanceof ServerLevel)) {
+            return false;
+        }
+        TornadoWindField.WindSample sample = TornadoWindField.sample(storm, level, entity.position());
+        double localWindMph = Math.max(sample.speedMph(), sample.strongestLocalMph());
+        double ramp = mobCaptureRamp(sample, localWindMph);
+        if (ramp <= 0.0D) {
+            return false;
+        }
+        double strength = Config.WINDFIELD_PLAYER_LAUNCH_STRENGTH.get() * Config.WINDFIELD_MOB_LAUNCH_SCALE.get();
+        Vec3 target = captureTargetVelocity(sample, ramp, strength);
+        if (target == null) {
+            return false;
+        }
+        long tick = level.getGameTime();
+        MobTumble previous = MOB_TUMBLE.getOrDefault(entity.getUUID(),
+                new MobTumble(living.getYRot(), living.getXRot(), tick - 2L));
+        boolean freshlyCaptured = tick - previous.lastTick() > 1L;
+        // Mobs have gravity and their own AI fighting the wind - lift them hard enough
+        // to clearly beat gravity so they fly up with the block debris instead of
+        // hovering or tumbling in place on the ground.
+        target = target.add(0.0D, (0.22D + ramp * 0.20D) * strength, 0.0D);
+        Vec3 newMotion = captureConvergeMotion(target, living.getDeltaMovement(), ramp);
+        if (freshlyCaptured) {
+            // hard pick-up kick so the mob leaves the ground instantly, like a block
+            Vec3 windHorizontal = new Vec3(sample.mphVector().x, 0.0D, sample.mphVector().z);
+            double windSpeed = windHorizontal.length();
+            newMotion = newMotion.add(0.0D, 0.42D * strength, 0.0D);
+            if (windSpeed > 0.5D) {
+                newMotion = newMotion.add(windHorizontal.normalize().scale(0.28D * strength));
+            }
+        }
+        living.setDeltaMovement(newMotion);
+        living.hurtMarked = true;
+        // Whole-model TUMBLE like the grabbed blocks: yaw AND pitch both rotate
+        // continuously while captured, each at its own randomized per-mob rate (some
+        // spin one way, some the other; pitch turns a bit slower than yaw so the body
+        // flips and spins instead of doing a flat spin). The roll axis is added
+        // client-side in the renderer, so captured mobs tumble on all three axes
+        // exactly like the debris cubes.
+        int hash = entity.getUUID().hashCode();
+        double speedJitter = 0.70D + 0.60D * ((hash >> 4) & 0xF) / 15.0D;
+        // NOTE: deliberately NOT scaled by launch strength or fully by the capture ramp - those
+        // are motion knobs, and scaling the spin by them made the tumble crawl in all but the
+        // deepest core (ramp is only ~0.1-0.4 for a typical grab). Speed lives in its own knob so
+        // the whole capture tumble can be turned up without touching how hard the mob is thrown.
+        double tumbleSpeed = (5.5D + ramp * 7.0D) * speedJitter * Config.tumbleSpeedMultiplier();
+        double yawDirection = (hash & 1) == 0 ? 1.0D : -1.0D;
+        double pitchDirection = ((hash >> 1) & 1) == 0 ? 1.0D : -1.0D;
+        float yaw = (float) ((previous.yaw() + tumbleSpeed * yawDirection) % 360.0D);
+        float pitch = (float) ((previous.pitch() + tumbleSpeed * 0.78D * pitchDirection) % 360.0D);
+        if (yaw < 0.0F) {
+            yaw += 360.0F;
+        }
+        if (pitch < 0.0F) {
+            pitch += 360.0F;
+        }
+        MOB_TUMBLE.put(entity.getUUID(), new MobTumble(yaw, pitch, tick));
+        if (MOB_TUMBLE.size() > 2048) {
+            MOB_TUMBLE.clear();
+        }
+        living.yRotO = previous.yaw();
+        living.setYRot(yaw);
+        living.xRotO = previous.pitch();
+        living.setXRot(pitch);
+        if (level instanceof ServerLevel serverLevel) {
+            TornadoPlayerCapture.markCaptured(living.getUUID(), serverLevel.getGameTime());
+        }
+        return true;
+    }
+
+    /**
+     * Weather2 runs its OWN entity pick-up in parallel with ours: {@code canGrabEntity} +
+     * {@code spinEntityv2} toss entities at thresholds of their own (from STATE_FORMING up, with
+     * its own pull radius and baby/pet/playerControlled modifiers), and its "tornado_shoot" branch
+     * flings entities at players outright. Entities carried by that system never enter
+     * {@link #applyMobCapture} - which only takes over the violent core above our wind gate - so
+     * they used to fly through the funnel with no tumble at all. This runs after Weather2 has moved
+     * them and adds the same yaw/pitch tumble, leaving Weather2's motion untouched.
+     */
+    public static void applyTossTumble(StormObject storm, net.minecraft.world.entity.Entity entity) {
+        if (storm == null || entity == null
+                || !(entity instanceof net.minecraft.world.entity.LivingEntity living)
+                || entity instanceof net.minecraft.world.entity.player.Player
+                || entity.isInWater()
+                || !Config.WINDFIELD_PLAYER_LAUNCH_ENABLED.get()) {
+            return;
+        }
+        Level level = entity.level();
+        if (!(level instanceof ServerLevel)) {
+            return;
+        }
+        if (!isCarriedByStorm(storm, entity)) {
+            return;
+        }
+        long tick = level.getGameTime();
+        MobTumble previous = MOB_TUMBLE.get(entity.getUUID());
+        if (previous != null && tick - previous.lastTick() <= 1L) {
+            return;
+        }
+        MobTumble state = previous == null
+                ? new MobTumble(living.getYRot(), living.getXRot(), tick - 2L)
+                : previous;
+        // Weather2's tornado_shoot branch aims the entity at a player and rewrites its yaw every
+        // tick, so those keep their aim and only get the flip + render roll.
+        boolean aimed = entity.getPersistentData().getBoolean("tornado_shoot");
+        double strength = Config.WINDFIELD_PLAYER_LAUNCH_STRENGTH.get() * Config.WINDFIELD_MOB_LAUNCH_SCALE.get();
+        int hash = entity.getUUID().hashCode();
+        double speedJitter = 0.70D + 0.60D * ((hash >> 4) & 0xF) / 15.0D;
+        double tumbleSpeed = (5.0D + 2.6D * strength) * speedJitter * Config.tumbleSpeedMultiplier();
+        double pitchDirection = ((hash >> 1) & 1) == 0 ? 1.0D : -1.0D;
+        float yaw = state.yaw();
+        if (!aimed) {
+            double yawDirection = (hash & 1) == 0 ? 1.0D : -1.0D;
+            yaw = (float) ((state.yaw() + tumbleSpeed * yawDirection) % 360.0D);
+            if (yaw < 0.0F) {
+                yaw += 360.0F;
+            }
+        }
+        float pitch = (float) ((state.pitch() + tumbleSpeed * 0.78D * pitchDirection) % 360.0D);
+        if (pitch < 0.0F) {
+            pitch += 360.0F;
+        }
+        MOB_TUMBLE.put(entity.getUUID(), new MobTumble(yaw, pitch, tick));
+        if (MOB_TUMBLE.size() > 2048) {
+            MOB_TUMBLE.clear();
+        }
+        living.yRotO = state.yaw();
+        living.setYRot(yaw);
+        living.xRotO = state.pitch();
+        living.setXRot(pitch);
+    }
+
+    /**
+     * True when an entity is being carried by the storm's own pick-up: airborne (or sliding fast)
+     * inside Weather2's entity pull radius with meaningful motion, i.e. not simply standing or
+     * falling nearby.
+     */
+    private static boolean isCarriedByStorm(StormObject storm, net.minecraft.world.entity.Entity entity) {
+        Vec3 motion = entity.getDeltaMovement();
+        double horizontal = Math.sqrt(motion.x * motion.x + motion.z * motion.z);
+        if (horizontal < 0.14D && Math.abs(motion.y) < 0.24D) {
+            return false;
+        }
+        if (entity.onGround() && horizontal < 0.30D) {
+            return false;
+        }
+        Vec3 position = entity.position();
+        double dx = position.x - storm.pos.x;
+        double dz = position.z - storm.pos.z;
+        return dx * dx + dz * dz <= entityPullDistance(storm) * entityPullDistance(storm);
+    }
+
+    /** Weather2's own entity pull radius for this storm, falling back to the funnel width. */
+    private static double entityPullDistance(StormObject storm) {
+        if (storm == null) {
+            return 0.0D;
+        }
+        TornadoFunnelSimple funnel = storm.getTornadoFunnelSimple();
+        if (funnel != null && funnel.getConfig() != null && funnel.getConfig().getEntityPullDistXZ() > 1.0F) {
+            return funnel.getConfig().getEntityPullDistXZ();
+        }
+        return Math.max(10.0D, DynamicStormController.baseRadiusForWind(storm) * 1.4D);
+    }
+
+    private static final Map<java.util.UUID, MobTumble> MOB_TUMBLE = new HashMap<>();
+
+    private record MobTumble(float yaw, float pitch, long lastTick) {
+    }
+
+
     public static boolean applyImpact(ServerLevel level, StormObject storm, BlockPos pos, BlockGrabSafety.BlockSample sample, TornadoWindField.WindSample wind) {
         if (level == null || storm == null || pos == null || sample == null || wind == null) {
             return false;
         }
-        double localWindMph = Math.max(wind.speedMph(), wind.strongestLocalMph());
+        double localWindMph = damageWindMph(storm, wind);
         if (!BlockGrabSafety.canImpactDamageByWind(sample, localWindMph)) {
             return false;
         }
@@ -140,6 +410,36 @@ public final class TornadoDamageModel {
             return false;
         }
         return BlockGrabSafety.safeDestroyBlock(level, pos, false);
+    }
+
+    /**
+     * Damage-model wind estimate. The tight Rankine vortex core (TornadoWindField)
+     * ramps to zero at the very center and decays fast beyond radiusOfMaxWind, so
+     * the raw local wind only qualifies blocks in a narrow ring around the core -
+     * the reason even violent tornadoes barely picked anything up. Damage instead
+     * follows a swath-scale profile: near max wind across the whole damage path,
+     * easing toward its edge. Whichever is stronger (tight local vs swath profile)
+     * wins, so the funnel core stays violent and the rest of the swath finally
+     * counts. The swath profile decays to a 30% floor, which keeps weak blocks
+     * (glass, crops) rippable across the tornado's footprint while stone and heavy
+     * materials still need a genuinely violent storm.
+     */
+    static double damageWindMph(StormObject storm, TornadoWindField.WindSample wind) {
+        if (wind == null) {
+            return 0.0D;
+        }
+        double tight = Math.max(wind.speedMph(), wind.strongestLocalMph());
+        if (storm == null) {
+            return tight;
+        }
+        double maxWind = TornadoWindField.maxWindMph(storm);
+        if (maxWind <= 0.0D) {
+            return tight;
+        }
+        double swathRadius = Math.max(12.0D, DynamicStormController.stateFor(storm).damagePathWidth() * 0.5D);
+        double distance = Math.max(0.0D, wind.distanceFromCore());
+        double fraction = 1.0D - Math.pow(distance / swathRadius, 1.3D) * 0.34D;
+        return Math.max(tight, maxWind * Math.max(0.30D, fraction));
     }
 
     private static double hardnessLimit(BlockGrabSafety.BlockSample sample, double localWindMph, double materialGrip, double liftGrip, double coreGrip, double stageGrip, double violentCoreBoost) {

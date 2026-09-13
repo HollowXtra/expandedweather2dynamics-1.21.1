@@ -1,7 +1,124 @@
 {
-  "parent": "minecraft:block/iron_bars_post",
+  "parent": "minecraft:block/block",
   "textures": {
-    "bars": "minecraft:block/iron_bars",
-    "edge": "minecraft:block/iron_bars"
-  }
+    "particle": "expandedweather2dynamics:block/instrument_metal",
+    "metal": "expandedweather2dynamics:block/instrument_metal",
+    "dark": "expandedweather2dynamics:block/instrument_dark"
+  },
+  "elements": [
+    {
+      "comment": "Ground flange. Short enough to step over, which is why it is in the collision shape as its own box.",
+      "from": [3, 0, 3],
+      "to": [13, 1.2, 13],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Machined rim sitting on the flange.",
+      "from": [2.6, 1, 2.6],
+      "to": [13.4, 1.8, 13.4],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Anchor bolts in the flange corners. Set at their own height rather than flush with the rim, because two faces on the same plane flicker.",
+      "from": [3.4, 0.7, 3.4],
+      "to": [4.8, 1.5, 4.8],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [11.2, 0.7, 3.4],
+      "to": [12.6, 1.5, 4.8],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [3.4, 0.7, 11.2],
+      "to": [4.8, 1.5, 12.6],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [11.2, 0.7, 11.2],
+      "to": [12.6, 1.5, 12.6],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Mast.",
+      "from": [6.6, 1.6, 6.6],
+      "to": [9.4, 12.2, 9.4],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Bearing housing the rotor turns on.",
+      "from": [5.8, 11.6, 5.8],
+      "to": [10.2, 15, 10.2],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Housing cap. The rotor is drawn just above it by AnemometerRenderer, so it must stay under sixteenth of a block short of the top.",
+      "from": [5.4, 14.6, 5.4],
+      "to": [10.6, 15.4, 10.6],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    }
+  ]
 }

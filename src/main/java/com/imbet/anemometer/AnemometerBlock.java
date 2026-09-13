@@ -13,12 +13,24 @@ import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jetbrains.annotations.Nullable;
 
 public class AnemometerBlock extends BaseEntityBlock {
     public static final MapCodec<AnemometerBlock> CODEC = simpleCodec(AnemometerBlock::new);
-    private static final VoxelShape SHAPE = box(6.0D, 0.0D, 6.0D, 10.0D, 16.0D, 10.0D);
+
+    /**
+     * The flange, the mast and the bearing housing. The bolts, the rim and the housing cap are left out:
+     * they stand two hundredths of a block proud, which is below the resolution of a collision box.
+     *
+     * <p>The rotor is not in here either, because it is drawn rather than modelled and hangs above the
+     * block's top face - it is spun metalwork, not something to stand on.
+     */
+    private static final VoxelShape SHAPE = Shapes.or(
+            box(3.0D, 0.0D, 3.0D, 13.0D, 1.2D, 13.0D),
+            box(6.6D, 1.6D, 6.6D, 9.4D, 12.2D, 9.4D),
+            box(5.8D, 11.6D, 5.8D, 10.2D, 15.0D, 10.2D));
 
     public AnemometerBlock(Properties properties) {
         super(properties);
@@ -31,7 +43,9 @@ public class AnemometerBlock extends BaseEntityBlock {
 
     @Override
     protected RenderShape getRenderShape(BlockState state) {
-        return RenderShape.INVISIBLE;
+        // MODEL, not INVISIBLE as it was: the mast used to be a flat quad in the renderer, and a flat quad
+        // is invisible from the side. The mast and housing are a model now and only the rotor is drawn.
+        return RenderShape.MODEL;
     }
 
     @Override

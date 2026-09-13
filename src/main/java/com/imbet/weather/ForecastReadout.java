@@ -212,6 +212,13 @@ public final class ForecastReadout {
                 outlook.hail().label(),
                 outlook.hail().severity(),
                 outlook.hail().color(),
+                outlook.tornadoProbability(),
+                outlook.windProbability(),
+                outlook.hailProbability(),
+                outlook.tornadoCig(),
+                outlook.windCig(),
+                outlook.hailCig(),
+                outlook.issuance(),
                 outlook.hazard(),
                 outlook.stormCount(),
                 outlook.severeCount(),
@@ -277,12 +284,16 @@ public final class ForecastReadout {
     private static void sendRiskLines(Player player, ForecastRiskSnapshot risk, List<RadarStormSnapshot> snapshots) {
         ForecastRiskSnapshot safe = risk == null ? ForecastRiskSnapshot.EMPTY : risk;
         player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
-                "Risk: Categorical %s, Tornado %s, Wind %s, Hail %s",
+                "Risk: Categorical %s, Tornado %s, Wind %s, Hail %s (%s)",
                 safe.categoricalLabel(),
                 safe.tornadoLabel(),
                 safe.windLabel(),
-                safe.hailLabel()
+                safe.hailLabel(),
+                safe.issuance()
         )).withStyle(colorFor(safe.categoricalSeverity())));
+        player.sendSystemMessage(Component.literal("Probabilities: " + safe.productLine()
+                + (safe.tornadoCig() > 0 || safe.windCig() > 0 || safe.hailCig() > 0 ? " (hatched = significant severe)" : ""))
+                .withStyle(ChatFormatting.GRAY));
         player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
                 "Hazard: %s, %d storms, %d severe, max wind %.0f MPH",
                 safe.hazard(),
@@ -425,7 +436,7 @@ public final class ForecastReadout {
 
     private static void addRiskPolygons(List<ForecastPolygonSnapshot> result, BlockPos pos, int range, ForecastRiskSnapshot risk, List<RadarStormSnapshot> snapshots) {
         ForecastRiskSnapshot safe = risk == null ? ForecastRiskSnapshot.EMPTY : risk;
-        int severity = Math.max(0, Math.min(safe.categoricalSeverity(), SpcRisk.HIGH.severity()));
+        int severity = Math.max(0, Math.min(safe.categoricalSeverity(), SpcRisk.maxSeverity()));
         double centerX = pos.getX() + 0.5D;
         double centerZ = pos.getZ() + 0.5D;
         for (int index = 1; index <= severity; index++) {
@@ -437,6 +448,8 @@ public final class ForecastReadout {
                 case ENHANCED -> 0.48D;
                 case MODERATE -> 0.34D;
                 case HIGH -> 0.22D;
+                case EXTREME -> 0.15D;
+                case HYPER -> 0.10D;
                 default -> 0.0D;
             };
             if (scale <= 0.0D) {
@@ -684,6 +697,7 @@ public final class ForecastReadout {
     private static ChatFormatting colorFor(int severity) {
         SpcRisk risk = SpcRisk.fromSeverity(severity);
         return switch (risk) {
+            case HYPER, EXTREME -> ChatFormatting.LIGHT_PURPLE;
             case HIGH, MODERATE -> ChatFormatting.RED;
             case ENHANCED -> ChatFormatting.GOLD;
             case SLIGHT -> ChatFormatting.YELLOW;

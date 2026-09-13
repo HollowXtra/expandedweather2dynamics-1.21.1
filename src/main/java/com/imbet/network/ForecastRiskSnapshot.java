@@ -1,5 +1,7 @@
 package com.imbet.network;
 
+import com.imbet.weather.SpcHazard;
+import com.imbet.weather.SpcRisk;
 import net.minecraft.network.FriendlyByteBuf;
 
 public record ForecastRiskSnapshot(
@@ -15,6 +17,13 @@ public record ForecastRiskSnapshot(
         String hailLabel,
         int hailSeverity,
         int hailColor,
+        int tornadoProbability,
+        int windProbability,
+        int hailProbability,
+        int tornadoCig,
+        int windCig,
+        int hailCig,
+        String issuance,
         String hazard,
         int stormCount,
         int severeCount,
@@ -25,7 +34,8 @@ public record ForecastRiskSnapshot(
             "None", 0, 0xFF263238,
             "None", 0, 0xFF263238,
             "None", 0, 0xFF263238,
-            "No organized severe risk", 0, 0, 0.0D
+            0, 0, 0, 0, 0, 0,
+            "D1 0600Z", "No organized severe risk", 0, 0, 0.0D
     );
 
     public ForecastRiskSnapshot {
@@ -34,10 +44,17 @@ public record ForecastRiskSnapshot(
         windLabel = limit(windLabel, 16);
         hailLabel = limit(hailLabel, 16);
         hazard = limit(hazard, 64);
+        issuance = issuance == null || issuance.isBlank() ? "D1 0600Z" : limit(issuance, 16);
         categoricalSeverity = clampSeverity(categoricalSeverity);
         tornadoSeverity = clampSeverity(tornadoSeverity);
         windSeverity = clampSeverity(windSeverity);
         hailSeverity = clampSeverity(hailSeverity);
+        tornadoProbability = clampProbability(tornadoProbability);
+        windProbability = clampProbability(windProbability);
+        hailProbability = clampProbability(hailProbability);
+        tornadoCig = clampCig(tornadoCig);
+        windCig = clampCig(windCig);
+        hailCig = clampCig(hailCig);
         stormCount = Math.max(0, stormCount);
         severeCount = Math.max(0, severeCount);
         maxWindMph = Double.isFinite(maxWindMph) ? Math.max(0.0D, maxWindMph) : 0.0D;
@@ -56,6 +73,13 @@ public record ForecastRiskSnapshot(
         buf.writeUtf(hailLabel, 16);
         buf.writeVarInt(hailSeverity);
         buf.writeInt(hailColor);
+        buf.writeVarInt(tornadoProbability);
+        buf.writeVarInt(windProbability);
+        buf.writeVarInt(hailProbability);
+        buf.writeVarInt(tornadoCig);
+        buf.writeVarInt(windCig);
+        buf.writeVarInt(hailCig);
+        buf.writeUtf(issuance, 16);
         buf.writeUtf(hazard, 64);
         buf.writeVarInt(stormCount);
         buf.writeVarInt(severeCount);
@@ -76,6 +100,13 @@ public record ForecastRiskSnapshot(
                 buf.readUtf(16),
                 buf.readVarInt(),
                 buf.readInt(),
+                buf.readVarInt(),
+                buf.readVarInt(),
+                buf.readVarInt(),
+                buf.readVarInt(),
+                buf.readVarInt(),
+                buf.readVarInt(),
+                buf.readUtf(16),
                 buf.readUtf(64),
                 buf.readVarInt(),
                 buf.readVarInt(),
@@ -84,7 +115,23 @@ public record ForecastRiskSnapshot(
     }
 
     private static int clampSeverity(int value) {
-        return Math.max(0, Math.min(value, 6));
+        return Math.max(0, Math.min(value, SpcRisk.maxSeverity()));
+    }
+
+    private static int clampProbability(int value) {
+        return Math.max(0, Math.min(value, 100));
+    }
+
+    /** CIG 0-3 is the published ladder, 4 and 5 are the addon's extension columns. */
+    private static int clampCig(int value) {
+        return Math.max(0, Math.min(value, 5));
+    }
+
+    /** Compact product text for chat and HUD readouts, e.g. "TOR 10% CIG1 / WND 30% / HAIL 15%". */
+    public String productLine() {
+        return SpcHazard.TORNADO.productLine(tornadoProbability, tornadoCig)
+                + " / " + SpcHazard.WIND.productLine(windProbability, windCig)
+                + " / " + SpcHazard.HAIL.productLine(hailProbability, hailCig);
     }
 
     private static String limit(String value, int maxLength) {

@@ -35,6 +35,161 @@ public final class SupercellStructureService {
         float wallCloudRotation = wallCloudStrength <= 0.0F ? 0.0F : Mth.clamp(mesocyclone * 0.72F + inflow * 0.16F + rfd * 0.18F + rotationBonus * 0.70F, 0.0F, 1.0F);
         float loweringDepth = wallCloudStrength * Config.SUPERCELL_STRUCTURE_WALL_CLOUD_MAX_LOWERING_BLOCKS.get();
         state.setSupercellStructure(structure, mesocyclone, inflow, rfd, ffd, hailCore, wallCloudStrength, loweringDepth, wallCloudRotation, gameTime);
+        tickPrecipitationCharacter(storm, state, gameTime);
+        tickVirga(storm, state, gameTime);
+    }
+
+    /**
+     * Precipitation character of a storm: 0 = bone-dry low-precipitation supercell, 0.5 = classic,
+     * 1 = torrential high-precipitation storm that rains its tornado into invisibility.
+     *
+     * Real supercells differ enormously in rainfall, and the difference is not just storm strength:
+     * it comes from how much moisture a storm actually has to work with plus its own history. So the
+     * character is driven by Weather2's per-storm water level (levelWater, accumulated from biome
+     * humidity and burned down as the storm precipitates) blended with a stable per-storm draw, and
+     * it is allowed to drift slowly so a storm keeps a recognisable type while still moistening up or
+     * drying out as it moves. Scored on demand and cached in the synced state, so both sides agree.
+     */
+    public static float precipitationCharacter(StormObject storm, DynamicStormState state) {
+        if (!Config.SUPERCELL_PRECIPITATION_ENABLED.get() || storm == null || state == null) {
+            return 0.5F;
+        }
+        if (state.precipitationCharacter() < 0.0F) {
+            state.setPrecipitationCharacter(environmentalCharacter(storm, state));
+        }
+        return state.precipitationCharacter();
+    }
+
+    /**
+     * How much of this storm's precipitation evaporates before it lands: 0 = everything reaches the
+     * ground, 1 = the shafts die just below the cloud base as virga.
+     *
+     * <p>Two independent things cause virga, and a real storm usually has both: not enough
+     * precipitation to begin with (a starved storm, which is what the precipitation character
+     * already measures) and a dry layer of air under the cloud base that evaporates whatever falls
+     * into it. Weather2's per-storm water level is accumulated from biome humidity, so it is the
+     * closest thing the mod has to the moisture of the air below the cloud. Both sides score this
+     * the same way from synced storm data, so the shafts a client draws are the shafts the server
+     * believes in - which is what lets virga also stop the ground from flooding.
+     */
+    public static float virgaStrength(StormObject storm, DynamicStormState state) {
+        if (!Config.VIRGA_ENABLED.get() || storm == null || state == null) {
+            return 0.0F;
+        }
+        if (state.virgaStrength() < 0.0F) {
+            state.setVirgaStrength(environmentalVirga(storm, state));
+        }
+        return state.virgaStrength();
+    }
+
+    /**
+     * What the storm's airmass currently supports. Hail and established rainfall are nudged the
+     * other way: hail is large enough to survive the fall, and a storm already putting rain down is
+     * not evaporating all of it.
+     */
+    private static float environmentalVirga(StormObject storm, DynamicStormState state) {
+        float character = precipitationCharacter(storm, state);
+        float water = storm.levelWaterStartRaining <= 0
+                ? 0.5F
+                : Mth.clamp(storm.levelWater / (float) storm.levelWaterStartRaining, 0.0F, 1.0F);
+        float starved = 1.0F - Mth.clamp(character, 0.0F, 1.0F);
+        float dryAirmass = 1.0F - water;
+        float draw = unitHash(storm.ID, 0x51ED270BL);
+        float strength = 0.60F * (float) Math.pow(starved, 0.85D) + 0.34F * dryAirmass;
+        // Some storms are simply the ones that never reach the ground; others in the same airmass
+        // soak it. The draw is per-storm and stable, so a storm keeps its character.
+        strength += (draw - 0.5F) * 0.18F;
+        if (storm.isPrecipitating()) {
+            strength -= 0.14F;
+        }
+        if (storm.levelCurIntensityStage >= StormObject.STATE_HAIL) {
+            strength -= 0.06F;
+        }
+        float scale = Config.VIRGA_STRENGTH_SCALE.get().floatValue();
+        return Mth.clamp(strength * scale, 0.0F, 1.0F);
+    }
+
+    /** Eases the stored virga strength toward what the airmass currently supports. */
+    private static void tickVirga(StormObject storm, DynamicStormState state, long gameTime) {
+        if (!Config.VIRGA_ENABLED.get() || state == null) {
+            return;
+        }
+        float target = environmentalVirga(storm, state);
+        float current = state.virgaStrength();
+        if (current < 0.0F) {
+            state.setVirgaStrength(target);
+            return;
+        }
+        state.setVirgaStrength(Mth.lerp(Config.SUPERCELL_PRECIPITATION_DRIFT_PER_TICK.get().floatValue(), current, target));
+    }
+
+    public static boolean isLowPrecipitation(StormObject storm, DynamicStormState state) {
+        return Config.SUPERCELL_PRECIPITATION_ENABLED.get()
+                && precipitationCharacter(storm, state) < lowPrecipitationThreshold();
+    }
+
+    public static boolean isHighPrecipitation(StormObject storm, DynamicStormState state) {
+        return Config.SUPERCELL_PRECIPITATION_ENABLED.get()
+                && precipitationCharacter(storm, state) > highPrecipitationThreshold();
+    }
+
+    public static float lowPrecipitationThreshold() {
+        return Config.SUPERCELL_PRECIPITATION_LP_THRESHOLD.get().floatValue();
+    }
+
+    public static float highPrecipitationThreshold() {
+        return Config.SUPERCELL_PRECIPITATION_HP_THRESHOLD.get().floatValue();
+    }
+
+    /** Eases the stored character toward what the storm's airmass and history currently support. */
+    private static void tickPrecipitationCharacter(StormObject storm, DynamicStormState state, long gameTime) {
+        if (!Config.SUPERCELL_PRECIPITATION_ENABLED.get()) {
+            return;
+        }
+        float current = state.precipitationCharacter();
+        float target = environmentalCharacter(storm, state);
+        if (current < 0.0F) {
+            state.setPrecipitationCharacter(target);
+            return;
+        }
+        float drift = Config.SUPERCELL_PRECIPITATION_DRIFT_PER_TICK.get().floatValue();
+        state.setPrecipitationCharacter(Mth.lerp(drift, current, target));
+    }
+
+    /**
+     * What a storm's environment and history support: its own water level (biome humidity driven)
+     * blended with a stable per-storm draw, nudged wetter while it rains and after a merge.
+     */
+    private static float environmentalCharacter(StormObject storm, DynamicStormState state) {
+        float water = storm.levelWaterStartRaining <= 0
+                ? 0.5F
+                : Mth.clamp(storm.levelWater / (float) storm.levelWaterStartRaining, 0.0F, 1.0F);
+        float variability = Mth.clamp(Config.SUPERCELL_PRECIPITATION_VARIABILITY.get().floatValue(), 0.0F, 1.0F);
+        float draw = unitHash(storm.ID, 0x5DEECE66DL);
+        // 0 variability = every storm in the airmass rains alike; 1 = a dry LP and a rain-wrapped HP
+        // can sit side by side, which is what chasing a supercell outbreak actually looks like.
+        float character = Mth.lerp(variability, water, 0.65F * draw + 0.35F * water);
+        if (storm.isPrecipitating()) {
+            character += 0.06F;
+        }
+        if (state != null && storm.manager != null && storm.manager.getWorld() != null) {
+            long mergeTick = state.lastSupercellMergeTick();
+            long age = storm.manager.getWorld().getGameTime() - mergeTick;
+            if (mergeTick > 0L && age >= 0L && age < 20L * 600L) {
+                character += 0.05F; // a fresh merge inherits the partner's moisture budget
+            }
+        }
+        return Mth.clamp(character, 0.0F, 1.0F);
+    }
+
+    private static float unitHash(long id, long salt) {
+        long hash = id * 0x9E3779B97F4A7C15L + salt;
+        hash ^= (hash >>> 33);
+        hash *= 0xFF51AFD7ED558CCDL;
+        hash ^= (hash >>> 29);
+        hash *= 0xC4CEB9FE1A85EC53L;
+        hash ^= (hash >>> 32);
+        return Math.floorMod(hash, 10000L) / 10000.0F;
     }
 
     public static boolean isEligible(StormObject storm) {
@@ -91,10 +246,33 @@ public final class SupercellStructureService {
         return new StructureSample(forward, right, updraft, mesocyclone, forwardFlank, rearFlank, inflowSource, anvilCore, backShearedAnvil, flankingLineStart, flankingLineEnd, gustFrontLeft, gustFrontRight, wallCloudCenter, wallCloudBase, clearSlotCenter, hookEchoNotch, rainWrapCurtain, hailShaft, inflowTail, rainFreeBase, mode, radius, wallCloudDiameter, rainFreeBaseY);
     }
 
+    /**
+     * The storm's mode now follows its precipitation character - that is what LP/HP actually means
+     * on radar and in the sky - with the old structure-based hints only breaking ties in the classic
+     * band (a hail-heavy storm with no rain shield reads LP; a full forward-flank rain core reads HP).
+     */
     public static SupercellMode modeFor(StormObject storm, DynamicStormState state) {
         float ffd = state == null ? 0.0F : state.ffdStrength();
         float rfd = state == null ? 0.0F : state.rfdStrength();
         float hail = state == null ? 0.0F : state.hailCoreStrength();
+        if (Config.SUPERCELL_PRECIPITATION_ENABLED.get() && storm != null && state != null) {
+            float character = state.precipitationCharacter() < 0.0F
+                    ? environmentalCharacter(storm, state)
+                    : state.precipitationCharacter();
+            if (character < lowPrecipitationThreshold()) {
+                return SupercellMode.LP;
+            }
+            if (character > highPrecipitationThreshold()) {
+                return SupercellMode.HP;
+            }
+            if (hail >= 0.50F && ffd <= 0.52F && !storm.isPrecipitating()) {
+                return SupercellMode.LP;
+            }
+            if ((storm.isPrecipitating() && ffd >= 0.62F && rfd >= 0.38F) || ffd >= 0.78F) {
+                return SupercellMode.HP;
+            }
+            return SupercellMode.CLASSIC;
+        }
         boolean precipitating = storm != null && storm.isPrecipitating();
         boolean hailStage = storm != null && storm.levelCurIntensityStage >= StormObject.STATE_HAIL;
         if ((precipitating && ffd >= 0.62F && rfd >= 0.38F) || ffd >= 0.78F) {

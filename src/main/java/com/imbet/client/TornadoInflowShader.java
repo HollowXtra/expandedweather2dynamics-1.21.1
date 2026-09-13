@@ -57,6 +57,11 @@ public final class TornadoInflowShader {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_WEATHER || shader == null) {
             return;
         }
+        float whiteout = Config.TORNADO_IMMERSION_WHITEOUT_ENABLED.get() ? TornadoFearClient.whiteoutIntensity() : 0.0F;
+        // The inflow overlay is opt-in only. It used to be force-activated by the whiteout, which
+        // veiled the whole screen across the entire (potentially hundreds-of-blocks-wide) damage
+        // path and hid the tornado itself - so it could never be turned off. Now it only draws when
+        // the player explicitly enables inflowShaderOverlay; the whiteout keeps its fog/color work.
         if (!Config.TORNADO_IMMERSION_ENABLED.get()
                 || !Config.TORNADO_IMMERSION_INSIDE_CORE_EFFECTS.get()
                 || !Config.TORNADO_IMMERSION_INFLOW_SHADER_OVERLAY.get()) {
@@ -76,7 +81,10 @@ public final class TornadoInflowShader {
         float core = TornadoFearClient.insideCoreIntensity();
         float eye = Config.TORNADO_IMMERSION_EYE_EFFECT.get() ? TornadoFearClient.insideEyeIntensity() : 0.0F;
         float opacity = Config.TORNADO_IMMERSION_INFLOW_OVERLAY_OPACITY.get().floatValue();
-        float strength = Mth.clamp((path * 0.58F + core * 0.72F) * opacity, 0.0F, 1.0F);
+        if (whiteout > 0.01F) {
+            opacity = Math.max(opacity, (float) (Config.TORNADO_IMMERSION_WHITEOUT_VEIL_OPACITY.get() * whiteout));
+        }
+        float strength = Mth.clamp((path * 0.58F + core * 0.72F + whiteout * 0.42F) * opacity, 0.0F, 1.0F);
         if (strength <= 0.01F) {
             return;
         }
@@ -100,6 +108,7 @@ public final class TornadoInflowShader {
         setUniform("WindDirection", windX, windY);
         setUniform("EyeClearRadius", Config.TORNADO_IMMERSION_EYE_CLEAR_RADIUS.get().floatValue());
         setUniform("Opacity", opacity);
+        setUniform("WhiteoutIntensity", whiteout);
 
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();

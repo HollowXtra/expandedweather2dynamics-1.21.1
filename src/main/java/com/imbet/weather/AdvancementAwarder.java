@@ -14,6 +14,9 @@ public final class AdvancementAwarder {
     public static final String CYCLOIDAL_MARKS = "cycloidal_marks";
     public static final String DELAYED_THUNDER = "delayed_thunder";
     public static final String REINTENSIFICATION = "reintensification";
+    public static final String FLY_SOUNDING = "fly_sounding";
+    public static final String TORNADO_INTERCEPT = "tornado_intercept";
+    public static final String TORNADO_PROBE = "tornado_probe";
 
     private AdvancementAwarder() {
     }

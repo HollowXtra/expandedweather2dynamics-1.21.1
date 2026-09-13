@@ -16,6 +16,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -58,13 +59,14 @@ public final class AddonWeatherEventService {
                 iterator.remove();
                 continue;
             }
-            if (event.type() == StormSubtype.HURRICANE) {
+            if (isBroadRotatingStorm(event.type())) {
                 event.setMotion(WindSteeringManager.addonSteeringVector(level, event));
             }
             event.tick();
             snapEventToSurface(level, event);
-            if (event.type() == StormSubtype.HURRICANE && gameTime % 40L == 0L) {
+            if (isBroadRotatingStorm(event.type()) && gameTime % 40L == 0L) {
                 maintainHurricaneWeather(level, event);
+                reClampHurricaneHelperStages(level, event);
             }
             if (event.type() == StormSubtype.WILDFIRE && gameTime % 20L == 0L) {
                 maintainWildfire(level, event);
@@ -104,6 +106,20 @@ public final class AddonWeatherEventService {
 
     public static List<AddonWeatherEvent> activeEvents(ServerLevel level) {
         return List.copyOf(eventsFor(level));
+    }
+
+    /** The two members of the broad rotating storm family, treated identically server-side. */
+    private static boolean isBroadRotatingStorm(StormSubtype type) {
+        return type == StormSubtype.HURRICANE || type == StormSubtype.CYCLONE;
+    }
+
+    /**
+     * Spin sign of a broad rotating storm's circulation: the hurricane turns cyclonically, the
+     * cyclone anticyclonically. Everything that resolves a tangential direction asks this, so the
+     * wind field and the visuals can never disagree about which way the storm turns.
+     */
+    public static double broadStormSpinSign(AddonWeatherEvent event) {
+        return event != null && event.type() == StormSubtype.CYCLONE ? -1.0D : 1.0D;
     }
 
     public static boolean isSquallLineHelperStorm(StormObject storm) {
@@ -169,6 +185,13 @@ public final class AddonWeatherEventService {
                 float radius = commandFloat(requestedSizeBlocks, 560.0D, 160.0D, 1400.0D);
                 event = new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.HURRICANE, center, direction.scale(0.018D), radius, wind, gameTime, gameTime + 20L * 60L * 60L * 12L);
             }
+            case CYCLONE -> {
+                // The anticyclonic sibling: same broad storm, opposite spin, a notch smaller on
+                // every axis - a cyclone is the depression-strength member of the family.
+                float wind = commandFloat(requestedWindMph, 80.0D, 58.0D, 130.0D);
+                float radius = commandFloat(requestedSizeBlocks, 420.0D, 140.0D, 1000.0D);
+                event = new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.CYCLONE, center, direction.scale(0.018D), radius, wind, gameTime, gameTime + 20L * 60L * 60L * 10L);
+            }
             case WILDFIRE -> {
                 float wind = commandFloat(requestedWindMph, 24.0D, 0.0D, 70.0D);
                 float radius = commandFloat(requestedSizeBlocks, 72.0D, 20.0D, 260.0D);
@@ -183,7 +206,7 @@ public final class AddonWeatherEventService {
             }
         }
         List<AddonWeatherEvent> events = eventsFor(level);
-        if (event.type() == StormSubtype.SQUALL_LINE || event.type() == StormSubtype.HURRICANE) {
+        if (event.type() == StormSubtype.SQUALL_LINE || isBroadRotatingStorm(event.type())) {
             events.add(event);
             if (event.type() == StormSubtype.SQUALL_LINE) {
                 seedWeather2SquallLineStorms(level, event.lineStart(), event.lineEnd(), event.motion(), event.maxWindMph(), gameTime);
@@ -369,7 +392,7 @@ public final class AddonWeatherEventService {
         }
         DailySpcOutlook outlook = DailySpcOutlookService.current(level, BlockPos.containing(storm.pos));
         double chance = Config.HURRICANE_SPAWN_CHANCE.get() * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * Math.max(0.10D, outlook.hurricaneSpawnMultiplier());
-        if (level.random.nextDouble() > chance || hasNearbyAddonEvent(events, StormSubtype.HURRICANE, storm.pos, 1200.0D)) {
+        if (level.random.nextDouble() > chance || hasNearbyAddonEvent(events, StormSubtype.HURRICANE, storm.pos, 1200.0D) || hasNearbyAddonEvent(events, StormSubtype.CYCLONE, storm.pos, 1200.0D)) {
             return;
         }
         float radius = 420.0F + level.random.nextFloat() * 540.0F;
@@ -777,7 +800,7 @@ public final class AddonWeatherEventService {
     }
 
     private static void maintainHurricaneWeather(ServerLevel level, AddonWeatherEvent event) {
-        if (level == null || event == null || event.type() != StormSubtype.HURRICANE) {
+        if (level == null || event == null || !isBroadRotatingStorm(event.type())) {
             return;
         }
         WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
@@ -788,6 +811,41 @@ public final class AddonWeatherEventService {
         manager.isVanillaThunderActiveOnServer = true;
         manager.vanillaRainTimeOnServer = Math.max(manager.vanillaRainTimeOnServer, 20 * 60 * 10);
         manager.vanillaRainAmountOnServer = Math.max(manager.vanillaRainAmountOnServer, event.maxWindMph() >= 96.0F ? 1.0F : 0.88F);
+    }
+
+    /**
+     * Weather2's storm progression is re-clamped on the hurricane's helper rain core every two
+     * seconds. The core is configured below the forming stage at spawn, but it is still a real
+     * ticking StormObject with growth enabled, and Weather2's own progression keeps raising its
+     * stage - past the forming stage, where Weather2 hangs a point funnel that reads as a tornado
+     * in the hurricane's middle. The funnel suppressor and damage gates are the backstop; this
+     * keeps the core honest in the first place, so its rain and wind profile never silently
+     * becomes a tornado's.
+     */
+    private static void reClampHurricaneHelperStages(ServerLevel level, AddonWeatherEvent event) {
+        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
+        if (manager == null) {
+            return;
+        }
+        double range = Math.max(320.0D, event.radius());
+        double rangeSqr = range * range;
+        for (WeatherObject object : manager.getStormObjects()) {
+            if (object instanceof StormObject storm
+                    && isHurricaneHelperStorm(storm)
+                    && storm.pos != null
+                    && !storm.isDead
+                    && storm.pos.distanceToSqr(event.position()) <= rangeSqr) {
+                if (storm.levelCurIntensityStage > StormObject.STATE_HAIL) {
+                    storm.levelCurIntensityStage = StormObject.STATE_HAIL;
+                }
+                if (storm.levelStormIntensityMax > StormObject.STATE_HAIL) {
+                    storm.levelStormIntensityMax = StormObject.STATE_HAIL;
+                }
+                if (storm.maxIntensityStage > StormObject.STATE_HAIL) {
+                    storm.maxIntensityStage = StormObject.STATE_HAIL;
+                }
+            }
+        }
     }
 
     private static boolean hasNearbyWeather2Thunderstorm(WeatherManagerServer manager, Vec3 center, double range) {
@@ -1047,7 +1105,16 @@ public final class AddonWeatherEventService {
             } else if (event.type() == StormSubtype.GUSTNADO && event.maxWindMph() >= 86.0F && isGustnadoLooseBlock(state)) {
                 BlockGrabSafety.safeSetBlock(level, pos, Blocks.AIR.defaultBlockState(), 3);
             } else if ((event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT || event.type() == StormSubtype.GUSTNADO) && event.maxWindMph() >= 75.0F && (state.is(Blocks.GRASS_BLOCK) || state.is(Blocks.FARMLAND))) {
-                BlockGrabSafety.safeSetBlock(level, pos, Blocks.DIRT_PATH.defaultBlockState(), 3);
+                float wind = event.maxWindMph();
+                Block replacement = wind >= 150.0F ? Blocks.COARSE_DIRT : Blocks.DIRT_PATH;
+                if (Config.DAMAGE_SCOURING_EXCAVATION.get() && wind >= 185.0F) {
+                    BlockState below = level.getBlockState(pos.below());
+                    if (!below.isAir() && below.getFluidState().isEmpty() && !below.is(Blocks.BEDROCK)) {
+                        BlockGrabSafety.safeSetBlock(level, pos, Blocks.AIR.defaultBlockState(), 3);
+                        continue;
+                    }
+                }
+                BlockGrabSafety.safeSetBlock(level, pos, replacement.defaultBlockState(), 3);
             }
         }
     }
@@ -1202,7 +1269,7 @@ public final class AddonWeatherEventService {
         if (event.isLine()) {
             return sampleLineWind(event, position);
         }
-        if (event.type() == StormSubtype.HURRICANE) {
+        if (event.type() == StormSubtype.HURRICANE || event.type() == StormSubtype.CYCLONE) {
             return sampleHurricaneWind(event, position);
         }
         if (event.type() == StormSubtype.WILDFIRE || event.type() == StormSubtype.FLAMMAGENITUS) {
@@ -1256,8 +1323,11 @@ public final class AddonWeatherEventService {
         double inner = radius < eye ? Math.max(0.12D, radius / eye) : 1.0D;
         double tangential = radius <= rmw ? max * inner * Math.max(0.20D, radius / rmw) : max * Math.pow(rmw / radius, 0.48D);
         double rainBand = 0.84D + Math.sin(radius / 48.0D + event.spawnTick() * 0.013D) * 0.16D;
+        // The cyclone's wind field is the hurricane's mirrored: same eye/eyewall/doldrum profile,
+        // opposite tangential direction, so gameplay pushes entities the way the bands visibly turn.
+        double spinSign = broadStormSpinSign(event);
         Vec3 radial = fromCenter.scale(1.0D / radius);
-        Vec3 tangent = new Vec3(-radial.z, 0.0D, radial.x);
+        Vec3 tangent = new Vec3(-radial.z * spinSign, 0.0D, radial.x * spinSign);
         Vec3 vector = tangent.scale(tangential * rainBand).add(radial.scale(-tangential * 0.08D));
         return new TornadoWindField.WindSample(vector, vector.length(), vector.length(), radius, event.radius() * 2.0D, rmw);
     }
@@ -1317,7 +1387,7 @@ public final class AddonWeatherEventService {
         if (event.type() == StormSubtype.WILDFIRE || event.type() == StormSubtype.FIRE_WHIRL) {
             return level.isRainingAt(BlockPos.containing(event.position()));
         }
-        if (event.type() == StormSubtype.HURRICANE) {
+        if (isBroadRotatingStorm(event.type())) {
             return !DynamicStormController.isOverWaterOrOcean(level, event.position().x, event.position().z);
         }
         return false;
@@ -1647,11 +1717,11 @@ public final class AddonWeatherEventService {
         if (type == StormSubtype.FLAMMAGENITUS) {
             return flammagenitusAloftPos(level, surface);
         }
-        if (type == StormSubtype.WATERSPOUT || type == StormSubtype.HURRICANE) {
+        if (type == StormSubtype.WATERSPOUT || isBroadRotatingStorm(type)) {
             if (DynamicStormController.isOverWaterOrOcean(level, surface.x, surface.z)) {
                 return surface;
             }
-            Vec3 water = findCommandSurface(level, surface, true, type == StormSubtype.HURRICANE ? 256 : 128);
+            Vec3 water = findCommandSurface(level, surface, true, type == StormSubtype.WATERSPOUT ? 128 : 256);
             return water == null ? surface : water;
         }
         if (type == StormSubtype.DUST_DEVIL || type == StormSubtype.SNOW_DEVIL || type == StormSubtype.GUSTNADO || type == StormSubtype.FIRE_WHIRL || type == StormSubtype.WILDFIRE || type == StormSubtype.LANDSPOUT) {
@@ -1791,7 +1861,7 @@ public final class AddonWeatherEventService {
         if (event.type() == StormSubtype.SQUALL_LINE) {
             return 48.0D + event.maxWindMph() * 0.10D;
         }
-        if (event.type() == StormSubtype.HURRICANE) {
+        if (isBroadRotatingStorm(event.type())) {
             return 40.0D + event.maxWindMph() * 0.09D;
         }
         if (event.type() == StormSubtype.WATERSPOUT) {
@@ -1807,7 +1877,7 @@ public final class AddonWeatherEventService {
         if (event.type() == StormSubtype.SQUALL_LINE) {
             return event.maxWindMph() >= 75.0F ? SpcRisk.MODERATE : event.maxWindMph() >= 58.0F ? SpcRisk.ENHANCED : SpcRisk.SLIGHT;
         }
-        if (event.type() == StormSubtype.HURRICANE) {
+        if (isBroadRotatingStorm(event.type())) {
             return event.maxWindMph() >= 130.0F ? SpcRisk.HIGH : event.maxWindMph() >= 96.0F ? SpcRisk.MODERATE : SpcRisk.ENHANCED;
         }
         if (event.type() == StormSubtype.WILDFIRE) {
