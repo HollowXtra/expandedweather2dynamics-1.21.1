@@ -17,6 +17,7 @@ import net.minecraft.world.phys.Vec3;
 import weather2.weathersystem.storm.StormObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -41,6 +42,7 @@ public final class SatelliteTornadoFunnelRenderer {
         }
         Key key = new Key(parent.ID, satellite.id());
         MiniFunnel funnel = FUNNELS.computeIfAbsent(key, ignored -> new MiniFunnel(groundCenter));
+        funnel.storm = parent;
         funnel.tick(level, satellite, groundCenter, Math.max(45.0D, windMph), rotationSign);
     }
 
@@ -50,6 +52,7 @@ public final class SatelliteTornadoFunnelRenderer {
         }
         Key key = new Key(parent.ID, -Math.max(1L, vortex.id()));
         MiniFunnel funnel = FUNNELS.computeIfAbsent(key, ignored -> new MiniFunnel(groundCenter));
+        funnel.storm = parent;
         funnel.tickSubVortex(level, parent, vortex, groundCenter, Math.max(100.0D, parentWindMph), rotationSign);
     }
 
@@ -59,6 +62,7 @@ public final class SatelliteTornadoFunnelRenderer {
         }
         Key key = new Key(parent.ID, Long.MIN_VALUE + Math.max(1L, vortex.id()));
         MiniFunnel funnel = FUNNELS.computeIfAbsent(key, ignored -> new MiniFunnel(groundCenter));
+        funnel.storm = parent;
         funnel.tickHorizontalVortex(level, parent, vortex, groundCenter, Math.max(6.0D, parentRadius), Math.max(90.0D, parentWindMph), rotationSign);
     }
 
@@ -75,6 +79,7 @@ public final class SatelliteTornadoFunnelRenderer {
         }
         Key key = new Key(parent.ID, -(GENESIS_WHIRL_KEY_BASE + Math.max(0, index)));
         MiniFunnel funnel = FUNNELS.computeIfAbsent(key, ignored -> new MiniFunnel(groundCenter));
+        funnel.storm = parent;
         funnel.tickGenesisWhirl(level, parent.ID * 31L + index, groundCenter, Math.max(30.0D, windMph),
                 rotationSign, Math.max(0.6D, visibleRadius), Math.max(3.0D, height), visibility);
     }
@@ -103,8 +108,20 @@ public final class SatelliteTornadoFunnelRenderer {
 
     private static final class MiniFunnel {
         private static final float HEIGHT_PER_LAYER = 1.35F;
+        /** Width of one debris puff. Small, because dust belongs on the ground rather than above it. */
+        private static final float DEBRIS_SCALE = 1.15F;
+
+        /**
+         * The ground under the foot, bearing by bearing: the condensation's lowest ring first, then the
+         * dust skirt, which is drawn wider. NaN until that bearing has been sampled - see FunnelFootHug.
+         */
+        private final double[] footCloudGround = new double[FunnelFootHug.BEARINGS];
+        private final double[] footSkirtGround = new double[FunnelFootHug.BEARINGS];
+        private int footSampleCursor;
 
         private final List<VisualLayer> layers = new ArrayList<>();
+        /** The owning storm, needed for the foot tone (its humidity decides how dusty the soil is). */
+        private StormObject storm;
         private Vec3 base;
         private Vec3 baseVelocity = Vec3.ZERO;
         private long firstSeenTick = Long.MIN_VALUE;
@@ -142,6 +159,9 @@ public final class SatelliteTornadoFunnelRenderer {
             float spinBase = (float) (36.0D + windMph * 0.32D);
             int lowerDebrisLayers = Mth.clamp((int) (windMph / 7.0D), 6, layerCount);
             double formation = smoothstep(Mth.clamp((lastSeenTick - firstSeenTick + 18.0D) / 34.0D, 0.0D, 1.0D));
+            // The circle the foot is drawn on: this funnel's lowest ring, which its dust shares.
+            double footRadius = Math.max(0.9D, visibleRadius * 0.22D);
+            sampleFootGround(level, footRadius, footRadius);
 
             for (int i = 0; i < layerCount; i++) {
                 VisualLayer layer = layers.get(i);
@@ -184,6 +204,10 @@ public final class SatelliteTornadoFunnelRenderer {
                 if (i < 2) {
                     targetClouds = Math.max(1, targetClouds / 2);
                 }
+                // Hold the foot on the ground under it: a puff is drawn centred on its ring, so its whole
+                // half width hangs below it, and the anchor column knows nothing about the uphill side.
+                hugFoot(layer, layer.pos.y, FunnelFootHug.halfWidth(funnelCloudScale(fraction, radius, radiusMax, reveal)),
+                        FunnelFootHug.halfWidth(DEBRIS_SCALE));
                 cleanup(layer.clouds, targetClouds);
                 while (layer.clouds.size() < targetClouds) {
                     PivotingParticle particle = createCloud(level, cloudBase, renderCull);
@@ -193,7 +217,9 @@ public final class SatelliteTornadoFunnelRenderer {
 
                 float spinSpeed = Math.max(0.72F, 1.0F - (i + 1.0F) / layerCount + 1.0F);
                 layer.rotation += (spinBase * spinSpeed * (float) rotationSign) / Math.max(0.65F, adjustedRadius);
-                positionClouds(layer, targetClouds, adjustedRadius, radius, radiusMax, fraction, reveal);
+                positionClouds(layer, layer.pos.y + layer.cloudLift, targetClouds, adjustedRadius,
+                        funnelCloudScale(fraction, radius, radiusMax, reveal), funnelCloudAlpha(reveal));
+                tintMiniFunnelLayer(level, storm, base, layer, (float) fraction, (float) (formation * reveal));
 
                 int targetDebris = reveal > 0.78D && i <= lowerDebrisLayers && i >= 1 ? Mth.clamp((int) (4.0F * adjustedRate + windMph / 32.0D), 3, 12) : 0;
                 cleanup(layer.debris, targetDebris);
@@ -202,7 +228,7 @@ public final class SatelliteTornadoFunnelRenderer {
                     particle.spawnAsWeatherEffect();
                     layer.debris.add(particle);
                 }
-                positionDebris(layer, targetDebris, adjustedRadius);
+                positionDebris(layer, layer.pos.y + layer.debrisLift, targetDebris, adjustedRadius);
             }
         }
 
@@ -258,6 +284,12 @@ public final class SatelliteTornadoFunnelRenderer {
             Vec3 cloudBase = new Vec3(base.x, base.y + height, base.z);
             ensureLayers(layerCount, cloudBase);
             trimLayers(layerCount);
+            float footTopRadius = SubVortexFunnel.topRadius((float) (visibleRadius * funnelSize), (float) intensity);
+            // The foot's own two circles: the condensation's lowest ring, and the dust skirt below it,
+            // which is drawn wider. A breakdown collar rides aloft, so it has no foot to put on the ground.
+            sampleFootGround(level,
+                    collar ? Double.NaN : Math.max(0.65D, SubVortexFunnel.wallRadius(footTopRadius, 0.0F, 0.0F) * 0.82D),
+                    collar ? Double.NaN : SubVortexFunnel.dustRadius(footTopRadius, 0.0F) * 0.82D);
 
             float adjustedRate = particleRate();
             float renderCull = Minecraft.getInstance().gameRenderer.getRenderDistance() * 4.0F;
@@ -303,7 +335,7 @@ public final class SatelliteTornadoFunnelRenderer {
                 // base. A breakdown collar is not a funnel at all - it wraps the parent's wall - so it
                 // keeps the plain cylindrical ring it had.
                 float ropeWave = SubVortexFunnel.ropeWave(lastSeenTick, vortex.id(), (float) fraction);
-                float topRadius = SubVortexFunnel.topRadius((float) (visibleRadius * funnelSize), (float) intensity);
+                float topRadius = footTopRadius;
                 float wallRadius = collar
                         ? Mth.clamp((float) (visibleRadius * (0.66D + fraction * 0.20D + ropeWave)), 1.05F, (float) visibleRadius * 1.28F)
                         : SubVortexFunnel.wallRadius(topRadius, (float) fraction, ropeWave);
@@ -321,6 +353,12 @@ public final class SatelliteTornadoFunnelRenderer {
                     // No condensation: a dust whirl is only ever seen through the debris it lifts.
                     targetClouds = 0;
                 }
+                // Hold the foot on the ground under it: a puff is drawn centred on its ring, so its whole
+                // half width hangs below it, and the anchor column knows nothing about the uphill side. A
+                // ring with no condensation on it has no cloud width to clear anything with.
+                hugFoot(layer, layer.pos.y,
+                        targetClouds <= 0 ? 0.0D : FunnelFootHug.halfWidth(SubVortexFunnel.puffScale(wallRadius, targetClouds)),
+                        FunnelFootHug.halfWidth(DEBRIS_SCALE));
                 cleanup(layer.clouds, targetClouds);
                 while (layer.clouds.size() < targetClouds) {
                     PivotingParticle particle = createCloud(level, cloudBase, renderCull);
@@ -331,14 +369,19 @@ public final class SatelliteTornadoFunnelRenderer {
                 float spinSpeed = Math.max(0.92F, 1.85F - (float) fraction * 0.70F);
                 layer.rotation += (spinBase * spinSpeed * (float) rotationSign) / Math.max(0.55F, adjustedRadius);
                 if (collar) {
-                    positionClouds(layer, targetClouds, adjustedRadius, wallRadius,
-                            (float) Math.max(visibleRadius * 1.34D, wallRadius), fraction, reveal);
+                    positionClouds(layer, layer.pos.y + layer.cloudLift, targetClouds, adjustedRadius,
+                            funnelCloudScale(fraction, wallRadius, (float) Math.max(visibleRadius * 1.34D, wallRadius), reveal),
+                            funnelCloudAlpha(reveal));
                 } else {
                     // Puffs sized to the ring they sit on, so the trunk reads as a surface rather than
                     // as a few large blobs strung round a circle.
-                    positionClouds(layer, targetClouds, adjustedRadius,
+                    positionClouds(layer, layer.pos.y + layer.cloudLift, targetClouds, adjustedRadius,
                             SubVortexFunnel.puffScale(wallRadius, targetClouds),
                             SubVortexFunnel.condensationAlpha((float) reveal));
+                    // A suction vortex is anchored on the ground, so it carries the same dust foot - it
+                    // is the same soil being lifted. A breakdown collar rides aloft instead and stays
+                    // plain condensation, which is why the tint is only in this branch.
+                    tintMiniFunnelLayer(level, storm, base, layer, (float) fraction, (float) (formation * reveal));
                 }
 
                 // A vortex-breakdown collar rides the funnel aloft, so it never scours debris.
@@ -361,7 +404,7 @@ public final class SatelliteTornadoFunnelRenderer {
                 }
                 // Debris rides the dust swirl, which is wider than the condensation at the base - the
                 // vortex's scouring surface - and the funnel's own surface above it.
-                positionDebris(layer, targetDebris, Math.max(adjustedRadius, dustRadius * 0.82F));
+                positionDebris(layer, layer.pos.y + layer.debrisLift, targetDebris, Math.max(adjustedRadius, dustRadius * 0.82F));
             }
         }
 
@@ -377,6 +420,11 @@ public final class SatelliteTornadoFunnelRenderer {
             Vec3 cloudBase = new Vec3(base.x, base.y + height, base.z);
             ensureLayers(layerCount, cloudBase);
             trimLayers(layerCount);
+            // A whirl is a dust column, so the circle its foot is drawn on is the dust silhouette at the
+            // ground - the widest ring it has.
+            float whirlTopRadius = SubVortexFunnel.topRadius((float) visibleRadius, 0.0F);
+            double whirlFootRadius = Math.max(0.35D, SubVortexFunnel.dustColumnRadius(whirlTopRadius, 0.0F, 0.0F) * 0.82D);
+            sampleFootGround(level, whirlFootRadius, whirlFootRadius);
 
             float adjustedRate = particleRate();
             float renderCull = Minecraft.getInstance().gameRenderer.getRenderDistance() * 4.0F;
@@ -405,7 +453,7 @@ public final class SatelliteTornadoFunnelRenderer {
                 // squat blob. It scales off the same profile the sub-vortices use, because a whirl is
                 // the incipient funnel's ground swirl and should read as a small version of one.
                 float wobble = SubVortexFunnel.dustWobble(lastSeenTick, seed, (float) fraction);
-                float topRadius = SubVortexFunnel.topRadius((float) visibleRadius, 0.0F);
+                float topRadius = whirlTopRadius;
                 float columnRadius = SubVortexFunnel.dustColumnRadius(topRadius, (float) fraction, wobble);
                 float adjustedRadius = Math.max(0.35F, columnRadius * 0.82F);
                 // No condensation at all: a whirl is visible only through what it is lifting, so the
@@ -418,6 +466,11 @@ public final class SatelliteTornadoFunnelRenderer {
                 if (reveal < 0.45D) {
                     targetClouds = Math.max(1, targetClouds / 2);
                 }
+                // Hold the column's foot on the ground under it - see hugFoot - with no cloud width to
+                // clear anything with where the column has no haze left.
+                hugFoot(layer, layer.pos.y,
+                        targetClouds <= 0 ? 0.0D : FunnelFootHug.halfWidth(SubVortexFunnel.puffScale(columnRadius, targetClouds)),
+                        FunnelFootHug.halfWidth(DEBRIS_SCALE));
                 cleanup(layer.clouds, targetClouds);
                 while (layer.clouds.size() < targetClouds) {
                     PivotingParticle particle = createCloud(level, layer.pos == null ? base : layer.pos, renderCull);
@@ -425,7 +478,7 @@ public final class SatelliteTornadoFunnelRenderer {
                     layer.clouds.add(particle);
                 }
                 layer.rotation += (spinBase * (float) rotationSign) / Math.max(0.60F, adjustedRadius);
-                positionClouds(layer, targetClouds, adjustedRadius,
+                positionClouds(layer, layer.pos.y + layer.cloudLift, targetClouds, adjustedRadius,
                         SubVortexFunnel.puffScale(columnRadius, targetClouds),
                         SubVortexFunnel.condensationAlpha((float) reveal));
                 // A whirl is thinner stuff than a funnel: its haze is drawn back so the swirl reads as
@@ -436,6 +489,9 @@ public final class SatelliteTornadoFunnelRenderer {
                     particle.setAlpha(faded);
                     particle.setFullAlphaTarget(faded);
                 }
+                // A pre-touchdown whirl has no condensation above it - it is all lifted soil - so the
+                // gradient starts it as dust and only greys the very top of the column.
+                tintMiniFunnelLayer(level, storm, base, layer, (float) fraction, (float) (visibility * reveal));
 
                 int targetDebris = fraction < 0.36D ? Mth.clamp((int) (2.0F + reveal * 6.0F), 1, 8) : 0;
                 cleanup(layer.debris, targetDebris);
@@ -444,7 +500,7 @@ public final class SatelliteTornadoFunnelRenderer {
                     particle.spawnAsWeatherEffect();
                     layer.debris.add(particle);
                 }
-                positionDebris(layer, targetDebris, adjustedRadius);
+                positionDebris(layer, layer.pos.y + layer.debrisLift, targetDebris, adjustedRadius);
             }
         }
 
@@ -702,6 +758,7 @@ public final class SatelliteTornadoFunnelRenderer {
                 base = new Vec3(target.x, Math.max(target.y, base.y - 1.5D), target.z);
                 baseVelocity = Vec3.ZERO;
                 clampBaseToGround(level);
+                forgetFootGround();
                 return;
             }
             Vec3 delta = target.subtract(base);
@@ -739,6 +796,55 @@ public final class SatelliteTornadoFunnelRenderer {
                 base = new Vec3(base.x, minimumY, base.z);
                 baseVelocity = new Vec3(baseVelocity.x, Math.max(0.0D, baseVelocity.y), baseVelocity.z);
             }
+        }
+
+        /** Forgets the sampled ground, for when this funnel's base has jumped to a new place. */
+        private void forgetFootGround() {
+            Arrays.fill(footCloudGround, Double.NaN);
+            Arrays.fill(footSkirtGround, Double.NaN);
+        }
+
+        /**
+         * Samples the ground the foot is drawn on, a couple of bearings a tick. Both of the foot's own
+         * circles are sampled - the condensation's lowest ring and the dust skirt, which is wider - so a
+         * swinging or orbiting vortex keeps up with the terrain under it without reading the heightmap
+         * eight times a tick for each of them. The anchor column alone is not enough: on a rise it is the
+         * uphill edge of the foot that is drawn inside the hill.
+         */
+        private void sampleFootGround(ClientLevel level, double cloudRadius, double skirtRadius) {
+            for (int n = 0; n < FunnelFootHug.SAMPLES_PER_TICK; n++) {
+                int cursor = footSampleCursor++ % (FunnelFootHug.BEARINGS * 2);
+                boolean skirt = cursor >= FunnelFootHug.BEARINGS;
+                double radius = skirt ? skirtRadius : cloudRadius;
+                if (Double.isNaN(radius) || radius <= 0.05D) {
+                    continue;
+                }
+                double angle = (cursor % FunnelFootHug.BEARINGS) * (Math.PI * 2.0D / FunnelFootHug.BEARINGS);
+                BlockPos ground = BlockGrabSafety.vortexGroundSurface(level, BlockPos.containing(
+                        base.x + Math.cos(angle) * radius, base.y, base.z + Math.sin(angle) * radius));
+                double sampled = ground == null ? Double.NaN : ground.getY();
+                if (skirt) {
+                    footSkirtGround[cursor - FunnelFootHug.BEARINGS] = sampled;
+                } else {
+                    footCloudGround[cursor] = sampled;
+                }
+            }
+        }
+
+        /**
+         * Raises one layer's two groups of puffs onto the ground under them. The condensation's puffs are
+         * as wide as their ring and the dust is small, so each group is lifted by its own width: one
+         * shared lift would either leave the cloud buried or float the dust above the soil it is lifting.
+         * A layer high enough that its puff already clears the surface asks for nothing, which is what
+         * keeps the trunk above the foot exactly the shape the silhouette gives it.
+         */
+        private void hugFoot(VisualLayer layer, double trackY, double cloudHalf, double debrisHalf) {
+            double cloudGround = FunnelFootHug.highest(footCloudGround);
+            double skirtGround = FunnelFootHug.highest(footSkirtGround);
+            layer.cloudLift = Double.isNaN(cloudGround) ? layer.cloudLift
+                    : FunnelFootHug.ease(layer.cloudLift, FunnelFootHug.lift(trackY, cloudGround, cloudHalf));
+            layer.debrisLift = Double.isNaN(skirtGround) ? layer.debrisLift
+                    : FunnelFootHug.ease(layer.debrisLift, FunnelFootHug.lift(trackY, skirtGround, debrisHalf));
         }
 
         private static float particleRate() {
@@ -788,11 +894,19 @@ public final class SatelliteTornadoFunnelRenderer {
             }
         }
 
-        private static void positionClouds(VisualLayer layer, int count, float adjustedRadius, float radius, float radiusMax, double fraction, double reveal) {
+        /**
+         * Drawn width of one condensation puff on a mini funnel's ring: a share of the ring it sits on,
+         * growing up the funnel, and drawn back while the funnel is still forming. Kept out of the
+         * placement itself so the foot hug can ask for the same number the puff is drawn at.
+         */
+        private static float funnelCloudScale(double fraction, float radius, float radiusMax, double reveal) {
             float formedScale = (float) (0.45D + reveal * 0.55D);
-            float scale = (float) Mth.clamp((6.25F * (radius / Math.max(1.0F, radiusMax)) + fraction * 3.35F) * formedScale, 1.55F, 13.5F);
-            float alpha = Mth.clamp(0.46F + 0.48F * (float) reveal, 0.20F, 0.94F);
-            positionClouds(layer, count, adjustedRadius, scale, alpha);
+            return (float) Mth.clamp((6.25F * (radius / Math.max(1.0F, radiusMax)) + fraction * 3.35F) * formedScale, 1.55F, 13.5F);
+        }
+
+        /** Opacity of one condensation puff on a mini funnel's ring. */
+        private static float funnelCloudAlpha(double reveal) {
+            return Mth.clamp(0.46F + 0.48F * (float) reveal, 0.20F, 0.94F);
         }
 
         /**
@@ -800,7 +914,7 @@ public final class SatelliteTornadoFunnelRenderer {
          * Both are layer-wide values for a funnel of a given width - which is why a caller that has
          * worked out its own silhouette can place the ring directly.
          */
-        private static void positionClouds(VisualLayer layer, int count, float adjustedRadius, float scale, float alpha) {
+        private static void positionClouds(VisualLayer layer, double y, int count, float adjustedRadius, float scale, float alpha) {
             if (count <= 0) {
                 return;
             }
@@ -824,7 +938,7 @@ public final class SatelliteTornadoFunnelRenderer {
                     particle.prevRotationYaw += 360.0F;
                 }
 
-                particle.setPosition(layer.pos.x, layer.pos.y, layer.pos.z);
+                particle.setPosition(layer.pos.x, y, layer.pos.z);
                 particle.setPrevPosX(particle.getPosX());
                 particle.setPrevPosY(particle.getPosY());
                 particle.setPrevPosZ(particle.getPosZ());
@@ -838,7 +952,7 @@ public final class SatelliteTornadoFunnelRenderer {
             }
         }
 
-        private static void positionDebris(VisualLayer layer, int count, float adjustedRadius) {
+        private static void positionDebris(VisualLayer layer, double y, int count, float adjustedRadius) {
             if (count <= 0) {
                 return;
             }
@@ -855,11 +969,11 @@ public final class SatelliteTornadoFunnelRenderer {
                 particle.prevRotationYaw = particle.rotationYaw;
                 particle.rotationYaw += 6.0F;
                 particle.rotationPitch = -30.0F;
-                particle.setPosition(layer.pos.x, layer.pos.y, layer.pos.z);
+                particle.setPosition(layer.pos.x, y, layer.pos.z);
                 particle.setPrevPosX(particle.getPosX());
                 particle.setPrevPosY(particle.getPosY());
                 particle.setPrevPosZ(particle.getPosZ());
-                particle.setScale(1.15F);
+                particle.setScale(DEBRIS_SCALE);
                 if (particle.getAge() > particle.getTicksFadeInMax() + 1) {
                     particle.setAge((int) particle.getTicksFadeInMax() + 1);
                 }
@@ -876,7 +990,9 @@ public final class SatelliteTornadoFunnelRenderer {
             int index = 0;
             for (PivotingParticle particle : layer.clouds) {
                 double radians = Math.toRadians(spacing * index + layer.rotation);
-                Vec3 radial = side.scale(Math.cos(radians)).add(normal.scale(Math.sin(radians)));
+                double cosRadians = Math.cos(radians);
+                double sinRadians = Math.sin(radians);
+                Vec3 radial = side.scale(cosRadians).add(normal.scale(sinRadians));
                 Vec3 pos = layer.pos.add(radial.scale(radius));
                 particle.setPrevPosX(particle.getPosX());
                 particle.setPrevPosY(particle.getPosY());
@@ -884,7 +1000,7 @@ public final class SatelliteTornadoFunnelRenderer {
                 particle.setPosition(pos.x, pos.y, pos.z);
                 particle.prevRotationYaw = particle.rotationYaw;
                 particle.rotationYaw = (float) (Mth.atan2(axis.z, axis.x) * 180.0D / Math.PI) - 90.0F + (index % 3 - 1) * 18.0F;
-                particle.rotationPitch = (float) (Math.sin(radians) * 55.0D);
+                particle.rotationPitch = (float) (sinRadians * 55.0D);
                 particle.setScale((float) Mth.clamp(radius * (1.45D + reveal * 0.35D), 1.1D, 7.5D));
                 float alpha = Mth.clamp(0.50F + 0.38F * (float) reveal, 0.20F, 0.88F);
                 particle.setAlpha(alpha);
@@ -921,16 +1037,39 @@ public final class SatelliteTornadoFunnelRenderer {
             }
         }
 
+        /**
+         * Paints the dust gradient onto one ring of a mini funnel, exactly as the parent funnel does:
+         * the condensation grey Weather2 would assign, drifting into the foot's soil tone at the
+         * bottom. {@code formation} carries the funnel's own reveal, so a satellite that has not
+         * grounded yet is plain cloud, and one that is roping out loses its dusty foot with it.
+         */
+        private static void tintMiniFunnelLayer(ClientLevel level, StormObject storm, Vec3 footPos, VisualLayer layer, float heightFraction, float formation) {
+            if (storm == null || layer == null || layer.clouds.isEmpty()) {
+                return;
+            }
+            for (PivotingParticle particle : layer.clouds) {
+                if (particle == null || !particle.isAlive()) {
+                    continue;
+                }
+                ClientWeatherEffects.FunnelTint tint = ClientWeatherEffects.funnelColumnTint(
+                        level, storm, footPos, heightFraction, formation, ClientWeatherEffects.funnelParticleShade(particle));
+                particle.setColor(tint.red(), tint.green(), tint.blue());
+            }
+        }
+
         private static PivotingParticle createCloud(ClientLevel level, Vec3 pos, float renderCull) {
-            PivotingParticle particle = new PivotingParticle(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D, ParticleRegistry.cloud256);
+            PivotingParticle particle = new PivotingParticle(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D, ParticleArt.cloud256());
             particle.setMaxAge(25000);
             particle.setTicksFadeInMax(18);
             particle.setParticleSpeed(0.0D, 0.0D, 0.0D);
             float baseBright = 0.34F;
             float finalBright = Math.min(1.0F, baseBright + level.random.nextFloat() * 0.45F);
             particle.setColor(finalBright - 0.14F, finalBright - 0.14F, finalBright - 0.10F);
-            particle.setAlpha(0.78F);
-            particle.setFullAlphaTarget(0.78F);
+            // The sheet's body is denser now, so the mini funnels scale their opacity back the same way
+            // the parent funnel does - see ClientWeatherEffects.FUNNEL_SPRITE_DENSITY_ALLOWANCE.
+            float alpha = 0.78F * ClientWeatherEffects.FUNNEL_SPRITE_DENSITY_ALLOWANCE;
+            particle.setAlpha(alpha);
+            particle.setFullAlphaTarget(alpha);
             particle.setGravity(0.0F);
             particle.isTransparent = true;
             particle.renderOrder = 1;
@@ -949,9 +1088,9 @@ public final class SatelliteTornadoFunnelRenderer {
 
         private static PivotingParticle createDebris(ClientLevel level, Vec3 pos, float renderCull) {
             TextureAtlasSprite sprite = switch (level.random.nextInt(3)) {
-                case 1 -> ParticleRegistry.debris_2;
-                case 2 -> ParticleRegistry.debris_3;
-                default -> ParticleRegistry.debris_1;
+                case 1 -> ParticleArt.debris2();
+                case 2 -> ParticleArt.debris3();
+                default -> ParticleArt.debris1();
             };
             PivotingParticle particle = new PivotingParticle(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D, sprite);
             particle.setMaxAge(25000);
@@ -986,6 +1125,13 @@ public final class SatelliteTornadoFunnelRenderer {
     private static final class VisualLayer {
         private Vec3 pos;
         private float rotation;
+        /**
+         * How far this layer's two groups of puffs have been raised so their bottoms stand on the ground
+         * under them: the condensation's by its own width, the debris by its smaller one. The layer's own
+         * position stays the track the silhouette asks for, so the shapes above the foot are untouched.
+         */
+        private double cloudLift;
+        private double debrisLift;
         private final List<PivotingParticle> clouds = new ArrayList<>();
         private final List<PivotingParticle> debris = new ArrayList<>();
 

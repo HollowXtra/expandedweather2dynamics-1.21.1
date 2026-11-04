@@ -1,0 +1,63 @@
+{
+  "parent": "minecraft:block/block",
+  "ambientocclusion": false,
+  "textures": {
+    "particle": "expandedweather2dynamics:block/instrument_dark",
+    "cable": "expandedweather2dynamics:block/instrument_dark",
+    "core": "expandedweather2dynamics:block/instrument_metal"
+  },
+  "elements": [
+    {
+      "comment": "Drum the cable is wound on. The placed block is a bare core plug, which reads as nothing in a hand, so the item is the spool the cable arrives on.",
+      "from": [5, 4, 5],
+      "to": [11, 12, 11],
+      "faces": {
+        "north": { "texture": "#cable" },
+        "south": { "texture": "#cable" },
+        "east": { "texture": "#cable" },
+        "west": { "texture": "#cable" },
+        "up": { "texture": "#cable" },
+        "down": { "texture": "#cable" }
+      }
+    },
+    {
+      "comment": "Lower flange.",
+      "from": [4, 3, 4],
+      "to": [12, 5, 12],
+      "faces": {
+        "north": { "texture": "#core" },
+        "south": { "texture": "#core" },
+        "east": { "texture": "#core" },
+        "west": { "texture": "#core" },
+        "up": { "texture": "#core" },
+        "down": { "texture": "#core" }
+      }
+    },
+    {
+      "comment": "Upper flange.",
+      "from": [4, 11, 4],
+      "to": [12, 13, 12],
+      "faces": {
+        "north": { "texture": "#core" },
+        "south": { "texture": "#core" },
+        "east": { "texture": "#core" },
+        "west": { "texture": "#core" },
+        "up": { "texture": "#core" },
+        "down": { "texture": "#core" }
+      }
+    },
+    {
+      "comment": "Loose end of cable, so the spool reads as something you unroll rather than a bearing.",
+      "from": [11, 6, 11],
+      "to": [14, 8, 14],
+      "faces": {
+        "north": { "texture": "#cable" },
+        "south": { "texture": "#cable" },
+        "east": { "texture": "#cable" },
+        "west": { "texture": "#cable" },
+        "up": { "texture": "#cable" },
+        "down": { "texture": "#cable" }
+      }
+    }
+  ]
+}

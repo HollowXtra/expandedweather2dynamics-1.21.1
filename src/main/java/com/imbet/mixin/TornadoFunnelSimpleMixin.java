@@ -1,13 +1,22 @@
 package com.imbet.mixin;
 
 import com.imbet.Config;
+import com.imbet.client.ClientWeatherEffects;
+import com.imbet.client.CloudDeckSpriteProvider;
+import com.imbet.client.LodViewDistance;
+import com.imbet.client.StormBillboardPhase;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.DynamicStormState;
+import extendedrenderer.particle.ParticleRegistry;
 import extendedrenderer.particle.entity.PivotingParticle;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
+import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -25,6 +34,37 @@ import java.util.Set;
 
 @Mixin(value = TornadoFunnelSimple.class, remap = false)
 public abstract class TornadoFunnelSimpleMixin {
+    /**
+     * Weather2's funnel culls itself at four times the vanilla render distance - the same far
+     * plane vanilla clips terrain at - so when an LOD renderer (Distant Horizons, Voxy) is     * drawing terrain hundreds of blocks further, the funnel vanishes into the landscape: the
+     * debris cloud around it keeps its LOD-extended range but the condensation column itself
+     * is gone. This raises the cutoff to the LOD distance whenever that is further, so the
+     * funnel keeps up with the terrain it stands in. Vanilla behaviour is untouched when no
+     * LOD renderer is drawing, and the value still caps at the mod's LOD ceiling so a bad
+     * renderer report cannot push the cull to absurd ranges.
+     */
+    // Anchored on the field write itself, not the getRenderDistance call: Weather2 multiplies
+    // the call result by four before storing it, so an INVOKE_ASSIGN there would never match.
+    // This class writes renderDistCutoff exactly once in tickClient, so the PUTFIELD anchor is
+    // unambiguous. The shift to AFTER matters: a FIELD point injects before the instruction by
+    // default, and a value written there would be overwritten by the pending store. After the
+    // store, the raised value is in place before the layer loop below reads it.
+    @Inject(method = "tickClient", at = @At(value = "FIELD", opcode = Opcodes.PUTFIELD,
+            target = "Lweather2/weathersystem/tornado/simple/TornadoFunnelSimple;renderDistCutoff:F",
+            shift = At.Shift.AFTER), remap = false)
+    private void expandedweather2dynamics$extendFunnelRenderCutoff(CallbackInfo ci) {
+        if (!Config.LOD_COMPAT_ENABLED.get()) {
+            return;
+        }
+        float lod = LodViewDistance.activeDistanceBlocks();
+        if (lod > renderDistCutoff) {
+            renderDistCutoff = Math.min(lod, Config.LOD_COMPAT_MAX_VIEW_DISTANCE_BLOCKS.get());
+        }
+    }
+
+    @Shadow
+    private float renderDistCutoff;
+
     @Unique
     private List<Vec3> expandedweather2dynamics$smoothedOffsets;
     @Unique
@@ -76,10 +116,14 @@ public abstract class TornadoFunnelSimpleMixin {
         try {
             TornadoFunnelSimple funnel = (TornadoFunnelSimple) (Object) this;
             StormObject storm = funnel.getStormObject();
-            // Two reasons to drop Weather2's funnel entirely: a multi-vortex episode with a lifted
-            // parent, and hurricane storms - the helper rain core and the native tropical cyclone -
-            // whose point funnel would read as a tornado hanging in the hurricane's middle.
-            if (!DynamicStormController.shouldHideMultivortexParentFunnel(storm)
+            // Three reasons to drop this funnel entirely. The classic look is the first one: this layer
+            // funnel is the port's replacement for Weather2's 1.12.2 funnel, and with the classic look on
+            // the original is drawing instead (see StormObjectMixin's tornadoV2 injection), so leaving this
+            // one up would stand two funnels in the same place. The other two are a multi-vortex episode
+            // with a lifted parent, and hurricane storms - the helper rain core and the native tropical
+            // cyclone - whose point funnel would read as a tornado hanging in the hurricane's middle.
+            if (!Config.classicLook()
+                    && !DynamicStormController.shouldHideMultivortexParentFunnel(storm)
                     && !DynamicStormController.shouldSuppressHelperFunnel(storm)) {
                 return;
             }
@@ -93,6 +137,13 @@ public abstract class TornadoFunnelSimpleMixin {
     private void expandedweather2dynamics$bendFunnelLayers(CallbackInfo ci) {
         List<Vec3> smoothedOffsets = expandedweather2dynamics$ensureOffsets();
         List<Double> smoothedVerticalOffsets = expandedweather2dynamics$ensureVerticalOffsets();
+        if (Config.classicLook()) {
+            // Classic look: Weather2's own funnel geometry IS the look. No bend, no rope, no lump
+            // offsets, no extra spin or particle resizing - the layers keep the positions, rotation
+            // and scales Weather2 gave them.
+            expandedweather2dynamics$clearState(smoothedOffsets, smoothedVerticalOffsets);
+            return;
+        }
         try {
             TornadoFunnelSimple funnel = (TornadoFunnelSimple) (Object) this;
             StormObject storm = funnel.getStormObject();
@@ -171,6 +222,13 @@ public abstract class TornadoFunnelSimpleMixin {
 
     @Inject(method = "tickClient", at = @At("HEAD"))
     private void expandedweather2dynamics$snapshotPreTickClientRotation(CallbackInfo ci) {
+        if (Config.classicLook()) {
+            // The snapshot exists only to undo Weather2's base spin so the reverse spin above can be
+            // applied instead. Classic mode applies no reverse spin, so undoing the base spin would
+            // leave the funnel frozen: the snapshot stays empty and Weather2's own rotation stands.
+            expandedweather2dynamics$preTickClientRotations = null;
+            return;
+        }
         try {
             TornadoFunnelSimple funnel = (TornadoFunnelSimple) (Object) this;
             StormObject storm = funnel.getStormObject();
@@ -219,6 +277,9 @@ public abstract class TornadoFunnelSimpleMixin {
 
     @Inject(method = "tickClient", at = @At("TAIL"))
     private void expandedweather2dynamics$applyClientParticleMorphology(CallbackInfo ci) {
+        if (Config.classicLook()) {
+            return;
+        }
         try {
             TornadoFunnelSimple funnel = (TornadoFunnelSimple) (Object) this;
             StormObject storm = funnel.getStormObject();
@@ -226,6 +287,7 @@ public abstract class TornadoFunnelSimpleMixin {
                 return;
             }
             expandedweather2dynamics$ensureParticleState();
+            expandedweather2dynamics$applyCombinedSheet(funnel.listLayers);
             for (int i = 0; i < funnel.listLayers.size(); i++) {
                 expandedweather2dynamics$scaleLayerParticles(storm, funnel.listLayers.get(i), i, funnel.listLayers.size());
             }
@@ -350,6 +412,16 @@ public abstract class TornadoFunnelSimpleMixin {
         }
         particleScale *= DynamicStormController.funnelLayerFormationScale(storm, ageTicks, layerIndex, layerCount);
         alphaScale *= DynamicStormController.funnelLayerFormationAlpha(storm, ageTicks, layerIndex, layerCount);
+        // The base layer's formation alpha doubles as the funnel's "condensation has reached the
+        // ground" signal. That is what gates the dust gradient: a funnel still filling downward has
+        // not picked anything up yet, so it must not be painted dirt-brown before it touches down.
+        float baseFormation = DynamicStormController.funnelLayerFormationAlpha(storm, ageTicks, 0, layerCount);
+        // Ground contact is the other half of that gate. A ground swarm cuts its condensation off below
+        // the tip and a floater is lifted clear of the surface, so in both cases the visible column has
+        // lifted nothing - its lowest layer only *looks* low - and it must stay plain condensation.
+        boolean grounded = !DynamicStormController.shouldCullMultivortexParentLayer(storm, 0, layerCount)
+                && DynamicStormController.mainFunnelGroundLift(storm, 0, layerCount) <= 0.0001D;
+        float dustGate = grounded ? baseFormation : 0.0F;
         boolean cullLayer = hideParentFunnel || DynamicStormController.shouldCullMultivortexParentLayer(storm, layerIndex, layerCount);
         float lumpTaper = expandedweather2dynamics$lumpTaper(storm, layerIndex, layerCount);
         expandedweather2dynamics$scaleParticleList(layer.getListParticles(), radiusScale, particleScale, alphaScale, cullLayer, lumpTaper);
@@ -362,6 +434,53 @@ public abstract class TornadoFunnelSimpleMixin {
         if (anchor != null) {
             expandedweather2dynamics$reanchorFreshParticles(layer.getListParticles(), anchor);
             expandedweather2dynamics$reanchorFreshParticles(layer.getListParticlesExtra(), anchor);
+        }
+        expandedweather2dynamics$tintFunnelLayer(storm, layer, layerCount, dustGate);
+    }
+
+    /**
+     * Paints one layer of the funnel: the condensation grey Weather2 would have given these particles,
+     * drifting into the foot's dust tone the closer to the ground the layer sits. Runs every tick,
+     * after the scale pass, because Weather2 tints its funnel particles only once - at creation - and
+     * the only later recolour it does is the firenado swap, which we deliberately leave alone.
+     */
+    @Unique
+    private void expandedweather2dynamics$tintFunnelLayer(StormObject storm, Layer layer, int layerCount, float formation) {
+        if (!Config.FUNNEL_DUST_GRADIENT_ENABLED.get() || Config.classicLook()
+                || storm == null || storm.manager == null || layer == null
+                || layer.getPos() == null || storm.isFirenado
+                || DynamicStormController.shouldHideMultivortexParentFunnel(storm)) {
+            return;
+        }
+        Level world = storm.manager.getWorld();
+        if (!(world instanceof ClientLevel level)) {
+            return;
+        }
+        TornadoFunnelSimple funnel = (TornadoFunnelSimple) (Object) this;
+        Vec3 base = funnel.pos;
+        if (base == null) {
+            return;
+        }
+        Vec3 top = funnel.getPosTop();
+        double baseY = base.y;
+        double topY = top == null ? baseY + 64.0D : Math.max(baseY + 1.0D, top.y);
+        float heightFraction = (float) Mth.clamp((layer.getPos().y - baseY) / Math.max(1.0D, topY - baseY), 0.0D, 1.0D);
+        expandedweather2dynamics$applyFunnelTint(level, storm, base, layer.getListParticles(), heightFraction, formation);
+        expandedweather2dynamics$applyFunnelTint(level, storm, base, layer.getListParticlesExtra(), heightFraction, formation);
+    }
+
+    @Unique
+    private void expandedweather2dynamics$applyFunnelTint(ClientLevel level, StormObject storm, Vec3 footPos, List<PivotingParticle> particles, float heightFraction, float formation) {
+        if (particles == null || particles.isEmpty()) {
+            return;
+        }
+        for (PivotingParticle particle : particles) {
+            if (particle == null || !particle.isAlive()) {
+                continue;
+            }
+            ClientWeatherEffects.FunnelTint tint = ClientWeatherEffects.funnelColumnTint(
+                    level, storm, footPos, heightFraction, formation, ClientWeatherEffects.funnelParticleShade(particle));
+            particle.setColor(tint.red(), tint.green(), tint.blue());
         }
     }
 
@@ -382,6 +501,74 @@ public abstract class TornadoFunnelSimpleMixin {
             particle.setPrevPosX(anchor.x);
             particle.setPrevPosY(anchor.y);
             particle.setPrevPosZ(anchor.z);
+        }
+    }
+
+    /**
+     * Puts the combined look's funnel on its own funnel sheet, one animation phase per puff.
+     *
+     * <p>The sheet is what makes the column read as condensation: the second of the two puffs the author
+     * supplied, a single 256x256 frame with a mean alpha of 0.466, a peak of 255, 43% of it above 200 and a mid
+     * grey of 104. Weather2's own sheet peaks at 81 of 255, so a funnel drawn on it can only ever be a haze -
+     * the art is the ceiling - which is why this sheet is not part of the art switch.
+     *
+     * <p>The phase is dormant: the art is a still frame per role, so the three sibling sheets per role are not
+     * shipped and every phase answers its role's own sheet. It is left in because it is the way back for an
+     * animated set - with one sheet behind it every ring of every layer of a tornado would be on the same frame
+     * of the animation at the same instant, and the column would pump as a single object. See
+     * {@link StormBillboardPhase}.
+     *
+     * <p>Weather2's fire funnel is left alone: the layered funnel swaps its own sprite to the fire sheet for a
+     * firenado, so anything already off the stock funnel sprite keeps whatever it chose. Re-swapping is skipped
+     * when a particle is already on its phase's sheet, so this is a field write per particle per tick at most
+     * and a no-op for the rest of a funnel's life.
+     */
+    @Unique
+    private void expandedweather2dynamics$applyCombinedSheet(List<Layer> layers) {
+        if (!Config.combinedLook() || layers == null || layers.isEmpty()) {
+            return;
+        }
+        // Read once for the pass rather than per particle: this runs over every ring of every layer every tick,
+        // and the phase only decides which sibling sheet each puff is handed.
+        boolean phases = Config.billboardPhases();
+        for (Layer layer : layers) {
+            if (layer == null) {
+                continue;
+            }
+            expandedweather2dynamics$applyCombinedSheet(layer.getListParticles(), phases);
+            expandedweather2dynamics$applyCombinedSheet(layer.getListParticlesExtra(), phases);
+        }
+    }
+
+    /**
+     * Hands each puff the funnel sheet for its own phase of the animation.
+     *
+     * <p>The phase comes from the <em>puff</em> rather than from where it is standing, and that is not a
+     * detail: this method re-sheets its particles every tick, so a phase read off a position that moves would
+     * hand a puff a different sibling sheet as it drifted and the puff would flicker instead of advancing. An
+     * identity hash is stable for as long as the object is, which is exactly the lifetime the phase needs, and
+     * it costs no state to keep - no field to add to a class this mod does not own, and no table to clean up
+     * after the puffs die.
+     */
+    @Unique
+    private void expandedweather2dynamics$applyCombinedSheet(List<PivotingParticle> particles, boolean phases) {
+        if (particles == null || particles.isEmpty()) {
+            return;
+        }
+        for (PivotingParticle particle : particles) {
+            if (particle == null || !particle.isAlive()) {
+                continue;
+            }
+            int phase = phases ? StormBillboardPhase.forKey(System.identityHashCode(particle)) : 0;
+            TextureAtlasSprite sheet = CloudDeckSpriteProvider.combinedSprite(phase);
+            if (sheet == null) {
+                return;
+            }
+            TextureAtlasSprite current = particle.getSprite();
+            if (current == sheet || current == ParticleRegistry.cloud256_fire) {
+                continue;
+            }
+            particle.setSprite(sheet);
         }
     }
 
@@ -422,7 +609,8 @@ public abstract class TornadoFunnelSimpleMixin {
      */
     @Unique
     private boolean expandedweather2dynamics$prepareLumps(StormObject storm) {
-        if (!Config.FUNNEL_LUMPS_ENABLED.get() || storm == null || storm.manager == null || storm.manager.getWorld() == null) {
+        if (!Config.FUNNEL_LUMPS_ENABLED.get() || Config.classicLook()
+                || storm == null || storm.manager == null || storm.manager.getWorld() == null) {
             expandedweather2dynamics$lumpCount = 0;
             return false;
         }
@@ -536,6 +724,10 @@ public abstract class TornadoFunnelSimpleMixin {
             float alpha = alphaScale < 0.995F
                     ? Mth.clamp(alphaScale * 0.94F, 0.0F, 0.94F)
                     : Mth.clamp(0.86F + (particleScale - 1.0F) * 0.06F, 0.78F, 0.98F);
+            // The sheet carries a body of its own now - a 0.466 frame mean against the 0.052 of the art these
+            // alphas were first written against - so the particle's own opacity comes down to keep the
+            // column's weight under control while still reading solid.
+            alpha = Mth.clamp(alpha * ClientWeatherEffects.FUNNEL_SPRITE_DENSITY_ALLOWANCE, 0.0F, 0.94F);
             particle.setAlpha(alpha);
             particle.setFullAlphaTarget(alpha);
             // Store the radius scale INCLUDING the bulge: unscalePivot divides by this to recover the

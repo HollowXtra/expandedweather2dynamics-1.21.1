@@ -1,0 +1,19 @@
+{
+  "vertex": "expandedweather2dynamics:tornado_whiteout",
+  "fragment": "expandedweather2dynamics:tornado_whiteout",
+  "samplers": [],
+  "uniforms": [
+    { "name": "ModelViewMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ProjMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ColorModulator", "type": "float", "count": 4, "values": [ 1.0, 1.0, 1.0, 1.0 ] },
+    { "name": "CameraPos", "type": "float", "count": 3, "values": [ 0.0, 0.0, 0.0 ] },
+    { "name": "BoxCentre", "type": "float", "count": 3, "values": [ 0.0, 0.0, 0.0 ] },
+    { "name": "BoxHalf", "type": "float", "count": 3, "values": [ 24.0, 24.0, 24.0 ] },
+    { "name": "GameTime", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "WindDirection", "type": "float", "count": 2, "values": [ 1.0, 0.0 ] },
+    { "name": "SliceExtinction", "type": "float", "count": 1, "values": [ 0.18 ] },
+    { "name": "WhiteoutIntensity", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "FunnelViolence", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "DebrisIntensity", "type": "float", "count": 1, "values": [ 1.0 ] }
+  ]
+}

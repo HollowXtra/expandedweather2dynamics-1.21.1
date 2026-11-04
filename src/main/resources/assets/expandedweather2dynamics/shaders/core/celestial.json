@@ -1,0 +1,20 @@
+{
+  "vertex": "expandedweather2dynamics:celestial",
+  "fragment": "expandedweather2dynamics:celestial",
+  "samplers": [
+    { "name": "Sampler0" }
+  ],
+  "uniforms": [
+    { "name": "ModelViewMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ProjMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ColorModulator", "type": "float", "count": 4, "values": [ 1.0, 1.0, 1.0, 1.0 ] },
+    { "name": "Mode", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "Limb", "type": "float", "count": 1, "values": [ 0.42 ] },
+    { "name": "Glow", "type": "float", "count": 1, "values": [ 1.0 ] },
+    { "name": "Gain", "type": "float", "count": 1, "values": [ 1.0 ] },
+    { "name": "ShadowStrength", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "ShadowOffset", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "ShadowUmbra", "type": "float", "count": 1, "values": [ 2.6 ] },
+    { "name": "ShadowTint", "type": "float", "count": 3, "values": [ 0.4, 0.12, 0.1 ] }
+  ]
+}

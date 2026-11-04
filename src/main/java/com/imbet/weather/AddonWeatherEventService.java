@@ -5,12 +5,14 @@ import com.imbet.network.AddonWeatherEventSyncPayload;
 import com.imbet.network.NetworkSafety;
 import com.imbet.radar.RadarStormSnapshot;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.FallingBlockEntity;
@@ -19,6 +21,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -37,7 +40,18 @@ import java.util.Map;
 
 public final class AddonWeatherEventService {
     private static final String SQUALL_LINE_HELPER_UUID = "00000000-0000-0000-0000-000000000001";
+    /**
+     * The old addon hurricane's rain core. Nothing stamps this UUID any more - a hurricane is a real
+     * Weather2 water storm now, not a hijacked land cell - but saves from before that change can still
+     * carry one, so the guard stays and every consumer keeps excluding it.
+     */
     private static final String HURRICANE_HELPER_UUID = "00000000-0000-0000-0000-000000000002";
+    /**
+     * The stamp on every cell a synoptic low seeded on its own fronts, and on an outbreak's cells. It is
+     * what lets a low count its own convection, and what tells a parent system apart from a squall line
+     * the addon organised by itself.
+     */
+    private static final String FRONTAL_CONVECTION_HELPER_UUID = "00000000-0000-0000-0000-000000000003";
     private static final Map<ResourceKey<Level>, List<AddonWeatherEvent>> EVENTS = new HashMap<>();
 
     private AddonWeatherEventService() {
@@ -66,10 +80,12 @@ public final class AddonWeatherEventService {
             snapEventToSurface(level, event);
             if (isBroadRotatingStorm(event.type()) && gameTime % 40L == 0L) {
                 maintainHurricaneWeather(level, event);
-                reClampHurricaneHelperStages(level, event);
             }
             if (event.type() == StormSubtype.WILDFIRE && gameTime % 20L == 0L) {
                 maintainWildfire(level, event);
+                // The ground the fire has already been over. Its own pass is on the same one-second cadence as
+                // the fire's upkeep, so the scar grows with the burn rather than in bursts.
+                WildfireScar.tick(level, event);
                 AddonWeatherEvent fireWhirl = maybeCreateFireWhirlFromWildfire(level, events, event, gameTime);
                 if (fireWhirl != null) {
                     pendingTransitions.add(fireWhirl);
@@ -85,6 +101,15 @@ public final class AddonWeatherEventService {
                     || (event.type() == StormSubtype.SQUALL_LINE && gameTime % 2L == 0L);
             if (fastBoundary || gameTime % 4L == 0L) {
                 applyImpacts(level, event);
+            }
+            if (event.isLine()) {
+                // Whether this line has become a derecho, on the same one-second cadence as the rest of the
+                // upkeep, and then whatever the rung it reached does to the ground it is crossing. The pass
+                // reads its own cadence from the config, and stands down entirely while the feature is off.
+                if (gameTime % 20L == 0L) {
+                    DerechoService.updateClassification(level, event);
+                }
+                DerechoService.tick(level, event);
             }
         }
         if (!pendingTransitions.isEmpty()) {
@@ -107,6 +132,26 @@ public final class AddonWeatherEventService {
     public static List<AddonWeatherEvent> activeEvents(ServerLevel level) {
         return List.copyOf(eventsFor(level));
     }
+
+    /**
+     * Puts an event into the world with whatever body it is supposed to have, for systems outside this class
+     * that make their own weather: the volcanic whirls come off a volcano rather than out of the storm ladder,
+     * and this is their way in. It is the same path a spawned or commanded event takes, so a whirl made here is
+     * built, tracked, synced, sampled by the wind field and cleaned up like every other one.
+     */
+    public static AddonWeatherEvent spawnAddonEvent(ServerLevel level, AddonWeatherEvent event) {
+        if (level == null || event == null) {
+            return null;
+        }
+        List<AddonWeatherEvent> events = eventsFor(level);
+        if (events.contains(event)) {
+            return event.snapshot();
+        }
+        addEventAndEntity(level, events, event);
+        sync(level, events);
+        return event.snapshot();
+    }
+
 
     /** The two members of the broad rotating storm family, treated identically server-side. */
     private static boolean isBroadRotatingStorm(StormSubtype type) {
@@ -170,6 +215,11 @@ public final class AddonWeatherEventService {
                 float radius = commandFloat(requestedSizeBlocks, 9.0D, 2.0D, 30.0D);
                 event = new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.WATERSPOUT, center, direction.scale(0.018D), radius, wind, gameTime, gameTime + waterspoutLifetimeTicks(level));
             }
+            case FUNNEL_CLOUD -> {
+                float wind = commandFloat(requestedWindMph, 46.0D, 12.0D, FunnelCloudEntity.MAX_FUNNEL_CLOUD_WIND_MPH);
+                float radius = commandFloat(requestedSizeBlocks, 4.0D, 1.0D, 16.0D);
+                event = new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.FUNNEL_CLOUD, center, direction.scale(0.012D), radius, wind, gameTime, gameTime + funnelCloudLifetimeTicks(level));
+            }
             case SQUALL_LINE -> {
                 float wind = commandFloat(requestedWindMph, 78.0D, 40.0D, 120.0D);
                 double length = commandDouble(requestedSizeBlocks, 760.0D, 180.0D, 1600.0D);
@@ -180,18 +230,9 @@ public final class AddonWeatherEventService {
                 long expire = gameTime + squallLineLifetimeTicks(level, outlook, wind);
                 event = AddonWeatherEvent.squallLine(nextId(gameTime, level), start, end, direction.scale(0.095D), commandFloat(Double.NaN, 160.0D, 72.0D, Config.SQUALL_LINE_MAX_THICKNESS_BLOCKS.get()), wind, gameTime, expire);
             }
-            case HURRICANE -> {
-                float wind = commandFloat(requestedWindMph, 92.0D, 74.0D, 185.0D);
-                float radius = commandFloat(requestedSizeBlocks, 560.0D, 160.0D, 1400.0D);
-                event = new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.HURRICANE, center, direction.scale(0.018D), radius, wind, gameTime, gameTime + 20L * 60L * 60L * 12L);
-            }
-            case CYCLONE -> {
-                // The anticyclonic sibling: same broad storm, opposite spin, a notch smaller on
-                // every axis - a cyclone is the depression-strength member of the family.
-                float wind = commandFloat(requestedWindMph, 80.0D, 58.0D, 130.0D);
-                float radius = commandFloat(requestedSizeBlocks, 420.0D, 140.0D, 1000.0D);
-                event = new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.CYCLONE, center, direction.scale(0.018D), radius, wind, gameTime, gameTime + 20L * 60L * 60L * 10L);
-            }
+            // HURRICANE and CYCLONE are not addon vortices any more: they are real Weather2 water
+            // storms on the 1.12.2 tropical ladder, spawned through spawnCommandTropicalStorm. This
+            // method returns null for them so the command takes that path instead.
             case WILDFIRE -> {
                 float wind = commandFloat(requestedWindMph, 24.0D, 0.0D, 70.0D);
                 float radius = commandFloat(requestedSizeBlocks, 72.0D, 20.0D, 260.0D);
@@ -206,13 +247,9 @@ public final class AddonWeatherEventService {
             }
         }
         List<AddonWeatherEvent> events = eventsFor(level);
-        if (event.type() == StormSubtype.SQUALL_LINE || isBroadRotatingStorm(event.type())) {
+        if (event.type() == StormSubtype.SQUALL_LINE) {
             events.add(event);
-            if (event.type() == StormSubtype.SQUALL_LINE) {
-                seedWeather2SquallLineStorms(level, event.lineStart(), event.lineEnd(), event.motion(), event.maxWindMph(), gameTime);
-            } else {
-                maintainHurricaneWeather(level, event);
-            }
+            seedWeather2SquallLineStorms(level, event.lineStart(), event.lineEnd(), event.motion(), event.maxWindMph(), gameTime);
         } else {
             addEventAndEntity(level, events, event);
         }
@@ -241,12 +278,16 @@ public final class AddonWeatherEventService {
             if (event.position().distanceTo(radarPos) > range) {
                 continue;
             }
+            // A flammagenitus is a cloud: nothing falls out of it, so a radar has nothing to see.
+            if (event.type() == StormSubtype.FLAMMAGENITUS) {
+                continue;
+            }
             SpcRisk risk = riskForEvent(event);
-            boolean vortex = event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT || event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL || event.type() == StormSubtype.GUSTNADO || event.type() == StormSubtype.FIRE_WHIRL || event.type() == StormSubtype.FLOATER_TORNADO;
+            boolean vortex = event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT || event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL || event.type() == StormSubtype.GUSTNADO || event.type() == StormSubtype.FIRE_WHIRL || event.type() == StormSubtype.FLOATER_TORNADO || event.type() == StormSubtype.FUNNEL_CLOUD;
             float width = event.isLine() && event.lineStart() != null && event.lineEnd() != null
                     ? (float) event.lineStart().distanceTo(event.lineEnd())
                     : event.radius() * 2.0F;
-            boolean dopplerSignature = event.type() != StormSubtype.LANDSPOUT && event.type() != StormSubtype.DUST_DEVIL && event.type() != StormSubtype.SNOW_DEVIL;
+            boolean dopplerSignature = event.type() != StormSubtype.LANDSPOUT && event.type() != StormSubtype.DUST_DEVIL && event.type() != StormSubtype.SNOW_DEVIL && event.type() != StormSubtype.FUNNEL_CLOUD;
             float eventWind = event.type() == StormSubtype.LANDSPOUT ? Math.min(LandspoutEntity.MAX_EF2_WIND_MPH, event.maxWindMph()) : event.maxWindMph();
             snapshots.add(new RadarStormSnapshot(
                     event.id(),
@@ -272,7 +313,17 @@ public final class AddonWeatherEventService {
                     event.position().z,
                     vortex,
                     vortex ? inferredStage(eventWind) : 0,
-                    vortex ? inferredStageLabel(eventWind) : ""
+                    vortex ? inferredStageLabel(eventWind) : "",
+                    // An addon event is its own storm as far as the radar is concerned: it has an extent but no
+                    // resolved supercell structure of its own.
+                    Math.max(24.0F, event.radius()),
+                    0.0F,
+                    0.0F,
+                    0.0F,
+                    0.0F,
+                    0,
+                    event.position().x,
+                    event.position().z
             ));
         }
         return snapshots;
@@ -305,10 +356,10 @@ public final class AddonWeatherEventService {
             boolean water = DynamicStormController.isOverWaterOrOcean(level, storm.pos.x, storm.pos.z);
             if (water) {
                 maybeSpawnWaterspout(level, events, storm, gameTime);
-                maybeSpawnHurricane(level, manager, events, storm, gameTime);
             } else {
                 maybeSpawnLandspout(level, events, storm, gameTime);
                 maybeSpawnGustnado(level, events, storm, gameTime);
+                maybeSpawnFunnelCloud(level, events, storm, gameTime);
             }
         }
         detectSquallLine(level, events, activeCells, gameTime);
@@ -322,7 +373,16 @@ public final class AddonWeatherEventService {
         if (!outlook.allowsLandspouts()) {
             return;
         }
-        double chance = Config.LANDSPOUT_SPAWN_CHANCE.get() * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * Math.max(0.35D, outlook.supercellSpawnMultiplier());
+        // A landspout is a tornado - a high-based one, but one that puts a circulation on the ground and
+        // gets an EF rating - so it goes through the same ground gate the storm promotion does.
+        if (!TornadoGenesisGate.allows(level, storm.pos)) {
+            return;
+        }
+        // The country's own odds, on top of the air: a landspout is high-based convection, so the dry
+        // plains and the badlands make them and a rainforest does not.
+        double chance = Config.naturalSpawnChance(
+                Config.LANDSPOUT_SPAWN_CHANCE.get() * Math.max(0.35D, outlook.supercellSpawnMultiplier())
+                        * BiomeClimateService.odds(level, storm.pos).landspout());
         if (level.random.nextDouble() > chance) {
             return;
         }
@@ -342,7 +402,9 @@ public final class AddonWeatherEventService {
             return;
         }
         DailySpcOutlook outlook = DailySpcOutlookService.current(level, BlockPos.containing(storm.pos));
-        double chance = Config.WATERSPOUT_SPAWN_CHANCE.get() * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * Math.max(0.60D, outlook.windProbability() + 0.75D);
+        double chance = Config.naturalSpawnChance(
+                Config.WATERSPOUT_SPAWN_CHANCE.get() * Math.max(0.60D, outlook.windProbability() + 0.75D)
+                        * BiomeClimateService.odds(level, storm.pos).waterspout());
         if (level.random.nextDouble() > chance) {
             return;
         }
@@ -361,13 +423,80 @@ public final class AddonWeatherEventService {
         return 20L * 60L * 5L + level.random.nextInt(20 * 60 * 10 + 1);
     }
 
+    /**
+     * Cold-air funnel clouds: a rotating condensation funnel hanging under a developing shower,
+     * with nothing happening on the ground at all.
+     *
+     * <p>The candidate is a precipitating storm that has not reached the tornado-forming rung - the
+     * shower or weak-thunder base a funnel cloud belongs under. The funnel is placed on the ground
+     * only far enough to find the terrain height and is then lifted to the configured tip altitude,
+     * which is the whole difference between this and a tornado: the circulation never comes down.
+     */
+    private static void maybeSpawnFunnelCloud(ServerLevel level, List<AddonWeatherEvent> events, StormObject storm, long gameTime) {
+        if (!Config.FUNNEL_CLOUDS_ENABLED.get()
+                || events.size() >= Config.MAX_ADDON_VORTICES.get()
+                || !isFunnelCloudCandidate(storm)
+                || hasNearbyAddonEvent(events, StormSubtype.FUNNEL_CLOUD, storm.pos, 220.0D)) {
+            return;
+        }
+        // Cold-air funnels are a cool-season animal: a temperate or cool shower base favors them,
+        // a hot tropical column does not.
+        float baseTemp = level.getBiome(BlockPos.containing(storm.pos)).value().getBaseTemperature();
+        double cool = baseTemp <= 0.35F ? 1.35D : baseTemp <= 0.70F ? 1.0D : 0.60D;
+        // Deliberately the plain setting rather than enabledChance: this one is rolled on every scan
+        // for as long as a shower lasts, so a floor here would make a funnel cloud permanent company.
+        double chance = Config.naturalSpawnChance(Config.FUNNEL_CLOUD_SPAWN_CHANCE.get() * cool
+                * BiomeClimateService.odds(level, storm.pos).funnelCloud());
+        if (level.random.nextDouble() > chance) {
+            return;
+        }
+        Vec3 ground = surfacePos(level, storm.pos.add(randomOffset(level, 16.0D, 74.0D)));
+        if (DynamicStormController.isOverWaterOrOcean(level, ground.x, ground.z)) {
+            return;
+        }
+        float wind = 28.0F + level.random.nextFloat() * (FunnelCloudEntity.MAX_FUNNEL_CLOUD_WIND_MPH - 28.0F);
+        float radius = 2.0F + level.random.nextFloat() * 5.0F;
+        Vec3 motion = storm.motion == null
+                ? randomMotion(level, 0.004D, 0.020D)
+                : storm.motion.scale(0.22D).add(randomMotion(level, 0.002D, 0.014D));
+        addEventAndEntity(level, events, new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.FUNNEL_CLOUD,
+                funnelCloudAloftPos(level, ground), motion, radius, wind, gameTime, gameTime + funnelCloudLifetimeTicks(level)));
+    }
+
+    /**
+     * A funnel cloud needs a shower base and nothing more: precipitating, and short of the rung
+     * where Weather2 starts a real tornado of its own.
+     */
+    private static boolean isFunnelCloudCandidate(StormObject storm) {
+        return storm != null
+                && storm.pos != null
+                && !storm.isDead
+                && storm.isPrecipitating()
+                && storm.levelCurIntensityStage < StormObject.STATE_FORMING
+                && !storm.isTornadoFormingOrGreater()
+                && !DynamicStormController.isAbsorbedOrDecaying(storm);
+    }
+
+    /** Lifts a ground position to the altitude a funnel cloud's ragged tip hangs at. */
+    private static Vec3 funnelCloudAloftPos(ServerLevel level, Vec3 ground) {
+        double tip = Math.max(16.0D, Config.FUNNEL_CLOUD_TIP_ALTITUDE_BLOCKS.get());
+        return new Vec3(ground.x, ground.y + tip, ground.z);
+    }
+
+    private static long funnelCloudLifetimeTicks(ServerLevel level) {
+        // Real cold-air funnels live anywhere from a minute to about ten.
+        return 20L * 60L + level.random.nextInt(20 * 60 * 9 + 1);
+    }
+
     private static void maybeSpawnGustnado(ServerLevel level, List<AddonWeatherEvent> events, StormObject storm, long gameTime) {
         if (!Config.GUSTNADOES_ENABLED.get() || events.size() >= Config.MAX_ADDON_VORTICES.get() || !isGustnadoCandidate(storm) || hasNearbyAddonEvent(events, StormSubtype.GUSTNADO, storm.pos, 140.0D)) {
             return;
         }
         DailySpcOutlook outlook = DailySpcOutlookService.current(level, BlockPos.containing(storm.pos));
         double severeOutflow = Math.max(0.55D, outlook.windProbability() + (storm.levelCurIntensityStage >= StormObject.STATE_HIGHWIND ? 0.35D : 0.0D) + (storm.isPrecipitating() ? 0.15D : 0.0D));
-        double chance = enabledChance(Config.GUSTNADO_SPAWN_CHANCE.get(), 0.045D) * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * severeOutflow;
+        double chance = Config.naturalSpawnChance(
+                enabledChance(Config.GUSTNADO_SPAWN_CHANCE.get(), 0.045D) * severeOutflow
+                        * BiomeClimateService.odds(level, storm.pos).gustnado());
         if (level.random.nextDouble() > chance) {
             return;
         }
@@ -383,26 +512,6 @@ public final class AddonWeatherEventService {
         addEventAndEntity(level, events, new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.GUSTNADO, pos, motion, radius, wind, gameTime, gameTime + gustnadoLifetimeTicks(level, false)));
     }
 
-    private static void maybeSpawnHurricane(ServerLevel level, WeatherManagerServer manager, List<AddonWeatherEvent> events, StormObject storm, long gameTime) {
-        if (!Config.HURRICANES_ENABLED.get() || !DailySpcOutlookService.hurricaneWindow(level, BlockPos.containing(storm.pos)) || countEvents(events, StormSubtype.HURRICANE) >= Config.HURRICANE_MAX_ACTIVE.get()) {
-            return;
-        }
-        if (storm.isTornadoFormingOrGreater() || storm.levelCurIntensityStage < StormObject.STATE_THUNDER || !DynamicStormController.isOverWaterOrOcean(level, storm.pos.x, storm.pos.z)) {
-            return;
-        }
-        DailySpcOutlook outlook = DailySpcOutlookService.current(level, BlockPos.containing(storm.pos));
-        double chance = Config.HURRICANE_SPAWN_CHANCE.get() * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * Math.max(0.10D, outlook.hurricaneSpawnMultiplier());
-        if (level.random.nextDouble() > chance || hasNearbyAddonEvent(events, StormSubtype.HURRICANE, storm.pos, 1200.0D) || hasNearbyAddonEvent(events, StormSubtype.CYCLONE, storm.pos, 1200.0D)) {
-            return;
-        }
-        float radius = 420.0F + level.random.nextFloat() * 540.0F;
-        float wind = (float) Mth.clamp(74.0D + outlook.windProbability() * 92.0D + level.random.nextDouble() * 38.0D, 74.0D, 185.0D);
-        Vec3 motion = storm.motion == null || storm.motion.horizontalDistanceSqr() < 1.0E-5D ? randomMotion(level, 0.012D, 0.040D) : storm.motion.scale(0.45D);
-        configureHurricaneRainCore(storm, motion, wind, radius);
-        events.add(new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.HURRICANE, surfacePos(level, storm.pos), motion, radius, wind, gameTime, gameTime + 20L * 60L * (8L + level.random.nextInt(20))));
-        maintainHurricaneWeather(level, events.get(events.size() - 1));
-    }
-
     private static void spawnDustDevils(ServerLevel level, List<AddonWeatherEvent> events, long gameTime) {
         if (!Config.DUST_DEVILS_ENABLED.get() || events.size() >= Config.MAX_ADDON_VORTICES.get() || level.isRaining() || level.isThundering() || !isDryAfternoon(level)) {
             return;
@@ -412,13 +521,18 @@ public final class AddonWeatherEventService {
             return;
         }
         for (ServerPlayer player : level.players()) {
-            double chance = enabledChance(Config.DUST_DEVIL_SPAWN_CHANCE.get(), 0.018D) * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * Math.max(0.35D, outlook.dustDevilSpawnMultiplier());
+            // Per player, because the dust devil is about the ground under the player: a desert afternoon
+            // and a swamp afternoon are not the same afternoon even under one sky.
+            double chance = Config.naturalSpawnChance(
+                    enabledChance(Config.DUST_DEVIL_SPAWN_CHANCE.get(), 0.018D)
+                            * Math.max(0.35D, outlook.dustDevilSpawnMultiplier())
+                            * BiomeClimateService.odds(level, player.blockPosition()).dustDevil());
             if (events.size() >= Config.MAX_ADDON_VORTICES.get() || level.random.nextDouble() > chance) {
                 continue;
             }
             Vec3 candidate = surfacePos(level, player.position().add(randomOffset(level, 48.0D, 180.0D)));
             BlockPos pos = BlockPos.containing(candidate);
-            if (!level.isLoaded(pos) || level.isRainingAt(pos) || !level.canSeeSky(pos.above()) || !hotDrySurface(level, pos) || hasNearbyWeather2Storm(level, candidate, 260.0D) || hasNearbyAddonEvent(events, StormSubtype.DUST_DEVIL, candidate, 96.0D)) {
+            if (!lodSeedingAllowed(level, pos) || rainingHere(level, pos) || !openSkyHere(level, pos) || !hotDrySurface(level, pos) || hasNearbyWeather2Storm(level, candidate, 260.0D) || hasNearbyAddonEvent(events, StormSubtype.DUST_DEVIL, candidate, 96.0D)) {
                 continue;
             }
             float wind = 24.0F + level.random.nextFloat() * 34.0F;
@@ -429,17 +543,23 @@ public final class AddonWeatherEventService {
     }
 
     private static void spawnSnowDevils(ServerLevel level, List<AddonWeatherEvent> events, long gameTime) {
-        if (!Config.SNOW_DEVILS_ENABLED.get() || events.size() >= Config.MAX_ADDON_VORTICES.get() || level.isRaining() || level.isThundering()) {
+        // The rain flag here used to be the level's own, and that is the bug this fixes: vanilla's snow is
+        // rain as far as that flag is concerned, so while it snowed anywhere a snow devil could neither
+        // form nor survive - in the one biome it belongs to. Thunder is still the whole level's, because a
+        // thunderstorm anywhere is not fair weather, and everything else is read where the whirl is.
+        if (!Config.SNOW_DEVILS_ENABLED.get() || events.size() >= Config.MAX_ADDON_VORTICES.get() || level.isThundering()) {
             return;
         }
+        boolean fairWeatherOnly = Config.SNOW_DEVIL_FAIR_WEATHER_ONLY.get();
         for (ServerPlayer player : level.players()) {
-            double chance = Config.SNOW_DEVIL_SPAWN_CHANCE.get() * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get();
+            double chance = Config.naturalSpawnChance(Config.SNOW_DEVIL_SPAWN_CHANCE.get()
+                    * BiomeClimateService.odds(level, player.blockPosition()).snowDevil());
             if (events.size() >= Config.MAX_ADDON_VORTICES.get() || level.random.nextDouble() > chance) {
                 continue;
             }
             Vec3 candidate = surfacePos(level, player.position().add(randomOffset(level, 42.0D, 170.0D)));
             BlockPos pos = BlockPos.containing(candidate);
-            if (!level.isLoaded(pos) || level.isRainingAt(pos) || !level.canSeeSky(pos.above()) || !snowDevilSurface(level, pos) || hasNearbyWeather2Storm(level, candidate, 220.0D) || hasNearbyAddonEvent(events, StormSubtype.SNOW_DEVIL, candidate, 128.0D)) {
+            if (!lodSeedingAllowed(level, pos) || !openSkyHere(level, pos) || !snowDevilGroundAllows(level, pos, fairWeatherOnly) || hasNearbyWeather2Storm(level, candidate, 220.0D) || hasNearbyAddonEvent(events, StormSubtype.SNOW_DEVIL, candidate, 128.0D)) {
                 continue;
             }
             float wind = 18.0F + level.random.nextFloat() * 28.0F;
@@ -462,7 +582,7 @@ public final class AddonWeatherEventService {
             SpcRisk risk = fireWeatherRiskAt(level, pos);
             double multiplier = 0.55D + risk.severity() * 0.28D;
             double configuredChance = Math.min(Config.WILDFIRE_SPAWN_CHANCE.get(), 0.0014D);
-            double chance = configuredChance * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * multiplier;
+            double chance = Config.naturalSpawnChance(configuredChance * multiplier);
             if (risk.severity() < SpcRisk.MARGINAL.severity() || level.random.nextDouble() > chance) {
                 continue;
             }
@@ -486,7 +606,8 @@ public final class AddonWeatherEventService {
             return null;
         }
         SpcRisk risk = fireWeatherRiskAt(level, BlockPos.containing(wildfire.position()));
-        double chance = Config.FIRE_WHIRL_SPAWN_CHANCE.get() * Config.DAILY_SPC_SPAWN_MULTIPLIER_SCALE.get() * (0.70D + risk.severity() * 0.24D);
+        double chance = Config.naturalSpawnChance(
+                Config.FIRE_WHIRL_SPAWN_CHANCE.get() * (0.70D + risk.severity() * 0.24D));
         if (risk.severity() < SpcRisk.SLIGHT.severity() || level.random.nextDouble() > chance) {
             return null;
         }
@@ -511,6 +632,77 @@ public final class AddonWeatherEventService {
         return new AddonWeatherEvent(nextId(gameTime, level), StormSubtype.FLAMMAGENITUS, flammagenitusAloftPos(level, wildfire.position()), wildfire.motion().scale(0.70D), radius, 0.0F, gameTime, Math.max(wildfire.expireTick(), gameTime + 20L * 60L * 5L));
     }
 
+    /**
+     * What a spout blows away: leaves, ground cover and what is growing on it, and nothing else.
+     *
+     * <p>Plants above the destructive tier are left to the ordinary vortex path below, which has been taking
+     * crops and flowers since before this existed - so the two never both take the same block.
+     */
+    private static void blowLoose(ServerLevel level, AddonWeatherEvent event) {
+        SpoutDamage.Tier tier = SpoutDamage.tierOf(event.maxWindMph());
+        if (tier == SpoutDamage.Tier.CALM) {
+            return;
+        }
+        boolean plantsBelowStrip = event.maxWindMph() < SpoutDamage.STRIP_AT_MPH;
+        double chance = SpoutDamage.takeShare(event.maxWindMph());
+        int attempts = Mth.clamp((int) Math.round(event.radius() * 1.2D), 3, 14);
+        for (int i = 0; i < attempts; i++) {
+            Vec3 target = event.isLine()
+                    ? randomPointNearLine(level, event)
+                    : event.position().add(randomOffset(level, 0.0D, Math.max(4.0D, event.radius() * 1.7D)));
+            BlockPos column = BlockPos.containing(target);
+            if (!level.isLoaded(column)) {
+                continue;
+            }
+            BlockPos surface = BlockGrabSafety.safeSurface(level, column, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+            if (surface == null) {
+                continue;
+            }
+            for (int dy = 0; dy <= SPOUT_SCAN_HEIGHT; dy++) {
+                BlockPos pos = surface.offset(0, dy, 0);
+                if (!level.isLoaded(pos)) {
+                    break;
+                }
+                BlockGrabSafety.BlockSample block = BlockGrabSafety.sample(level, pos, null);
+                if (!BlockGrabSafety.canEdit(block)) {
+                    continue;
+                }
+                SpoutDamage.BlockClass blockClass = spoutClassOf(block.state());
+                if (blockClass == SpoutDamage.BlockClass.PLANT && !plantsBelowStrip) {
+                    continue;
+                }
+                if (SpoutDamage.verdict(blockClass, event.maxWindMph()) != SpoutDamage.Kind.BLOW_AWAY) {
+                    continue;
+                }
+                if (level.random.nextDouble() >= chance) {
+                    continue;
+                }
+                BlockGrabSafety.safeSetBlock(level, pos, Blocks.AIR.defaultBlockState(), 3);
+            }
+        }
+    }
+
+    /** Which of the spout's three loose categories a block belongs to, if any. */
+    private static SpoutDamage.BlockClass spoutClassOf(BlockState state) {
+        if (state.is(BlockTags.LEAVES)) {
+            return SpoutDamage.BlockClass.LEAVES;
+        }
+        if (state.is(BlockTags.CROPS)
+                || state.is(BlockTags.FLOWERS)
+                || state.is(BlockTags.REPLACEABLE_BY_TREES)
+                || state.is(Blocks.SHORT_GRASS)
+                || state.is(Blocks.TALL_GRASS)
+                || state.is(Blocks.DEAD_BUSH)) {
+            return SpoutDamage.BlockClass.PLANT;
+        }
+        if (state.is(Blocks.SNOW)
+                || idPathContains(state, "carpet")
+                || idPathContains(state, "torch")) {
+            return SpoutDamage.BlockClass.LOOSE;
+        }
+        return SpoutDamage.BlockClass.NONE;
+    }
+
     private static void maintainWildfire(ServerLevel level, AddonWeatherEvent event) {
         if (!Config.WILDFIRES_ENABLED.get()) {
             return;
@@ -521,6 +713,9 @@ public final class AddonWeatherEventService {
             tryIgniteSurface(level, BlockPos.containing(target));
         }
     }
+
+    /** How far up a spout reads a column, so it strips a canopy rather than only what is at ground level. */
+    private static final int SPOUT_SCAN_HEIGHT = 8;
 
     private static void maintainFireWhirlPath(ServerLevel level, AddonWeatherEvent event) {
         if (!Config.FIRE_WHIRLS_ENABLED.get()) {
@@ -557,7 +752,12 @@ public final class AddonWeatherEventService {
                 severeLinearSeed = true;
             }
         }
-        if (count < Config.SQUALL_LINE_MIN_CELLS.get() && !severeLinearSeed) {
+        // A cold front is what squalls a line rather than a scatter of cells, so the front's own linear
+        // weighting lowers the number of cells the line needs to organise - and a warm front, which is
+        // elevated convection that never puts a downdraft on the ground, raises it.
+        int minCells = Mth.clamp((int) Math.round(Config.SQUALL_LINE_MIN_CELLS.get()
+                / Math.max(0.25D, outlook.frontalQlcsFactor())), 2, 16);
+        if (count < minCells && !severeLinearSeed) {
             return;
         }
 
@@ -724,6 +924,159 @@ public final class AddonWeatherEventService {
         }
     }
 
+    /**
+     * Seeds one convective cell on a synoptic low's front, the way a front actually makes weather.
+     *
+     * <p>The cell arrives already going - a front's updraft is running before the cell is visible - so
+     * it is placed at the front's own cloud base and given the rung its kind starts on. What it may grow
+     * into is decided by {@link FrontalCellKind}: the warm sector's discrete supercells are the only ones
+     * left their whole ladder, because they are the only ones an outbreak is made of, and the front's
+     * forced and elevated cells are capped where the front is driving them.
+     *
+     * <p>The cell carries {@link #FRONTAL_CONVECTION_HELPER_UUID}, which is what lets its parent low
+     * count its own convection instead of counting storms in the neighbourhood.
+     *
+     * @return the cell, or null when there is no manager or the sky already has a thunderstorm there
+     */
+    public static StormObject seedFrontalCell(ServerLevel level, Vec3 groundPosition, Vec3 motion, FrontalCellKind kind) {
+        if (level == null || groundPosition == null || kind == null) {
+            return null;
+        }
+        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
+        if (manager == null) {
+            return null;
+        }
+        Vec3 aloft = squallLineAloftPos(level, groundPosition);
+        if (hasNearbyWeather2Thunderstorm(manager, aloft, 150.0D)) {
+            return null;
+        }
+        StormObject storm = new StormObject(manager);
+        storm.initPositions(aloft);
+        storm.initFirstTime();
+        storm.naturallySpawned = true;
+        storm.spawnerUUID = FRONTAL_CONVECTION_HELPER_UUID;
+        configureFrontalCell(storm, motion, kind, deadlyAirShareAt(level, groundPosition));
+        manager.addStormObject(storm);
+        manager.syncStormNew(storm);
+        manager.lastStormFormed = Math.max(manager.lastStormFormed, level.getGameTime());
+        manager.isVanillaRainActiveOnServer = true;
+        manager.isVanillaThunderActiveOnServer = true;
+        manager.vanillaRainTimeOnServer = Math.max(manager.vanillaRainTimeOnServer, 20 * 60 * 6);
+        manager.vanillaRainAmountOnServer = Math.max(manager.vanillaRainAmountOnServer, 0.82F);
+        return storm;
+    }
+
+    /**
+     * The air's own reading where a storm is about to be seeded: whether this sky could carry a deadly storm.
+     *
+     * <p>The same method the forecast's percentage is printed from, deliberately, because a readout that
+     * disagreed with the flag would be worse than no readout: a sky that reads 0.00% a day is a sky no cell of
+     * this mod's is allowed to be promoted into a deadly storm out of. With the switch off the reading is full
+     * air and nothing below the switch changes at all.
+     *
+     * <p>Every path this mod seeds a storm from reads it - the frontal cell, the tropical system and the
+     * twin - so whether a cell may be promoted into a deadly one is the air's question wherever the addon
+     * puts a storm, rather than a flag set on the frontal path alone.
+     */
+    public static double deadlyAirShareAt(ServerLevel level, Vec3 groundPosition) {
+        if (!Config.deadlyStormFromAir()) {
+            return DeadlyStormModel.FULL_AIR;
+        }
+        ThermodynamicProfile profile = ThermodynamicProfileService.compute(level, BlockPos.containing(groundPosition));
+        return DeadlyStormModel.airShare(Config.deadlyStormSettings(), profile.capeJkg(), profile.deepLayerShearMps());
+    }
+
+    /**
+     * Whether the sky at a place will carry a deadly storm, which is the flag every storm this mod seeds is
+     * given: the reading above nothing at all, or a pass when the air is not being asked.
+     */
+    public static boolean deadlyAirSupports(ServerLevel level, Vec3 groundPosition) {
+        return deadlyAirShareAt(level, groundPosition) > DeadlyStormModel.NO_AIR;
+    }
+
+    /**
+     * How many cells a low has on the ground right now, counted by the stamp its own seeding left on
+     * them. Counting storms in the neighbourhood instead would count the player's weather, the addon's
+     * own squall lines and other lows' cells, and the cap would then be about the map rather than about
+     * the system.
+     */
+    public static int frontalCellCount(ServerLevel level, SynopticLow low) {
+        if (level == null || low == null) {
+            return 0;
+        }
+        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
+        if (manager == null) {
+            return 0;
+        }
+        double reach = low.radius() * 1.5D;
+        double reachSqr = reach * reach;
+        int count = 0;
+        for (WeatherObject object : manager.getStormObjects()) {
+            if (!(object instanceof StormObject storm) || storm.pos == null || storm.isDead) {
+                continue;
+            }
+            if (!FRONTAL_CONVECTION_HELPER_UUID.equals(storm.spawnerUUID)) {
+                continue;
+            }
+            double dx = storm.pos.x - low.x();
+            double dz = storm.pos.z - low.z();
+            if (dx * dx + dz * dz <= reachSqr) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static void configureFrontalCell(StormObject storm, Vec3 motion, FrontalCellKind kind, double airShare) {
+        // A kind's own rung translated into the storm's ladder, in the one place that has to know both.
+        int stage = kind.startRung() == FrontalCellKind.Rung.HAILSTORM
+                ? StormObject.STATE_HAIL
+                : StormObject.STATE_THUNDER;
+        boolean airDecides = Config.deadlyStormFromAir();
+        // A forced cell is the front's own updraft and dies with it, so it is not allowed to be deadly
+        // in the discrete sense; a warm-sector supercell is exactly the cell that is - and while the air is
+        // deciding, whether this sky could carry a deadly storm is the other half of that question. Weather2's
+        // own deadly timer, in StormObject.tickProgression, promotes a fresh cell at STATE_NORMAL into a real,
+        // deadly storm every three game days (ten, on its land-based timer) and asks this flag before it does.
+        // Refusing it here does not make a lesser storm: the flag decides the promotion and nothing else.
+        storm.canBeDeadly = !kind.forced() && (!airDecides || airShare > DeadlyStormModel.NO_AIR);
+        // And how much room a cell is handed is the same reading, for the cells the air agreed to: a fully
+        // loaded sky gives the warm sector's cell its whole ladder, a marginal one gives it a rung between its
+        // own and the top, and a cell the air refused keeps the room its kind was built for. The intensity it
+        // starts at is scaled the same way, so a deadly storm out of a marginal sky is a real storm that has
+        // to grow into its rung rather than a violent one that arrived early.
+        double room = storm.canBeDeadly && airDecides ? DeadlyStormModel.strengthScale(airShare) : 1.0D;
+        storm.levelCurIntensityStage = Math.max(storm.levelCurIntensityStage, stage);
+        storm.levelCurStagesIntensity = Math.max(storm.levelCurStagesIntensity,
+                (float) Math.min(1.0D, kind.startIntensity() * room));
+        storm.stormType = StormObject.TYPE_LAND;
+        storm.isGrowing = true;
+        storm.hasStormPeaked = false;
+        storm.alwaysProgresses = false;
+        storm.spinSpeed = 0.0D;
+        storm.tempAngleFormingTornado = 0.0F;
+        storm.setCloudlessStorm(false);
+        storm.setPrecipitating(true);
+        if (kind.fullLadder()) {
+            // The warm sector's discrete supercell, and only it: the whole ladder, so an extreme day's
+            // cells are the ones that can actually reach the violent rungs - and while the air is deciding,
+            // how much of that ladder the day has actually earned.
+            int rung = airDecides && storm.canBeDeadly
+                    ? DeadlyStormModel.ladderRung(stage, StormObject.STATE_STAGE5, airShare)
+                    : (airDecides ? stage : StormObject.STATE_STAGE5);
+            storm.maxIntensityStage = Math.max(storm.maxIntensityStage, rung);
+            storm.levelStormIntensityMax = Math.max(storm.levelStormIntensityMax, storm.maxIntensityStage);
+        } else {
+            storm.maxIntensityStage = stage;
+            storm.levelStormIntensityMax = stage;
+        }
+        Vec3 forward = motion != null && motion.horizontalDistanceSqr() > 1.0E-5D
+                ? new Vec3(motion.x, 0.0D, motion.z).normalize()
+                : new Vec3(0.923D, 0.0D, -0.382D);
+        double speed = motion == null ? 0.03D : Mth.clamp(motion.horizontalDistance(), 0.012D, 0.12D);
+        storm.motion = forward.scale(speed);
+    }
+
     private static boolean configureSquallThunderstormCell(StormObject storm, Vec3 motion, float lineWind, boolean capToThunderstorm) {
         if (storm == null || storm.isDead || storm.isTornadoFormingOrGreater() || DynamicStormController.isNativeCyclone(storm)) {
             return false;
@@ -766,39 +1119,6 @@ public final class AddonWeatherEventService {
         return changed || capToThunderstorm;
     }
 
-    private static void configureHurricaneRainCore(StormObject storm, Vec3 motion, float wind, float radius) {
-        if (storm == null) {
-            return;
-        }
-        storm.stormType = StormObject.TYPE_LAND;
-        storm.attrib_waterSpout = false;
-        storm.spawnerUUID = HURRICANE_HELPER_UUID;
-        storm.setCloudlessStorm(false);
-        storm.setPrecipitating(true);
-        storm.canBeDeadly = false;
-        storm.alwaysProgresses = false;
-        storm.hasStormPeaked = false;
-        storm.isGrowing = true;
-        storm.spinSpeed = 0.0D;
-        storm.tempAngleFormingTornado = 0.0F;
-        storm.angleMovementTornadoOverride = 0.0F;
-        storm.angleIsOverridden = false;
-
-        int safeStage = wind >= 96.0F ? StormObject.STATE_HAIL : StormObject.STATE_HIGHWIND;
-        storm.levelCurIntensityStage = Mth.clamp(Math.max(storm.levelCurIntensityStage, StormObject.STATE_THUNDER), StormObject.STATE_THUNDER, safeStage);
-        storm.levelCurStagesIntensity = Math.max(storm.levelCurStagesIntensity, 0.62F);
-        storm.levelStormIntensityMax = Mth.clamp(Math.max(storm.levelStormIntensityMax, safeStage), StormObject.STATE_THUNDER, StormObject.STATE_HAIL);
-        storm.maxIntensityStage = Mth.clamp(Math.max(storm.maxIntensityStage, safeStage), StormObject.STATE_THUNDER, StormObject.STATE_HAIL);
-        storm.levelWater = Math.max(storm.levelWater, Math.max(160, storm.levelWaterStartRaining * 5));
-        storm.levelWindMomentum = Math.max(storm.levelWindMomentum, (float) Mth.clamp(wind / 90.0F, 0.75F, 1.85F));
-        storm.size = Math.max(storm.size, Mth.clamp((int) Math.round(radius * 0.28F), 220, 560));
-        storm.maxSize = Math.max(storm.maxSize, Mth.clamp((int) Math.round(radius * 0.46F), 300, 780));
-        if (motion != null && motion.horizontalDistanceSqr() > 1.0E-5D) {
-            Vec3 forward = new Vec3(motion.x, 0.0D, motion.z).normalize();
-            storm.motion = forward.scale(Mth.clamp(Math.sqrt(motion.horizontalDistanceSqr()), 0.012D, 0.055D));
-        }
-    }
-
     private static void maintainHurricaneWeather(ServerLevel level, AddonWeatherEvent event) {
         if (level == null || event == null || !isBroadRotatingStorm(event.type())) {
             return;
@@ -811,41 +1131,6 @@ public final class AddonWeatherEventService {
         manager.isVanillaThunderActiveOnServer = true;
         manager.vanillaRainTimeOnServer = Math.max(manager.vanillaRainTimeOnServer, 20 * 60 * 10);
         manager.vanillaRainAmountOnServer = Math.max(manager.vanillaRainAmountOnServer, event.maxWindMph() >= 96.0F ? 1.0F : 0.88F);
-    }
-
-    /**
-     * Weather2's storm progression is re-clamped on the hurricane's helper rain core every two
-     * seconds. The core is configured below the forming stage at spawn, but it is still a real
-     * ticking StormObject with growth enabled, and Weather2's own progression keeps raising its
-     * stage - past the forming stage, where Weather2 hangs a point funnel that reads as a tornado
-     * in the hurricane's middle. The funnel suppressor and damage gates are the backstop; this
-     * keeps the core honest in the first place, so its rain and wind profile never silently
-     * becomes a tornado's.
-     */
-    private static void reClampHurricaneHelperStages(ServerLevel level, AddonWeatherEvent event) {
-        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
-        if (manager == null) {
-            return;
-        }
-        double range = Math.max(320.0D, event.radius());
-        double rangeSqr = range * range;
-        for (WeatherObject object : manager.getStormObjects()) {
-            if (object instanceof StormObject storm
-                    && isHurricaneHelperStorm(storm)
-                    && storm.pos != null
-                    && !storm.isDead
-                    && storm.pos.distanceToSqr(event.position()) <= rangeSqr) {
-                if (storm.levelCurIntensityStage > StormObject.STATE_HAIL) {
-                    storm.levelCurIntensityStage = StormObject.STATE_HAIL;
-                }
-                if (storm.levelStormIntensityMax > StormObject.STATE_HAIL) {
-                    storm.levelStormIntensityMax = StormObject.STATE_HAIL;
-                }
-                if (storm.maxIntensityStage > StormObject.STATE_HAIL) {
-                    storm.maxIntensityStage = StormObject.STATE_HAIL;
-                }
-            }
-        }
     }
 
     private static boolean hasNearbyWeather2Thunderstorm(WeatherManagerServer manager, Vec3 center, double range) {
@@ -862,59 +1147,61 @@ public final class AddonWeatherEventService {
         return false;
     }
 
-    private static void seedNativeTropicalCyclone(ServerLevel level, Vec3 center, Vec3 motion, float maxWindMph, float radius, long gameTime) {
-        if (!Config.CYCLONES_ENABLED.get() || level == null || center == null) {
-            return;
+    /**
+     * Spawns a real tropical storm for the command: a Weather2 water storm on the 1.12.2 ladder, which
+     * is the same kind of storm the ocean can form on its own. The command is explicit player intent, so
+     * it is not gated by the natural genesis knobs - the storm is placed, given the ladder rung that can
+     * carry the wind it was asked for, and left to live.
+     *
+     * @param antiCyclonic the twin: same storm, opposite rotation, named a cyclone rather than a hurricane.
+     * @return the storm, or null if the manager or the placement could not be had.
+     */
+    public static StormObject spawnCommandTropicalStorm(ServerLevel level, Vec3 center, Vec3 motion, double requestedWindMph, double requestedSizeBlocks, boolean antiCyclonic) {
+        if (level == null || center == null) {
+            return null;
         }
         WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
-        if (manager == null || hasNearbyWeather2Cyclone(manager, center, Math.max(220.0D, radius * 0.68D))) {
-            return;
+        if (manager == null) {
+            return null;
         }
+        float wind = (float) Mth.clamp(requestedWindMph, 35.0D, 200.0D);
+        float radius = (float) Mth.clamp(requestedSizeBlocks, 160.0D, 1400.0D);
         StormObject storm = new StormObject(manager);
         storm.initPositions(cycloneAloftPos(level, center));
         storm.initFirstTime();
-        configureNativeTropicalCyclone(storm, motion, maxWindMph, radius);
-        storm.naturallySpawned = true;
-        manager.addStormObject(storm);
-        manager.syncStormNew(storm);
-        manager.lastStormFormed = Math.max(manager.lastStormFormed, gameTime);
-        manager.isVanillaRainActiveOnServer = true;
-        manager.isVanillaThunderActiveOnServer = true;
-        manager.vanillaRainTimeOnServer = Math.max(manager.vanillaRainTimeOnServer, 20 * 60 * 10);
-        manager.vanillaRainAmountOnServer = Math.max(manager.vanillaRainAmountOnServer, 0.95F);
-    }
-
-    private static void configureNativeTropicalCyclone(StormObject storm, Vec3 motion, float maxWindMph, float radius) {
-        if (storm == null) {
-            return;
-        }
-        storm.stormType = StormObject.TYPE_WATER;
-        storm.attrib_waterSpout = false;
-        storm.setCloudlessStorm(false);
-        storm.setPrecipitating(true);
-        storm.canBeDeadly = true;
-        storm.isGrowing = true;
-        storm.hasStormPeaked = false;
+        storm.naturallySpawned = false;
         storm.alwaysProgresses = true;
-        int stage = DynamicStormController.cycloneStageForWind(maxWindMph);
+        // The shield's radius IS the storm's size, so the requested size is applied to the storm's own
+        // footprint directly - the deck, the eye and the wind field all read it back from there.
+        storm.size = Math.max(storm.size, Math.round(radius));
+        storm.maxSize = Math.max(storm.maxSize, Math.round(radius * 1.25F));
+        manager.addStormObject(storm);
+        if (!DynamicStormController.startTropicalStorm(level, storm, antiCyclonic)) {
+            return null;
+        }
+        // The commanded strength: the storm climbs to the rung that can carry this wind, so the ladder
+        // name it wears and the air it moves agree from the first tick.
+        int stage = DynamicStormController.cycloneStageForWind(wind);
         storm.levelCurIntensityStage = Math.max(storm.levelCurIntensityStage, stage);
         storm.levelCurStagesIntensity = Math.max(storm.levelCurStagesIntensity, 0.74F);
         storm.levelStormIntensityMax = Math.max(Math.max(storm.levelStormIntensityMax, stage), storm.rollDiceOnMaxIntensity());
         storm.maxIntensityStage = Math.max(storm.maxIntensityStage, storm.levelStormIntensityMax);
         storm.levelWater = Math.max(storm.levelWater, Math.max(180, storm.levelWaterStartRaining * 5));
-        storm.levelWindMomentum = Math.max(storm.levelWindMomentum, (float) Mth.clamp(maxWindMph / 85.0F, 0.95F, 2.45F));
-        storm.size = Math.max(storm.size, Mth.clamp((int) Math.round(radius * 0.36F), 260, 760));
-        storm.maxSize = Math.max(storm.maxSize, Mth.clamp((int) Math.round(radius * 0.72F), 420, 1300));
+        storm.levelWindMomentum = Math.max(storm.levelWindMomentum, (float) Mth.clamp(wind / 85.0D, 0.95F, 2.45F));
+        storm.spinSpeed = Math.abs(storm.spinSpeed) * (antiCyclonic ? -1.0D : 1.0D);
         if (motion != null && motion.horizontalDistanceSqr() > 1.0E-5D) {
             Vec3 forward = new Vec3(motion.x, 0.0D, motion.z).normalize();
             storm.motion = forward.scale(Mth.clamp(Math.sqrt(motion.horizontalDistanceSqr()), 0.012D, 0.065D));
-        } else if (storm.manager.getWorld() instanceof ServerLevel level) {
-            storm.motion = randomMotion(level, 0.010D, 0.035D);
         } else {
-            storm.motion = new Vec3(0.018D, 0.0D, 0.0D);
+            storm.motion = randomMotion(level, 0.010D, 0.035D);
         }
-        storm.spinSpeed = Math.max(Math.abs(storm.spinSpeed), 0.045D);
-        DynamicStormController.stateFor(storm).setSubtype(DynamicStormController.isNativeHurricane(storm) ? StormSubtype.HURRICANE : StormSubtype.CYCLONE);
+        manager.syncStormNew(storm);
+        manager.lastStormFormed = Math.max(manager.lastStormFormed, level.getGameTime());
+        manager.isVanillaRainActiveOnServer = true;
+        manager.isVanillaThunderActiveOnServer = true;
+        manager.vanillaRainTimeOnServer = Math.max(manager.vanillaRainTimeOnServer, 20 * 60 * 10);
+        manager.vanillaRainAmountOnServer = Math.max(manager.vanillaRainAmountOnServer, 0.95F);
+        return storm;
     }
 
     private static Vec3 cycloneAloftPos(ServerLevel level, Vec3 center) {
@@ -922,26 +1209,14 @@ public final class AddonWeatherEventService {
         return new Vec3(surface.x, Math.max(surface.y + 96.0D, level.getSeaLevel() + 112.0D), surface.z);
     }
 
-    private static boolean hasNearbyWeather2Cyclone(WeatherManagerServer manager, Vec3 center, double range) {
-        double rangeSqr = range * range;
-        for (WeatherObject object : manager.getStormObjects()) {
-            if (object instanceof StormObject storm
-                    && storm.pos != null
-                    && !storm.isDead
-                    && DynamicStormController.isNativeCyclone(storm)
-                    && storm.pos.distanceToSqr(center) <= rangeSqr) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     private static void maybeSpawnGustnadoFromLine(ServerLevel level, List<AddonWeatherEvent> events, Vec3 start, Vec3 end, Vec3 motion, float lineWind, long gameTime) {
         if (!Config.GUSTNADOES_ENABLED.get() || events.size() >= Config.MAX_ADDON_VORTICES.get() || start == null || end == null || motion == null || motion.horizontalDistanceSqr() < 1.0E-5D) {
             return;
         }
         DailySpcOutlook outlook = DailySpcOutlookService.current(level, BlockPos.containing(start.add(end).scale(0.5D)));
-        double chance = enabledChance(Config.GUSTNADO_SPAWN_CHANCE.get(), 0.045D) * 1.65D * Math.max(0.55D, outlook.windProbability());
+        double chance = enabledChance(Config.GUSTNADO_SPAWN_CHANCE.get(), 0.045D) * 1.65D * Math.max(0.55D, outlook.windProbability())
+                * BiomeClimateService.odds(level, start.add(end).scale(0.5D)).gustnado();
         if (level.random.nextDouble() > chance) {
             return;
         }
@@ -1018,7 +1293,9 @@ public final class AddonWeatherEventService {
     }
 
     private static void applyImpacts(ServerLevel level, AddonWeatherEvent event) {
-        if (event.type() == StormSubtype.WILDFIRE || event.type() == StormSubtype.FLAMMAGENITUS) {
+        // A funnel cloud is a picture, not a force: its circulation never comes down, so there is
+        // no surface wind to push anything with.
+        if (event.type() == StormSubtype.WILDFIRE || event.type() == StormSubtype.FLAMMAGENITUS || event.type() == StormSubtype.FUNNEL_CLOUD) {
             return;
         }
         double range = event.isLine()
@@ -1056,6 +1333,12 @@ public final class AddonWeatherEventService {
         }
         if (event.type() == StormSubtype.GUSTNADO) {
             tryPickupGustnadoDebris(level, event);
+        }
+        // A spout is the one vortex that does its damage below the destructive tier, and this is where it is
+        // allowed to: what it takes is loose, and none of it is terrain. See SpoutDamage for the table.
+        if (Config.SPOUT_DAMAGE_ENABLED.get()
+                && (event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT)) {
+            blowLoose(level, event);
         }
         if (event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL || event.type() == StormSubtype.FLOATER_TORNADO || event.maxWindMph() < (event.type() == StormSubtype.GUSTNADO ? 48.0F : 62.0F)) {
             return;
@@ -1120,7 +1403,7 @@ public final class AddonWeatherEventService {
     }
 
     private static void tryPickupGustnadoDebris(ServerLevel level, AddonWeatherEvent event) {
-        if (!Config.DAMAGE_ENABLED.get() || !CompatHooks.useVanillaBlockLifting() || event.maxWindMph() < 50.0F) {
+        if (!Config.damageEnabled() || !CompatHooks.useVanillaBlockLifting() || event.maxWindMph() < 50.0F) {
             return;
         }
         int cap = event.maxWindMph() >= 100.0F ? 10 : event.maxWindMph() >= 80.0F ? 7 : 4;
@@ -1275,6 +1558,13 @@ public final class AddonWeatherEventService {
         if (event.type() == StormSubtype.WILDFIRE || event.type() == StormSubtype.FLAMMAGENITUS) {
             return TornadoWindField.WindSample.CALM;
         }
+        // A funnel cloud reads calm at every height: its circulation never reaches the surface, and
+        // the mod's wind field has no vertical gating that could confine it to the air. Anything the
+        // wind field can push is standing on the ground, and the ground is exactly what this vortex
+        // does not touch.
+        if (event.type() == StormSubtype.FUNNEL_CLOUD) {
+            return TornadoWindField.WindSample.CALM;
+        }
         Vec3 center = new Vec3(event.position().x, position.y, event.position().z);
         Vec3 fromCenter = position.subtract(center);
         double radius = Math.max(0.4D, Math.sqrt(fromCenter.x * fromCenter.x + fromCenter.z * fromCenter.z));
@@ -1379,7 +1669,7 @@ public final class AddonWeatherEventService {
             return level.isRaining() || level.isThundering();
         }
         if (event.type() == StormSubtype.SNOW_DEVIL) {
-            return level.isRaining() || level.isThundering() || !snowDevilSurface(level, BlockPos.containing(event.position()));
+            return snowDevilHasGone(level, event);
         }
         if (event.type() == StormSubtype.GUSTNADO) {
             return DynamicStormController.isOverWaterOrOcean(level, event.position().x, event.position().z);
@@ -1417,15 +1707,6 @@ public final class AddonWeatherEventService {
         if (storm.attrib_waterSpout != shouldBeWaterspout) {
             storm.attrib_waterSpout = shouldBeWaterspout;
             manager.syncStormUpdate(storm);
-        }
-    }
-
-    private static void applyNativeTropicalCycloneTag(WeatherManagerServer manager, StormObject storm, double targetWindMph) {
-        if (manager == null || storm == null || manager.getWorld() == null) {
-            return;
-        }
-        if (manager.getWorld() instanceof ServerLevel level) {
-            DynamicStormController.promoteNativeCyclone(level, storm, true, targetWindMph);
         }
     }
 
@@ -1516,6 +1797,16 @@ public final class AddonWeatherEventService {
             entity = new WaterspoutEntity(level, event.position(), life, event.radius(), event.maxWindMph());
         } else if (event.type() == StormSubtype.GUSTNADO) {
             entity = new GustnadoEntity(level, event.position(), life, event.radius(), event.maxWindMph());
+        } else if (event.type() == StormSubtype.FUNNEL_CLOUD) {
+            entity = new FunnelCloudEntity(level, event.position(), life, event.radius(), event.maxWindMph());
+        } else if (event.type() == StormSubtype.SNOW_DEVIL) {
+            // Without this branch a snow devil had no entity at all, and so none of what an entity is for:
+            // no volumetric column on the client, and no force on anything in the world.
+            entity = new SnowDevilEntity(level, event.position(), life, event.radius(), event.maxWindMph());
+        } else if (event.type() == StormSubtype.LAVA_WHIRL) {
+            entity = new LavaWhirlEntity(level, event.position(), life, event.radius(), event.maxWindMph());
+        } else if (event.type() == StormSubtype.STEAM_DEVIL) {
+            entity = new SteamDevilEntity(level, event.position(), life, event.radius(), event.maxWindMph());
         }
         if (entity != null) {
             Vec3 motion = event.motion() == null ? Vec3.ZERO : event.motion();
@@ -1598,23 +1889,163 @@ public final class AddonWeatherEventService {
     }
 
     private static void snapEventToSurface(ServerLevel level, AddonWeatherEvent event) {
-        if (event.isLine() || event.type() == StormSubtype.FLOATER_TORNADO || event.type() == StormSubtype.FLAMMAGENITUS) {
+        // A funnel cloud is the one vortex whose whole identity is aloft: snapping it to the ground
+        // every tick would put its circulation on the ground and make it a tornado.
+        if (event.isLine() || event.type() == StormSubtype.FLOATER_TORNADO || event.type() == StormSubtype.FLAMMAGENITUS
+                || event.type() == StormSubtype.FUNNEL_CLOUD) {
             return;
         }
         event.setPosition(surfacePos(level, event.position()));
     }
 
+    /**
+     * Whether a point may host an event while its chunk is not loaded, because an LOD renderer is drawing it.
+     *
+     * <p>Read through the one place that decides whether the storm box was widened, so "the compat is on and an
+     * LOD mod is installed" is asked once rather than spelled out at each spawn site. A loaded chunk is always a
+     * yes; an unloaded one is a yes only when there is terrain on screen to hang the weather on - which is the
+     * whole claim: the LOD ground is real ground, and a world drawing it should be seeding weather over it. It
+     * never forces a chunk to load, so what it buys is a placement, not a block: every reading that follows is
+     * expected to answer from the biome when it cannot read the ground.
+     */
+    private static boolean lodSeedingAllowed(ServerLevel level, BlockPos pos) {
+        return LodStormEnvelope.seedingUnloadedAllowed(level, pos);
+    }
+
+    /** Rain at a point: the level's own flag when the point cannot be read, the point's own answer when it can. */
+    private static boolean rainingHere(ServerLevel level, BlockPos pos) {
+        return level.isLoaded(pos) ? level.isRainingAt(pos) : level.isRaining();
+    }
+
+    /** Whether the sky is open over a point: taken as open when there is no loaded ground to check against. */
+    private static boolean openSkyHere(ServerLevel level, BlockPos pos) {
+        return !level.isLoaded(pos) || level.canSeeSky(pos.above());
+    }
+
+    /**
+     * Whether the ground under a point is the hot, dry kind a dust devil needs.
+     *
+     * <p>The loaded reading is the block under the point, as it always was. Over an unloaded chunk that block
+     * cannot be read without loading it - and loading it to ask a cosmetic question is exactly the cost the
+     * chunk gate used to exist to avoid - so the biome carries the answer instead: the same family classifier the
+     * air, the tornado gate and the ground readings all use, restricted to the families that actually are dry
+     * country. That is a weaker claim than the block test and deliberately so; it cannot tell sand from coarse
+     * dirt, but it can tell either from a jungle, which is the distinction that matters here.
+     */
     private static boolean hotDrySurface(ServerLevel level, BlockPos pos) {
+        if (!level.isLoaded(pos)) {
+            return dryCountry(level, pos);
+        }
         float temp = level.getBiome(pos).value().getBaseTemperature();
         BlockState ground = level.getBlockState(pos.below());
         return temp >= 0.70F && (ground.is(Blocks.SAND) || ground.is(Blocks.RED_SAND) || ground.is(Blocks.TERRACOTTA) || ground.is(Blocks.GRASS_BLOCK) || ground.is(Blocks.DIRT) || ground.is(Blocks.COARSE_DIRT));
     }
 
-    private static boolean snowDevilSurface(ServerLevel level, BlockPos pos) {
-        float temp = level.getBiome(pos).value().getBaseTemperature();
-        BlockState ground = level.getBlockState(pos.below());
+    /** Whether a place's biome is one of the dry families, read without loading the chunk it is in. */
+    private static boolean dryCountry(ServerLevel level, BlockPos pos) {
+        BiomeClimate.Family family = TornadoGenesisGate.family(level, pos);
+        return family == BiomeClimate.Family.DESERT
+                || family == BiomeClimate.Family.BADLANDS
+                || family == BiomeClimate.Family.SAVANNA
+                || family == BiomeClimate.Family.PLAINS;
+    }
+
+    /**
+     * Whether a snow devil may form at this point, decided by the model rather than here.
+     *
+     * <p>What is handed over is what is actually on the ground and in the air: liquid rain at the point,
+     * any precipitation at all (which only matters when fair weather is being required), the level's
+     * thunder flag, and the ground itself.
+     */
+    private static boolean snowDevilGroundAllows(ServerLevel level, BlockPos pos, boolean fairWeatherOnly) {
+        boolean loaded = level.isLoaded(pos);
+        // Every reading is taken from the ground when there is ground to read and from the sky over it when there
+        // is not, so an unloaded chunk is judged by the biome rather than skipped. The block reads are the ones
+        // that would have forced a load, and they are exactly the ones the unloaded branch replaces.
+        return SnowDevilGround.canSpawn(rainingHere(level, pos),
+                loaded ? precipitatingHere(level, pos) : level.isRaining(),
+                fairWeatherOnly,
+                level.isThundering(),
+                loaded ? snowDevilSurface(level, pos) : biomeSurface(level, pos));
+    }
+
+    /**
+     * The ground under an unreadable point, in the snow devil model's own terms, taken from the biome.
+     *
+     * <p>A biome that is cold enough to snow is reported as the frozen ground it is, on the same principle the
+     * model already uses for a sheet of ice: the evidence that the country is cold is worth more than the
+     * temperature it reports. No block is read, so nothing here can tell a snow layer from a drift - it can only
+     * say the country is the kind that has one, which is the honest answer to a question asked from outside the
+     * loaded world. Open water is reported as none, because a frozen biome's water is ice and a warm one's is
+     * already refused by its temperature.
+     */
+    private static SnowDevilGround.Surface biomeSurface(ServerLevel level, BlockPos pos) {
+        Holder<Biome> holder = level.getBiome(pos);
+        Biome biome = holder.value();
+        boolean cold = biome.coldEnoughToSnow(pos);
+        return new SnowDevilGround.Surface(biome.getBaseTemperature(), false, cold, cold, false, cold, false);
+    }
+
+    /** Whether anything at all is falling on a point, rain or snow, which the world only knows as rain. */
+    private static boolean precipitatingHere(ServerLevel level, BlockPos pos) {
+        return level.isRaining() && level.canSeeSky(pos.above());
+    }
+
+    /**
+     * The ground under a point in the model's own terms.
+     *
+     * <p>The position a whirl stands at is the highest non-air block, which in snowy country is very
+     * often the thin layer of snow lying on the grass - the ordinary case, and the one the old test threw
+     * away because it only accepted a snow block, powder snow or ice. A snow layer counts, at the feet
+     * and below them. Ice counts with it, and water under ice is not open water: a frozen lake is frozen
+     * ground.
+     */
+    private static SnowDevilGround.Surface snowDevilSurface(ServerLevel level, BlockPos pos) {
         BlockState surface = level.getBlockState(pos);
-        return temp <= 0.28F && (surface.is(Blocks.SNOW) || ground.is(Blocks.SNOW_BLOCK) || ground.is(Blocks.POWDER_SNOW) || ground.is(Blocks.ICE) || ground.is(Blocks.PACKED_ICE) || ground.is(Blocks.BLUE_ICE));
+        BlockState ground = level.getBlockState(pos.below());
+        boolean frozenAtFeet = surface.is(Blocks.SNOW) || surface.is(Blocks.SNOW_BLOCK)
+                || surface.is(Blocks.POWDER_SNOW) || surface.is(Blocks.ICE)
+                || surface.is(Blocks.PACKED_ICE) || surface.is(Blocks.BLUE_ICE);
+        boolean openWater = !frozenAtFeet && ground.getFluidState().is(FluidTags.WATER);
+        return new SnowDevilGround.Surface(
+                level.getBiome(pos).value().getBaseTemperature(),
+                surface.is(Blocks.SNOW),
+                surface.is(Blocks.SNOW) || ground.is(Blocks.SNOW),
+                surface.is(Blocks.SNOW_BLOCK) || ground.is(Blocks.SNOW_BLOCK),
+                surface.is(Blocks.POWDER_SNOW) || ground.is(Blocks.POWDER_SNOW),
+                frozenAtFeet || ground.is(Blocks.ICE) || ground.is(Blocks.PACKED_ICE) || ground.is(Blocks.BLUE_ICE),
+                openWater);
+    }
+
+    /**
+     * Whether a snow devil has lost the ground it was standing on.
+     *
+     * <p>This runs on every tick, so it is gated twice before it reads anything: a devil inside its
+     * guaranteed life is never asked about, and outside it the ground is only read once a second. What it
+     * then reads is a footprint - the centre and the four corners of the vortex's own radius - and any one
+     * point that is still frozen ground keeps the whirl up. A snow devil that wanders off a drift and onto
+     * a bare patch is a snow devil doing what a snow devil does.
+     */
+    private static boolean snowDevilHasGone(ServerLevel level, AddonWeatherEvent event) {
+        long age = level.getGameTime() - event.spawnTick();
+        long minLife = Math.max(0, Config.SNOW_DEVIL_MIN_LIFE_TICKS.get());
+        if (age < minLife) {
+            return false;
+        }
+        if (age % SnowDevilGround.CHECK_INTERVAL_TICKS != 0L) {
+            return false;
+        }
+        BlockPos centre = BlockPos.containing(event.position());
+        int radius = (int) Math.max(1.0D, Math.min(6.0D, event.radius() * 0.6D));
+        List<SnowDevilGround.Surface> footprint = new ArrayList<>();
+        for (int[] offset : SnowDevilGround.footprintOffsets(radius)) {
+            BlockPos pos = centre.offset(offset[0], 0, offset[1]);
+            footprint.add(level.isLoaded(pos) ? snowDevilSurface(level, pos) : null);
+        }
+        SnowDevilGround.Verdict verdict = SnowDevilGround.verdictOver(footprint,
+                level.isRainingAt(centre), precipitatingHere(level, centre),
+                Config.SNOW_DEVIL_FAIR_WEATHER_ONLY.get(), level.isThundering());
+        return SnowDevilGround.doomed(verdict, age, minLife);
     }
 
     private static boolean fireWeatherSurface(ServerLevel level, BlockPos pos) {
@@ -1716,6 +2147,9 @@ public final class AddonWeatherEventService {
         }
         if (type == StormSubtype.FLAMMAGENITUS) {
             return flammagenitusAloftPos(level, surface);
+        }
+        if (type == StormSubtype.FUNNEL_CLOUD) {
+            return funnelCloudAloftPos(level, surface);
         }
         if (type == StormSubtype.WATERSPOUT || isBroadRotatingStorm(type)) {
             if (DynamicStormController.isOverWaterOrOcean(level, surface.x, surface.z)) {
@@ -1892,7 +2326,7 @@ public final class AddonWeatherEventService {
         if (event.type() == StormSubtype.FLOATER_TORNADO) {
             return event.maxWindMph() >= 96.0F ? SpcRisk.SLIGHT : SpcRisk.MARGINAL;
         }
-        if (event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL || event.type() == StormSubtype.GUSTNADO || event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT) {
+        if (event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL || event.type() == StormSubtype.GUSTNADO || event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT || event.type() == StormSubtype.FUNNEL_CLOUD) {
             return SpcRisk.MARGINAL;
         }
         return SpcRisk.TSTM;

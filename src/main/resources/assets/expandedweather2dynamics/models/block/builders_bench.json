@@ -1,0 +1,103 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "minecraft:block/oak_planks",
+    "planks": "minecraft:block/oak_planks",
+    "top": "minecraft:block/crafting_table_top",
+    "face": "expandedweather2dynamics:block/builders_bench",
+    "iron": "expandedweather2dynamics:block/instrument_metal"
+  },
+  "elements": [
+    {
+      "comment": "Bench top. The face is the crafting table's, so a bench reads as a workbench.",
+      "from": [0, 12, 0],
+      "to": [16, 16, 16],
+      "faces": {
+        "down": {"texture": "#planks"},
+        "up": {"texture": "#top"},
+        "north": {"texture": "#planks"},
+        "south": {"texture": "#planks"},
+        "west": {"texture": "#planks"},
+        "east": {"texture": "#planks"}
+      }
+    },
+    {
+      "comment": "Front-left leg.",
+      "from": [1, 0, 1],
+      "to": [3, 12, 3],
+      "faces": {
+        "down": {"texture": "#planks"},
+        "up": {"texture": "#planks"},
+        "north": {"texture": "#planks"},
+        "south": {"texture": "#planks"},
+        "west": {"texture": "#planks"},
+        "east": {"texture": "#planks"}
+      }
+    },
+    {
+      "comment": "Front-right leg.",
+      "from": [13, 0, 1],
+      "to": [15, 12, 3],
+      "faces": {
+        "down": {"texture": "#planks"},
+        "up": {"texture": "#planks"},
+        "north": {"texture": "#planks"},
+        "south": {"texture": "#planks"},
+        "west": {"texture": "#planks"},
+        "east": {"texture": "#planks"}
+      }
+    },
+    {
+      "comment": "Back-left leg.",
+      "from": [1, 0, 13],
+      "to": [3, 12, 15],
+      "faces": {
+        "down": {"texture": "#planks"},
+        "up": {"texture": "#planks"},
+        "north": {"texture": "#planks"},
+        "south": {"texture": "#planks"},
+        "west": {"texture": "#planks"},
+        "east": {"texture": "#planks"}
+      }
+    },
+    {
+      "comment": "Back-right leg.",
+      "from": [13, 0, 13],
+      "to": [15, 12, 15],
+      "faces": {
+        "down": {"texture": "#planks"},
+        "up": {"texture": "#planks"},
+        "north": {"texture": "#planks"},
+        "south": {"texture": "#planks"},
+        "west": {"texture": "#planks"},
+        "east": {"texture": "#planks"}
+      }
+    },
+    {
+      "comment": "Tool board standing at the back, showing the bench's own face full size: the rail, the hammer and the saw that say what the block is for without a label. The board is what the front of a bench is.",
+      "from": [0, 4, 15],
+      "to": [16, 16, 16],
+      "faces": {
+        "down": {"texture": "#planks"},
+        "up": {"texture": "#planks"},
+        "north": {"uv": [0, 0, 16, 12], "texture": "#face"},
+        "south": {"texture": "#planks"},
+        "west": {"texture": "#planks"},
+        "east": {"texture": "#planks"}
+      }
+    },
+    {
+      "comment": "Tool rail under the board, on iron brackets: the thing that says the bench is worked at rather than stacked on.",
+      "from": [2, 13.6, 14.2],
+      "to": [14, 14.6, 15],
+      "faces": {
+        "down": {"texture": "#iron"},
+        "up": {"texture": "#iron"},
+        "north": {"texture": "#iron"},
+        "south": {"texture": "#iron"},
+        "west": {"texture": "#iron"},
+        "east": {"texture": "#iron"}
+      }
+    }
+  ]
+}

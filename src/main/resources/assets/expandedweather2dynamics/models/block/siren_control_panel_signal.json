@@ -1,0 +1,66 @@
+{
+  "parent": "minecraft:block/block",
+  "ambientocclusion": false,
+  "textures": {
+    "particle": "expandedweather2dynamics:block/instrument_metal",
+    "body": "expandedweather2dynamics:block/instrument_metal",
+    "face": "expandedweather2dynamics:block/instrument_dark",
+    "lever": "expandedweather2dynamics:block/instrument_brass",
+    "lamp": "minecraft:block/redstone_lamp_on"
+  },
+  "elements": [
+    {
+      "comment": "Case. The workface is the north side, which the blockstate turns to face the player who placed it.",
+      "from": [1, 0, 1],
+      "to": [15, 10, 15],
+      "faces": {
+        "down": { "texture": "#body", "cullface": "down" },
+        "up": { "texture": "#body" },
+        "north": { "texture": "#face" },
+        "south": { "texture": "#face" },
+        "west": { "texture": "#face" },
+        "east": { "texture": "#face" }
+      }
+    },
+    {
+      "comment": "Lid, carrying the maker's plate.",
+      "from": [3, 10, 3],
+      "to": [13, 11, 13],
+      "faces": {
+        "up": { "texture": "#body" },
+        "down": { "texture": "#body" },
+        "north": { "texture": "#face" },
+        "south": { "texture": "#face" },
+        "west": { "texture": "#face" },
+        "east": { "texture": "#face" }
+      }
+    },
+    {
+      "comment": "Lamp lit: a redstone signal is driving the network with the lever still down.",
+      "from": [6, 6.6, 0.86],
+      "to": [10, 9.4, 1.06],
+      "faces": {
+        "north": { "texture": "#lamp" },
+        "south": { "texture": "#lever" },
+        "west": { "texture": "#lever" },
+        "east": { "texture": "#lever" },
+        "up": { "texture": "#lever" },
+        "down": { "texture": "#lever" }
+      }
+    },
+    {
+      "comment": "Lever down: nobody has thrown the switch.",
+      "from": [7, 4.9, 0.25],
+      "to": [9, 5.9, 1.05],
+      "rotation": { "origin": [8, 5.4, 1.05], "axis": "x", "angle": -45, "rescale": false },
+      "faces": {
+        "north": { "texture": "#lever" },
+        "south": { "texture": "#lever" },
+        "west": { "texture": "#lever" },
+        "east": { "texture": "#lever" },
+        "up": { "texture": "#lever" },
+        "down": { "texture": "#lever" }
+      }
+    }
+  ]
+}

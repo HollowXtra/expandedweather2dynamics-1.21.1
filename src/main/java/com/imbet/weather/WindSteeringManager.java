@@ -77,25 +77,29 @@ public final class WindSteeringManager {
         if (!shouldSteer(storm)) {
             return storm == null || storm.motion == null ? Vec3.ZERO : storm.motion;
         }
+        long gameTime = storm.manager.getWorld().getGameTime();
         double windMagnitude = globalWindVector(storm).horizontalDistance();
         double targetSpeed = windMagnitude * Config.ATMOSPHERIC_STEERING_COEFFICIENT.get();
-        targetSpeed *= speedPulse(storm.manager.getWorld().getGameTime(), storm.ID, isTropicalSteeringStorm(storm));
-        double weakness = tornadoWeakness(storm);
-        if (weakness > 0.0D) {
-            // Weak and rope tornadoes surge forward and nearly stall; violent tornadoes hold a steadier pace.
-            long gameTime = storm.manager.getWorld().getGameTime();
-            double erratic = weakness * (0.22D * Math.sin(gameTime * 0.0039D + storm.ID * 0.53D)
-                    + 0.14D * Math.sin(gameTime * 0.00052D + storm.ID * 0.37D));
-            targetSpeed *= Mth.clamp(1.0D + erratic, 0.45D, 1.55D);
-        }
         if (TornadoTrackModel.appliesTo(storm)) {
+            // The surge goes in BEFORE the miles-per-hour clamp on purpose: a tornado may crawl or lunge,
+            // but it may never leave the honest 6-34 mph band real tornadoes travel at. A storm already at
+            // the ceiling can then only ease back, which is exactly what a fast mover does.
+            targetSpeed *= TornadoTrackModel.speedSurge(storm, gameTime);
             // Honest miles-per-hour translation for tornadoes: the legacy block-per-tick clamp is
             // deliberately bypassed, since its 0.54 ceiling is only ~24 mph.
             targetSpeed = TornadoTrackModel.targetSpeedBlocksPerTick(storm, targetSpeed);
         } else {
+            // Non-tornadic storms keep the old global pulse; tornadoes get the richer surge above, so the
+            // two are deliberately exclusive rather than stacking into double the speed variation.
+            targetSpeed *= speedPulse(gameTime, storm.ID, isTropicalSteeringStorm(storm));
             targetSpeed = Mth.clamp(targetSpeed, Config.ATMOSPHERIC_STEERING_MIN_SPEED.get(), Config.ATMOSPHERIC_STEERING_MAX_SPEED.get());
         }
-        return steeringDirection(storm).scale(targetSpeed);
+        Vec3 flow = steeringDirection(storm).scale(targetSpeed);
+        // The belts are part of the flow rather than a second system on top of it: air converges on the
+        // rising belt and on the genesis corridor that feeds off it, and diverges over the sinking
+        // ridge, so a storm drifting through either carries that component too. Bounded, so it biases a
+        // track and never drives one.
+        return flow.add(ThermalCirculation.steeringBias(storm.pos.z));
     }
 
     public static Vec3 addonSteeringVector(Level level, AddonWeatherEvent event) {
@@ -339,8 +343,16 @@ public final class WindSteeringManager {
         return Mth.clamp(1.0D + Math.sin(gameTime * (tropical ? 0.00095D : 0.0024D) + phase) * magnitude, 0.60D, 1.38D);
     }
 
+    /**
+     * A tropical system is steered like a tropical system for its whole life, not only once it is a
+     * hurricane: a depression already drifts on the deep-layer flow, and this is what tells the steering
+     * to smooth it hard and pulse it slowly instead of letting a developing water storm wobble like a
+     * supercell.
+     */
     private static boolean isTropicalSteeringStorm(StormObject storm) {
-        return storm != null && (DynamicStormController.isNativeTropicalCyclone(storm) || AddonWeatherEventService.isHurricaneHelperStorm(storm));
+        return storm != null
+                && (DynamicStormController.isNativeTropicalSystem(storm)
+                || AddonWeatherEventService.isHurricaneHelperStorm(storm));
     }
 
     private static boolean isControlledStorm(StormObject storm) {

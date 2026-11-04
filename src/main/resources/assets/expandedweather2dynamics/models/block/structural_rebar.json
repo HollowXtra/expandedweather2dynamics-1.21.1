@@ -1,0 +1,109 @@
+{
+  "parent": "minecraft:block/block",
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "particle": "expandedweather2dynamics:block/structural_rebar",
+    "rod": "expandedweather2dynamics:block/structural_rebar"
+  },
+  "elements": [
+    {
+      "comment": "The four rods on the block's own footprint. They run the full height, so a stack of rebars reads as one continuous bar.",
+      "from": [1.5, 0, 1.5],
+      "to": [3.5, 16, 3.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    },
+    {
+      "from": [12.5, 0, 1.5],
+      "to": [14.5, 16, 3.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    },
+    {
+      "from": [1.5, 0, 12.5],
+      "to": [3.5, 16, 14.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    },
+    {
+      "from": [12.5, 0, 12.5],
+      "to": [14.5, 16, 14.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    },
+    {
+      "comment": "The lower hoop, tying the rods together. Two bars, because a hoop is drawn as the two spans the rods are on.",
+      "from": [1.5, 4, 1.5],
+      "to": [14.5, 5, 3.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    },
+    {
+      "from": [1.5, 4, 12.5],
+      "to": [14.5, 5, 14.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    },
+    {
+      "comment": "The upper hoop, at the height the anchoring reaches on its default setting: the bar says how high the rod holds.",
+      "from": [1.5, 11, 1.5],
+      "to": [3.5, 12, 14.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    },
+    {
+      "from": [12.5, 11, 1.5],
+      "to": [14.5, 12, 14.5],
+      "faces": {
+        "down": {"texture": "#rod"},
+        "up": {"texture": "#rod"},
+        "north": {"texture": "#rod"},
+        "south": {"texture": "#rod"},
+        "west": {"texture": "#rod"},
+        "east": {"texture": "#rod"}
+      }
+    }
+  ]
+}

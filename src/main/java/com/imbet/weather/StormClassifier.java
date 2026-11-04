@@ -16,14 +16,20 @@ public final class StormClassifier {
         if (AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
             return StormSubtype.THUNDERSTORM;
         }
+        // A water storm is a tropical system for its whole life, not only once it reaches hurricane
+        // strength: the 1.12.2 ladder - tropical disturbance, depression, tropical storm, then a named
+        // hurricane with a category - is one family, and which half of it the storm belongs to is the
+        // direction it turns, which is exactly what an anticyclonic one is.
+        //
+        // Decided BEFORE the waterspout tag, deliberately. Weather2's own waterspout pass sets that tag on
+        // water storms, and reading it first relabelled hurricanes as waterspouts - which took them down the
+        // tornado branch of every consumer, funnel and all.
+        if (DynamicStormController.isTropicalSystem(storm)
+                && (Config.HURRICANES_ENABLED.get() || Config.CYCLONES_ENABLED.get())) {
+            return state != null && state.isAntiCyclonic() ? StormSubtype.CYCLONE : StormSubtype.HURRICANE;
+        }
         if (Config.WATERSPOUTS_ENABLED.get() && storm.attrib_waterSpout) {
             return StormSubtype.WATERSPOUT;
-        }
-        if (Config.HURRICANES_ENABLED.get() && DynamicStormController.isNativeHurricane(storm)) {
-            return StormSubtype.HURRICANE;
-        }
-        if (Config.CYCLONES_ENABLED.get() && DynamicStormController.isNativeCyclone(storm)) {
-            return StormSubtype.CYCLONE;
         }
         if (storm.isTornadoFormingOrGreater()) {
             if (Config.FLOATER_TORNADOES_ENABLED.get()
@@ -63,14 +69,26 @@ public final class StormClassifier {
         if (AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
             return SpcRisk.SLIGHT;
         }
+        // Tropical first, for the same reason the subtype is: a tagged hurricane is still a hurricane.
+        if (DynamicStormController.isTropicalSystem(storm)) {
+            int category = TropicalCyclone.categoryForWind(TornadoWindField.maxWindMph(storm));
+            if (category >= 3) {
+                return SpcRisk.HIGH;
+            }
+            return category >= 1 ? SpcRisk.MODERATE : SpcRisk.ENHANCED;
+        }
         if (storm.attrib_waterSpout) {
             return SpcRisk.MARGINAL;
         }
-        if (DynamicStormController.isNativeHurricane(storm)) {
-            return SpcRisk.HIGH;
-        }
-        if (DynamicStormController.isNativeTropicalCyclone(storm)) {
-            return SpcRisk.MODERATE;
+        // A tropical system is ranked by the category its live wind earns, the same way a tornado is
+        // ranked by its EF class: a weak hurricane parked on the top rung does not get to be a high
+        // risk, and a violent one does not get to hide under a moderate one.
+        if (DynamicStormController.isNativeTropicalSystem(storm)) {
+            int category = TropicalCyclone.categoryForWind(TornadoWindField.maxWindMph(storm));
+            if (category >= 3) {
+                return SpcRisk.HIGH;
+            }
+            return category >= 1 ? SpcRisk.MODERATE : SpcRisk.ENHANCED;
         }
         if (storm.isTornadoFormingOrGreater() && storm.levelCurIntensityStage >= StormObject.STATE_STAGE5) {
             return SpcRisk.HIGH;
@@ -116,19 +134,24 @@ public final class StormClassifier {
         // A multi-vortex arrangement is not a different storm - it is the same tornado wearing its
         // vortices a particular way, so it is named by what it is at the moment rather than by a
         // subtype of its own. Nothing about the storm's identity, save data or severity changes when
-        // an episode starts. A lifted parent keeps the plain name: there, the vortices are the whole
-        // tornado and calling it anything else would describe what you see as a separate storm.
+        // an episode starts. A lifted parent keeps the plain name: its base has pulled up off the
+        // surface, but the column above it is still the tornado, so naming the arrangement would be
+        // naming the vortices under it as if they were the storm.
         if (subtype == StormSubtype.TORNADO && storm != null) {
             MultiVortexFlavour flavour = DynamicStormController.stateFor(storm).multiVortexFlavour();
             if (flavour != MultiVortexFlavour.LIFTED) {
                 return flavour.label();
             }
         }
-        if (subtype == StormSubtype.HURRICANE) {
-            return "Hurricane";
-        }
-        if (subtype == StormSubtype.CYCLONE && DynamicStormController.isNativeTropicalCyclone(storm)) {
-            return "Tropical Cyclone";
+        if (subtype == StormSubtype.HURRICANE || subtype == StormSubtype.CYCLONE) {
+            // The 1.12.2 identity, name and all: "Hurricane Karl - Category 3", or the ladder rung it
+            // has climbed to before it is a hurricane, or "Tropical Cyclone ..." for the anticyclonic
+            // twin. Radar, alerts, the balloon, the probe and the map all read this one label.
+            if (storm != null && DynamicStormController.isNativeTropicalSystem(storm)) {
+                return TropicalCyclone.label(storm.ID, storm.levelCurIntensityStage,
+                        TornadoWindField.maxWindMph(storm),
+                        DynamicStormController.stateFor(storm).isAntiCyclonic());
+            }
         }
         return subtype.label();
     }

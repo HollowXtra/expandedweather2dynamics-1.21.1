@@ -17,7 +17,11 @@ public final class CycloidalMarks {
     }
 
     public static boolean tick(ServerLevel level, StormObject storm, DynamicStormState state) {
-        if (!Config.CYCLOIDAL_MARKS_ENABLED.get() || storm.levelCurIntensityStage < Config.CYCLOIDAL_MIN_STAGE.get()) {
+        // The cycloidal marks are gouged into the ground, so they are destruction like any other: the simple
+        // settings' master switch has to reach them, or it would be a switch that turns off everything except
+        // the scars.
+        if (!Config.damageEnabled() || !Config.CYCLOIDAL_MARKS_ENABLED.get()
+                || storm.levelCurIntensityStage < Config.CYCLOIDAL_MIN_STAGE.get()) {
             return false;
         }
         if (level.getGameTime() % 5L != 0L) {
@@ -34,6 +38,10 @@ public final class CycloidalMarks {
         double radius = Math.max(5.0D, DynamicStormController.baseRadiusForWind(storm) * 0.95D);
         if (!multiVortexGroundContact) {
             double heading = storm.motion == null || storm.motion.lengthSqr() < 1.0E-4D ? 0.0D : Math.atan2(storm.motion.z, storm.motion.x);
+            // The heading is the storm's, not the sample's: one cosine and one sine for the whole swath rather
+            // than a pair per scallop.
+            double headingCos = Math.cos(heading);
+            double headingSin = Math.sin(heading);
             int samples = Config.CYCLOIDAL_SWATH_SAMPLES.get();
             for (int i = 0; i < samples && changed < max; i++) {
                 double t = i / (double) Math.max(1, samples - 1);
@@ -41,7 +49,7 @@ public final class CycloidalMarks {
                 double scallop = Math.sin(phase) * radius * 0.58D;
                 double along = (t - 0.5D) * radius * 2.2D;
                 double lateral = radius + scallop;
-                Vec3 offset = new Vec3(Math.cos(heading) * along - Math.sin(heading) * lateral, 0.0D, Math.sin(heading) * along + Math.cos(heading) * lateral);
+                Vec3 offset = new Vec3(headingCos * along - headingSin * lateral, 0.0D, headingSin * along + headingCos * lateral);
                 if (markSurface(level, storm, storm.pos.add(offset), false)) {
                     changed++;
                 }

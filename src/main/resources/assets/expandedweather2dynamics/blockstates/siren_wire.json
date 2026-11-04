@@ -1,0 +1,11 @@
+{
+  "multipart": [
+    { "apply": { "model": "expandedweather2dynamics:block/siren_wire_core" } },
+    { "when": { "north": "true" }, "apply": { "model": "expandedweather2dynamics:block/siren_wire_arm" } },
+    { "when": { "east": "true" }, "apply": { "model": "expandedweather2dynamics:block/siren_wire_arm", "y": 90 } },
+    { "when": { "south": "true" }, "apply": { "model": "expandedweather2dynamics:block/siren_wire_arm", "y": 180 } },
+    { "when": { "west": "true" }, "apply": { "model": "expandedweather2dynamics:block/siren_wire_arm", "y": 270 } },
+    { "when": { "up": "true" }, "apply": { "model": "expandedweather2dynamics:block/siren_wire_arm_up" } },
+    { "when": { "down": "true" }, "apply": { "model": "expandedweather2dynamics:block/siren_wire_arm_up", "x": 180 } }
+  ]
+}

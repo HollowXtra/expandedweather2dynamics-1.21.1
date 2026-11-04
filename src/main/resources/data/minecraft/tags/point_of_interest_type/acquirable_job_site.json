@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "expandedweather2dynamics:survey_station",
+    "expandedweather2dynamics:builders_bench",
+    "expandedweather2dynamics:sawmill",
+    "expandedweather2dynamics:weather_station"
+  ]
+}

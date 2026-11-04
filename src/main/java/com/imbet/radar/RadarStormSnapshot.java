@@ -1,6 +1,7 @@
 package com.imbet.radar;
 
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.util.Mth;
 
 public record RadarStormSnapshot(
         long id,
@@ -26,7 +27,19 @@ public record RadarStormSnapshot(
         double hookZ,
         boolean hasConfirmedCirculation,
         int weatherStage,
-        String stageLabel
+        String stageLabel,
+        // Supercell structure. hookX/hookZ carry the storm's real hook-echo notch, mesoX/mesoZ its real
+        // mesocyclone, and stormRadius its precipitation extent in blocks (0 for a circulation that is not
+        // itself a storm). Without these the renderer had to invent a hook at a fixed offset from the storm
+        // centre, which is why the hook echo and the tornado marker used to disagree.
+        float stormRadius,
+        float structureStrength,
+        float mesoStrength,
+        float ffdStrength,
+        float hailStrength,
+        int structureMode,
+        double mesoX,
+        double mesoZ
 ) {
     public RadarStormSnapshot {
         label = limit(label, 64);
@@ -48,7 +61,26 @@ public record RadarStormSnapshot(
         hookZ = finite(hookZ);
         weatherStage = Math.max(0, weatherStage);
         stageLabel = limit(stageLabel, 16);
+        stormRadius = Math.max(0.0F, finite(stormRadius));
+        structureStrength = clamp01(structureStrength);
+        mesoStrength = clamp01(mesoStrength);
+        ffdStrength = clamp01(ffdStrength);
+        hailStrength = clamp01(hailStrength);
+        structureMode = Mth.clamp(structureMode, 0, 2);
+        mesoX = finite(mesoX);
+        mesoZ = finite(mesoZ);
     }
+
+    /** Whether this return is a storm with a structure worth shaping an echo around. */
+    public boolean hasStormExtent() {
+        return stormRadius > 1.0F;
+    }
+
+    /** Whether the storm has a resolved supercell structure, as opposed to a plain cell. */
+    public boolean hasStructure() {
+        return structureStrength > 0.05F && hasStormExtent();
+    }
+
 
     public void write(FriendlyByteBuf buf) {
         buf.writeLong(id);
@@ -75,6 +107,14 @@ public record RadarStormSnapshot(
         buf.writeBoolean(hasConfirmedCirculation);
         buf.writeVarInt(weatherStage);
         buf.writeUtf(stageLabel, 16);
+        buf.writeFloat(stormRadius);
+        buf.writeFloat(structureStrength);
+        buf.writeFloat(mesoStrength);
+        buf.writeFloat(ffdStrength);
+        buf.writeFloat(hailStrength);
+        buf.writeVarInt(structureMode);
+        buf.writeDouble(mesoX);
+        buf.writeDouble(mesoZ);
     }
 
     public static RadarStormSnapshot read(FriendlyByteBuf buf) {
@@ -102,7 +142,15 @@ public record RadarStormSnapshot(
                 buf.readDouble(),
                 buf.readBoolean(),
                 buf.readVarInt(),
-                buf.readUtf(16)
+                buf.readUtf(16),
+                buf.readFloat(),
+                buf.readFloat(),
+                buf.readFloat(),
+                buf.readFloat(),
+                buf.readFloat(),
+                buf.readVarInt(),
+                buf.readDouble(),
+                buf.readDouble()
         );
     }
 
@@ -119,5 +167,9 @@ public record RadarStormSnapshot(
 
     private static double finite(double value) {
         return Double.isFinite(value) ? value : 0.0D;
+    }
+
+    private static float clamp01(float value) {
+        return Mth.clamp(finite(value), 0.0F, 1.0F);
     }
 }

@@ -1,0 +1,188 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "expandedweather2dynamics:block/instrument_dark",
+    "dark": "expandedweather2dynamics:block/instrument_dark",
+    "metal": "expandedweather2dynamics:block/instrument_metal",
+    "glass": "expandedweather2dynamics:block/instrument_glass",
+    "brass": "expandedweather2dynamics:block/instrument_brass"
+  },
+  "elements": [
+    {
+      "comment": "The X frame, as two bars crossing on the airframe's centre. Rotated rather than stepped, because a quadcopter's arms really are diagonal and a staircase of boxes reads as a ladder.",
+      "from": [2.6, 7.4, 7.4],
+      "to": [13.4, 8.4, 8.6],
+      "rotation": {"origin": [8, 8, 8], "axis": "y", "angle": 45, "rescale": false},
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [2.6, 7.4, 7.4],
+      "to": [13.4, 8.4, 8.6],
+      "rotation": {"origin": [8, 8, 8], "axis": "y", "angle": -45, "rescale": false},
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Body: a flight controller box with the battery pack standing on it.",
+      "from": [5.4, 6.6, 5.4],
+      "to": [10.6, 9.4, 10.6],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [6.4, 9.2, 6.4],
+      "to": [9.6, 10.4, 9.6],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Four motors at the arm tips.",
+      "from": [1.8, 8, 1.8],
+      "to": [3.8, 10, 3.8],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [12.2, 8, 1.8],
+      "to": [14.2, 10, 3.8],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [1.8, 8, 12.2],
+      "to": [3.8, 10, 14.2],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [12.2, 8, 12.2],
+      "to": [14.2, 10, 14.2],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Rotor discs, drawn as thin plates over each motor: at item scale a blade is less than a pixel long, and a disc is what a spinning rotor is.",
+      "from": [1.2, 10, 1.2],
+      "to": [4.4, 10.6, 4.4],
+      "faces": {
+        "down": {"texture": "#glass"},
+        "up": {"texture": "#glass"},
+        "north": {"texture": "#glass"},
+        "south": {"texture": "#glass"},
+        "west": {"texture": "#glass"},
+        "east": {"texture": "#glass"}
+      }
+    },
+    {
+      "from": [11.6, 10, 1.2],
+      "to": [14.8, 10.6, 4.4],
+      "faces": {
+        "down": {"texture": "#glass"},
+        "up": {"texture": "#glass"},
+        "north": {"texture": "#glass"},
+        "south": {"texture": "#glass"},
+        "west": {"texture": "#glass"},
+        "east": {"texture": "#glass"}
+      }
+    },
+    {
+      "from": [1.2, 10, 11.6],
+      "to": [4.4, 10.6, 14.8],
+      "faces": {
+        "down": {"texture": "#glass"},
+        "up": {"texture": "#glass"},
+        "north": {"texture": "#glass"},
+        "south": {"texture": "#glass"},
+        "west": {"texture": "#glass"},
+        "east": {"texture": "#glass"}
+      }
+    },
+    {
+      "from": [11.6, 10, 11.6],
+      "to": [14.8, 10.6, 14.8],
+      "faces": {
+        "down": {"texture": "#glass"},
+        "up": {"texture": "#glass"},
+        "north": {"texture": "#glass"},
+        "south": {"texture": "#glass"},
+        "west": {"texture": "#glass"},
+        "east": {"texture": "#glass"}
+      }
+    },
+    {
+      "comment": "Camera on its gimbal, under the nose, with the lens in brass so it reads as the instrument rather than as a dent.",
+      "from": [6.8, 4.8, 6.8],
+      "to": [9.2, 6.8, 9.2],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Antenna, standing off the tail so the airframe reads as a machine with a radio link rather than a toy.",
+      "from": [7.7, 10.2, 3.2],
+      "to": [8.3, 13.4, 3.8],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    }
+  ]
+}

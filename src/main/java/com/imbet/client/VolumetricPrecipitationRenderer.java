@@ -4,6 +4,7 @@ import com.imbet.Config;
 import com.imbet.weather.CompatHooks;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.DynamicStormState;
+import com.imbet.weather.PrecipitationField;
 import com.imbet.weather.SupercellStructureService;
 import extendedrenderer.particle.ParticleRegistry;
 import extendedrenderer.particle.entity.EntityRotFX;
@@ -31,11 +32,52 @@ public final class VolumetricPrecipitationRenderer {
     private static final double TWO_PI = Math.PI * 2.0D;
     private static long lastParticleTick = Long.MIN_VALUE;
 
+    /**
+     * How many draws each sheet is allowed when sampling the precipitation field. Bounded because a
+     * storm whose field is mostly thin has no rain to place, and looking harder for it does not make
+     * any: eight tries leaves under a tenth of a percent of sheets unplaced in a typical core.
+     */
+    private static final int PRECIPITATION_SAMPLE_TRIES = 8;
+
+    /** Share of the ring around a vortex that has to be wet before it counts as rain-wrapped. */
+    private static final float RAIN_WRAP_SHARE = 0.45F;
+
+    /** How much more readily the thin margins of a rain area evaporate than its core does. */
+    private static final double VIRGA_FRINGE_GAIN = 0.75D;
+
     private VolumetricPrecipitationRenderer() {
     }
 
+    /**
+     * The rain volumes are on only when the player asked for them, the classic look is off, and the
+     * vanilla-rain mode is off. Both read from here so the three call sites - the pass, the
+     * vanilla-rain bypass and the intensity probe the rest of the client asks for - can never
+     * disagree about whether rain is being drawn.
+     *
+     * <p>The vanilla-rain mode belongs in this one predicate rather than beside it: it means vanilla's
+     * sheets are the rain, so the volumes must not draw a second rain over them <em>and</em> the
+     * cancel that normally hides vanilla's rain near a cell must stand down, and both of those are
+     * exactly the two answers this flag already gives.
+     */
+    private static boolean volumetricDownfallActive() {
+        return Config.VOLUMETRIC_DOWNFALL_ENABLED.get() && !Config.classicLook() && !VanillaRainMode.active();
+    }
+
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
-        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_WEATHER || !Config.VOLUMETRIC_DOWNFALL_ENABLED.get()) {
+        // Classic look: precipitation is Weather2's own downfall particles, so the localized rain
+        // volumes stand down with the rest of the reshaping layer.
+        //
+        // And when the shader volume is drawing this storm's rain, these sheets stand down for it: they
+        // are two drawings of the same rain, so both on at once would be rain counted twice. Only the
+        // sheets are given up - the vanilla-rain bypass and the downfall probe above deliberately still
+        // read volumetricDownfallActive, because the rain the volume draws is still this mod's rain and
+        // vanilla's global downpour still has to be suppressed under it.
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_WEATHER || !volumetricDownfallActive()
+                || RainVolumeShader.active()) {
+            return;
+        }
+        // Iris runs every level stage again for its shadow map; this belongs to the visible frame only.
+        if (RenderingCompat.isRenderingShadowPass()) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -69,7 +111,7 @@ public final class VolumetricPrecipitationRenderer {
     }
 
     public static boolean shouldBypassVanillaRain() {
-        if (!Config.VOLUMETRIC_DOWNFALL_ENABLED.get() || !Config.VOLUMETRIC_DOWNFALL_BYPASS_VANILLA_NEAR_CELLS.get()) {
+        if (!volumetricDownfallActive() || !Config.VOLUMETRIC_DOWNFALL_BYPASS_VANILLA_NEAR_CELLS.get()) {
             return false;
         }
         if (shaderCompatibilityActive()) {
@@ -99,7 +141,7 @@ public final class VolumetricPrecipitationRenderer {
     }
 
     public static float localDownfallIntensity() {
-        if (!Config.VOLUMETRIC_DOWNFALL_ENABLED.get() || !shaderCompatibilityActive()) {
+        if (!volumetricDownfallActive() || !shaderCompatibilityActive()) {
             return 0.0F;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -140,7 +182,9 @@ public final class VolumetricPrecipitationRenderer {
             }
             double radius = stormRadius(storm);
             double distanceSqr = horizontalDistanceSqr(storm.pos, playerPos);
-            if (distanceSqr <= (Math.sqrt(rangeSqr) + radius) * (Math.sqrt(rangeSqr) + radius)) {
+            // The range's own root is taken once for this storm rather than twice for its two sides.
+            double reach = Math.sqrt(rangeSqr) + radius;
+            if (distanceSqr <= reach * reach) {
                 storms.add(storm);
             }
         }
@@ -158,7 +202,17 @@ public final class VolumetricPrecipitationRenderer {
         float character = precipitationCharacter(storm);
         // Hail reads strongest in the dry, LP-type storm where little rain dilutes the core.
         boolean hail = hailCore(storm) >= Mth.lerp(0.60F, Config.VOLUMETRIC_DOWNFALL_HAIL_TINT_THRESHOLD.get().floatValue(), character);
-        boolean rainWrappedVortex = isRainWrappedVortex(storm);
+        // The storm's precipitation as a field: where its rain actually is, part by part. This is what
+        // replaces the blob that used to be drawn at a point, and it is the difference between a rain
+        // curtain with a hook wrapping the vortex and a clear slot beside it, and a grey mass sitting on
+        // the storm.
+        PrecipitationField.Geometry field = SupercellStructureService.precipitationGeometry(storm, state);
+        // Rain-wrapped is a fact about *this* vortex rather than about how wet the storm is on average:
+        // it is the share of a ring around the funnel that has rain in it, so a storm pouring rain out
+        // of its forward flank while its tornado stands in clear air is not treated as wrapped, and a
+        // moderate storm whose hook has closed around its funnel is.
+        double wrapShare = SupercellStructureService.rainWrapShare(storm, state, Math.max(14.0D, radius * 0.13D));
+        boolean rainWrappedVortex = isRainWrappedVortex(storm) && wrapShare >= RAIN_WRAP_SHARE;
         // Virga: a dry layer of air under the cloud base evaporates the precipitation before it can
         // land, so the shafts hang and thin out instead of arriving. Computed from synced storm data,
         // which is what lets the same number also keep the ground from flooding below.
@@ -167,7 +221,6 @@ public final class VolumetricPrecipitationRenderer {
             // Hail is large enough to survive the fall that eats the rain.
             virga *= 0.5F;
         }
-        Vec3 precipitationCenter = rainCenter(storm, structure, forward, right, radius, rainWrappedVortex);
         float intensity = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_THUNDER + 1) / 6.0F, 0.2F, 1.0F);
         int count = Mth.clamp((int) (8.0D + radius / 24.0D + intensity * 18.0F), 8, hail ? 54 : 44);
         if (rainWrappedVortex && !hail) {
@@ -186,17 +239,19 @@ public final class VolumetricPrecipitationRenderer {
         Vec3 stormMotion = storm.motion == null ? Vec3.ZERO : storm.motion;
         Vec3 motionDrift = new Vec3(stormMotion.x, 0.0D, stormMotion.z).scale(0.12D);
         double top = Math.min(level.getMaxBuildHeight() - 4.0D, topY(storm));
+        double[] candidate = new double[3];
 
         for (int index = 0; index < count && budget[0] > 0; index++) {
-            boolean coreWrap = rainWrappedVortex && index % 4 == 0;
-            double forwardSpread = radius * (coreWrap ? 0.44D : rainWrappedVortex ? 0.92D : 0.78D);
-            double lateralSpread = radius * (coreWrap ? 0.48D : rainWrappedVortex ? 0.76D : 0.82D);
-            double forwardOffset = (level.random.nextDouble() - (coreWrap ? 0.50D : 0.30D)) * forwardSpread;
-            double lateralOffset = (level.random.nextDouble() - (coreWrap ? 0.50D : 0.50D)) * lateralSpread;
-            Vec3 sheetCenter = coreWrap ? storm.pos.add(forward.scale(radius * 0.08D)).add(right.scale(-radius * 0.08D)) : precipitationCenter;
-            Vec3 sample = sheetCenter.add(forward.scale(forwardOffset)).add(right.scale(lateralOffset)).add(motionDrift.scale(24.0D));
-            double x = sample.x;
-            double z = sample.z;
+            // Where the rain is, asked of the field instead of assumed: a candidate point is drawn and
+            // kept in proportion to how wet the field says it is there. The core is dense, the hook is a
+            // band, the notch comes back dry because the field says so, and the stratiform tail is thin -
+            // all from one rule rather than from a spread per case.
+            if (!samplePrecipitation(level, storm.pos, field, forward, right, radius, candidate)) {
+                continue;
+            }
+            double density = candidate[2];
+            double x = candidate[0];
+            double z = candidate[1];
             BlockPos samplePos = BlockPos.containing(x, 0.0D, z);
             if (!level.isLoaded(samplePos)) {
                 continue;
@@ -209,7 +264,10 @@ public final class VolumetricPrecipitationRenderer {
             double columnHeight = Math.max(1.0D, top - minY);
             double depthFactor = Mth.clamp(
                     columnHeight / Math.max(24.0D, Config.VIRGA_MAX_FALL_DEPTH_BLOCKS.get()), 0.0D, 1.0D);
-            float virgaHere = (float) (virga * depthFactor);
+            // The dry air eats the margins of a rain area before its middle, because a thin shaft is
+            // mostly surface: that is why the outside of a curtain frays into wisps while the core lands.
+            double fringe = 1.0D + VIRGA_FRINGE_GAIN * (1.0D - density);
+            float virgaHere = (float) Mth.clamp(virga * depthFactor * fringe, 0.0F, 1.0F);
             // How much of the column the dry air eats away. Clamped so at least minFallDepthBlocks of
             // rain still hangs below the cloud base even at full strength - virga is a shaft that
             // never lands, not a storm with no precipitation at all.
@@ -237,8 +295,10 @@ public final class VolumetricPrecipitationRenderer {
                     .add(motionDrift)
                     .add(0.0D, fallSpeed - level.random.nextDouble() * 0.16D, 0.0D);
             double distantFactor = Mth.clamp((distance - 180.0D) / 620.0D, 0.0D, 1.0D);
-            double sampleRadius = Math.sqrt(forwardOffset * forwardOffset + lateralOffset * lateralOffset);
-            double curtainFactor = Mth.clamp((sampleRadius / Math.max(1.0D, radius) - 0.18D) / 0.82D, 0.0D, 1.0D);
+            // The big, dim sheets belong to thin rain and the dense ones to the core, which is the same
+            // distinction the field is making: a curtain of few large sheets at its edge and a wall of
+            // fine ones where it is heaviest.
+            double curtainFactor = Mth.clamp(1.0D - density, 0.0D, 1.0D);
             // Where this sheet sits between the cloud base (0) and the evaporation edge (1). A virga
             // shaft does not switch off where it stops, it fades out, so the sheets lower down get
             // progressively thinner on top of the ragged tips their texture already draws.
@@ -246,9 +306,9 @@ public final class VolumetricPrecipitationRenderer {
                     ? 0.0D
                     : Mth.clamp((top - y) / Math.max(1.0D, top - columnBottom), 0.0D, 1.0D);
             float evaporationFade = (float) Mth.lerp(evaporationT, 1.0D, 1.0D - 0.60D * virgaHere);
-            spawnDownfallParticle(level, particlePos, velocity, hail, rainWrappedVortex, intensity, distantFactor, curtainFactor, character, virgaHere, evaporationFade, budget);
+            spawnDownfallParticle(level, particlePos, velocity, hail, rainWrappedVortex, intensity, distantFactor, curtainFactor, character, virgaHere, evaporationFade, density, budget);
 
-            if (!hail && distantFactor < 0.20D && level.random.nextFloat() < 0.18F + intensity * 0.18F && budget[0] > 0) {
+            if (!hail && distantFactor < 0.20D && level.random.nextFloat() < (0.18F + intensity * 0.18F) * density && budget[0] > 0) {
                 Vec3 mistPos = particlePos.add(0.0D, -level.random.nextDouble() * 5.0D, 0.0D);
                 spawnMistParticle(level, mistPos, tangent.scale(0.018D).add(inward.scale(0.018D)), intensity, budget);
             }
@@ -261,12 +321,12 @@ public final class VolumetricPrecipitationRenderer {
         }
     }
 
-    private static void spawnDownfallParticle(ClientLevel level, Vec3 pos, Vec3 velocity, boolean hail, boolean rainWrappedVortex, float intensity, double distantFactor, double curtainFactor, float character, float virga, float evaporationFade, int[] budget) {
+    private static void spawnDownfallParticle(ClientLevel level, Vec3 pos, Vec3 velocity, boolean hail, boolean rainWrappedVortex, float intensity, double distantFactor, double curtainFactor, float character, float virga, float evaporationFade, double localDensity, int[] budget) {
         TextureAtlasSprite sprite;
         if (hail) {
-            sprite = level.random.nextFloat() < 0.34F ? ParticleRegistry.hail : ParticleRegistry.rain_white;
+            sprite = level.random.nextFloat() < 0.34F ? ParticleRegistry.hail : ParticleArt.rainWhite();
         } else {
-            float shaftDensity = shaftDensity(character, intensity, distantFactor);
+            float shaftDensity = shaftDensity(character, intensity, distantFactor, localDensity);
             // Only shafts that are genuinely dissolving get the frayed texture; a storm that mostly
             // reaches the ground keeps ordinary rain that merely dims near the bottom.
             sprite = virga > 0.45F
@@ -288,7 +348,9 @@ public final class VolumetricPrecipitationRenderer {
         float density = Mth.lerp(0.55F, 1.25F, character);
         float alpha = hail
                 ? Mth.clamp(Config.VOLUMETRIC_DOWNFALL_HAIL_OPACITY.get().floatValue() * 0.58F * density, 0.12F, 0.52F)
-                : Mth.clamp(Config.VOLUMETRIC_DOWNFALL_RAIN_OPACITY.get().floatValue() * (rainWrappedVortex ? 0.96F : 0.82F) * density, rainWrappedVortex ? 0.30F : 0.16F, rainWrappedVortex ? 0.58F : 0.44F);
+                : Mth.clamp((float) Config.rainOpacity(Config.VOLUMETRIC_DOWNFALL_RAIN_OPACITY.get())
+                        * (rainWrappedVortex ? 0.96F : 0.82F) * density,
+                        rainWrappedVortex ? 0.30F : 0.16F, rainWrappedVortex ? 0.58F : 0.44F);
         float red = hail ? 0.82F : Mth.lerp(sheetFactor, rainWrappedVortex ? 0.30F : 0.36F, rainWrappedVortex ? 0.18F : 0.26F);
         float green = hail ? 0.96F : Mth.lerp(sheetFactor, rainWrappedVortex ? 0.32F : 0.38F, rainWrappedVortex ? 0.20F : 0.28F);
         float blue = hail ? 0.88F : Mth.lerp(sheetFactor, rainWrappedVortex ? 0.38F : 0.46F, rainWrappedVortex ? 0.28F : 0.36F);
@@ -300,12 +362,47 @@ public final class VolumetricPrecipitationRenderer {
 
     /**
      * How hard it is raining where this sheet is, 0 = a thin shower, 1 = a torrential core, used to
-     * pick which of the three rain textures the sheet gets. A dry LP storm's sparse hail core and
-     * the far edges of any storm read as a light shower; an HP core reads as heavy rain.
+     * pick which of the three rain textures the sheet gets.
+     *
+     * <p>Read off the precipitation field at the sheet's own position, so the texture follows the
+     * weather: the heart of a forward-flank core draws as heavy rain, the thin edge of the same storm
+     * as a shower, and the two are adjacent because the field says they are.
      */
-    private static float shaftDensity(float character, float intensity, double distantFactor) {
+    private static float shaftDensity(float character, float intensity, double distantFactor, double localDensity) {
         float wet = Mth.lerp(0.35F, 1.0F, Mth.clamp(character, 0.0F, 1.0F));
-        return Mth.clamp(wet * (0.72F + intensity * 0.42F) - (float) distantFactor * 0.30F, 0.0F, 1.0F);
+        float local = Mth.lerp(0.45F, 1.25F, (float) Mth.clamp(localDensity, 0.0D, 1.0D));
+        return Mth.clamp(wet * local * (0.72F + intensity * 0.42F) - (float) distantFactor * 0.30F, 0.0F, 1.0F);
+    }
+
+    /**
+     * Draws one point of rain from the storm's precipitation field, rejecting thin air.
+     *
+     * <p>Rejection sampling rather than a shape per case: a uniform candidate is thrown inside the
+     * storm's disc and kept with probability equal to the field's density there. That is what makes the
+     * field the single description of the rain - the hook's band, the notch's slot and the core's mass
+     * all come out of it, with no spread constants to keep in agreement with the geometry.
+     *
+     * <p>Returns false when the candidates all land in dry air, which for a low-precipitation storm's
+     * flank is the honest answer rather than a reason to find something to draw.
+     */
+    private static boolean samplePrecipitation(ClientLevel level, Vec3 center, PrecipitationField.Geometry field, Vec3 forward, Vec3 right, double radius, double[] out) {
+        double reach = Math.max(48.0D, radius) * 1.15D;
+        for (int attempt = 0; attempt < PRECIPITATION_SAMPLE_TRIES; attempt++) {
+            // Uniform over the disc, so the density of what is placed is the field's own density.
+            double angle = level.random.nextDouble() * TWO_PI;
+            double distance = Math.sqrt(level.random.nextDouble()) * reach;
+            double localForward = Math.cos(angle) * distance;
+            double localRight = Math.sin(angle) * distance;
+            double density = PrecipitationField.densityAtLocal(field, localForward, localRight);
+            if (level.random.nextDouble() >= density) {
+                continue;
+            }
+            out[0] = center.x + localForward * forward.x + localRight * right.x;
+            out[1] = center.z + localForward * forward.z + localRight * right.z;
+            out[2] = density;
+            return true;
+        }
+        return false;
     }
 
     private static void spawnMistParticle(ClientLevel level, Vec3 pos, Vec3 velocity, float intensity, int[] budget) {
@@ -330,7 +427,7 @@ public final class VolumetricPrecipitationRenderer {
         particle.setScale(Mth.clamp(scale, 0.15F, 180.0F));
         particle.setColor(Mth.clamp(red, 0.0F, 1.0F), Mth.clamp(green, 0.0F, 1.0F), Mth.clamp(blue, 0.0F, 1.0F));
         boolean downfallSheet = RainShaftSprites.isShaftSprite(sprite);
-        boolean cloudSheet = sprite == ParticleRegistry.cloud || sprite == ParticleRegistry.cloud256;
+        boolean cloudSheet = sprite == ParticleRegistry.cloud || sprite == ParticleArt.cloud256();
         float clampedAlpha = downfallSheet
                 ? Mth.clamp(alpha * 1.18F + 0.08F, 0.22F, 0.80F)
                 : cloudSheet
@@ -373,7 +470,14 @@ public final class VolumetricPrecipitationRenderer {
         return Mth.clamp(Config.VOLUMETRIC_DOWNFALL_MAX_VERTICES_PER_FRAME.get() / 180, 24, 180);
     }
 
-    private static boolean shouldRenderDownfall(StormObject storm) {
+    /**
+     * Whether a storm is putting precipitation down at all - and therefore whether its rain is drawn.
+     *
+     * <p>Shared with the volumetric rain rather than duplicated there: the sheets and the volume are two
+     * drawings of one storm, so a dry LP supercell that the sheets deliberately leave almost rainless has
+     * to be left rainless by the volume too, or the same storm is dry from one and wet from the other.
+     */
+    static boolean shouldRenderDownfall(StormObject storm) {
         if (isLowPrecipitationVortex(storm)) {
             return false;
         }
@@ -433,20 +537,6 @@ public final class VolumetricPrecipitationRenderer {
         return DynamicStormController.isDynamicVortex(storm);
     }
 
-    private static Vec3 rainCenter(StormObject storm, SupercellStructureService.StructureSample structure, Vec3 forward, Vec3 right, double radius, boolean rainWrappedVortex) {
-        if (storm == null || storm.pos == null) {
-            return Vec3.ZERO;
-        }
-        if (rainWrappedVortex) {
-            return storm.pos.add(forward.scale(radius * 0.18D)).add(right.scale(-radius * 0.10D));
-        }
-        Vec3 forwardFlank = structure == null ? null : structure.forwardFlank();
-        if (forwardFlank != null && forwardFlank.horizontalDistanceSqr() > 1.0E-5D) {
-            return forwardFlank;
-        }
-        return storm.pos.add(forward.scale(radius * 0.42D)).add(right.scale(-radius * 0.18D));
-    }
-
     private static Vec3 horizontalOrDefault(Vec3 vector, Vec3 fallback) {
         Vec3 candidate = vector == null ? Vec3.ZERO : new Vec3(vector.x, 0.0D, vector.z);
         if (candidate.horizontalDistanceSqr() > 1.0E-5D) {
@@ -467,20 +557,21 @@ public final class VolumetricPrecipitationRenderer {
     }
 
     private static double stormRadius(StormObject storm) {
-        double size = Math.max(Math.max(storm.getSize(), storm.size), storm.maxSize * 0.55D);
-        if (DynamicStormController.isDynamicVortex(storm)) {
-            DynamicStormState state = DynamicStormController.stateFor(storm);
-            size = Math.max(size, state.damagePathWidth() * 1.4D);
-        }
-        return Mth.clamp(size * 1.25D, 56.0D, 360.0D);
+        // Shared with the radar so a return on the scope is the storm you can see in the sky.
+        return DynamicStormController.stormPrecipRadius(storm);
     }
 
-    private static double topY(StormObject storm) {
+    /** The top of a storm's rain column, in world blocks. Shared with the volumetric rain. */
+    static double topY(StormObject storm) {
         int cloudHeight = Math.max(80, ConfigMisc.Cloud_Layer0_Height);
         return Math.max(cloudHeight, storm.currentTopYBlock > 0 ? storm.currentTopYBlock : cloudHeight);
     }
 
-    private static double floorY(ClientLevel level, double x, double z) {
+    /**
+     * The ground under a point, from the world's heightmap. Shared with the volumetric rain, which needs
+     * one ground for the whole storm rather than one per particle.
+     */
+    static double floorY(ClientLevel level, double x, double z) {
         int step = Math.max(4, Config.VOLUMETRIC_DOWNFALL_HEIGHTMAP_SAMPLE_STEP_BLOCKS.get());
         int sampleX = Mth.floor(x / step) * step;
         int sampleZ = Mth.floor(z / step) * step;

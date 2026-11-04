@@ -1,0 +1,22 @@
+{
+  "parent": "expandedweather2dynamics:fly_sounding",
+  "display": {
+    "icon": {
+      "id": "expandedweather2dynamics:weather_balloon"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.tornado_intercept.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.tornado_intercept.description"
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

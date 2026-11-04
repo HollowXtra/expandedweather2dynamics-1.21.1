@@ -58,7 +58,15 @@ public class AnemometerRenderer implements BlockEntityRenderer<AnemometerBlockEn
         if (!Config.ANEMOMETER_ENABLED.get()) {
             return;
         }
-        VertexConsumer consumer = buffer.getBuffer(RenderType.lightning());
+        // debugQuads(), NOT lightning(). Both are colour-only, no-cull, untextured types, but lightning
+        // writes into the WEATHER render target - the buffer the rain and lightning bolts go to - so the
+        // rotor was composited with the weather pass instead of the world and read as flat white bars
+        // hovering over the block. debugQuads draws the same geometry into the main target with proper
+        // depth, which is what the forecast plates already use.
+        VertexConsumer consumer = buffer.getBuffer(RenderType.debugQuads());
+        // debugQuads carries no lightmap, so the block's own light level is folded into the colours here.
+        // Without it the rotor glowed at full brightness in the dark.
+        float shade = RenderQuads.lightShade(entity.getLevel(), packedLight);
 
         // Turn about the mast's axis, which is the block's centre. The sign only decides which way it
         // spins; the cups are the same either way, so it is not inverted as the vane's heading is.
@@ -68,38 +76,40 @@ public class AnemometerRenderer implements BlockEntityRenderer<AnemometerBlockEn
         stack.translate(-0.5F, 0.0F, -0.5F);
         PoseStack.Pose pose = stack.last();
 
-        hub(consumer, pose);
+        hub(consumer, pose, shade);
         for (float[] arm : ARMS) {
-            arm(consumer, pose, arm[0], arm[1]);
-            cup(consumer, pose, arm[0], arm[1]);
+            arm(consumer, pose, arm[0], arm[1], shade);
+            cup(consumer, pose, arm[0], arm[1], shade);
         }
 
         stack.popPose();
     }
 
     /** Two crossed walls and a cap, so the centre reads as a hub from every angle. */
-    private static void hub(VertexConsumer consumer, PoseStack.Pose pose) {
+    private static void hub(VertexConsumer consumer, PoseStack.Pose pose, float shade) {
         float low = 0.5F - HUB_HALF;
         float high = 0.5F + HUB_HALF;
-        RenderQuads.ribbon(consumer, pose, low, 0.5F, high, 0.5F, HUB_Y0, HUB_Y1, HUB);
-        RenderQuads.ribbon(consumer, pose, 0.5F, low, 0.5F, high, HUB_Y0, HUB_Y1, HUB);
-        RenderQuads.topQuad(consumer, pose, low, low, high, high, HUB_Y1, HUB);
+        int hub = RenderQuads.lit(HUB, shade);
+        RenderQuads.ribbon(consumer, pose, low, 0.5F, high, 0.5F, HUB_Y0, HUB_Y1, hub);
+        RenderQuads.ribbon(consumer, pose, 0.5F, low, 0.5F, high, HUB_Y0, HUB_Y1, hub);
+        RenderQuads.topQuad(consumer, pose, low, low, high, high, HUB_Y1, hub);
     }
 
     /** One arm: the two sides of the bar and its top, running from the hub to the cup. */
-    private static void arm(VertexConsumer consumer, PoseStack.Pose pose, float dx, float dz) {
+    private static void arm(VertexConsumer consumer, PoseStack.Pose pose, float dx, float dz, float shade) {
         float tipX = 0.5F + dx * REACH;
         float tipZ = 0.5F + dz * REACH;
         // Offset to either side of the arm's axis, which is what gives the bar its thickness.
         float sideX = -dz * ARM_HALF_THICKNESS;
         float sideZ = dx * ARM_HALF_THICKNESS;
+        int arm = RenderQuads.lit(ARM, shade);
 
-        RenderQuads.ribbon(consumer, pose, 0.5F + sideX, 0.5F + sideZ, tipX + sideX, tipZ + sideZ, ARM_Y0, ARM_Y1, ARM);
-        RenderQuads.ribbon(consumer, pose, 0.5F - sideX, 0.5F - sideZ, tipX - sideX, tipZ - sideZ, ARM_Y0, ARM_Y1, ARM);
+        RenderQuads.ribbon(consumer, pose, 0.5F + sideX, 0.5F + sideZ, tipX + sideX, tipZ + sideZ, ARM_Y0, ARM_Y1, arm);
+        RenderQuads.ribbon(consumer, pose, 0.5F - sideX, 0.5F - sideZ, tipX - sideX, tipZ - sideZ, ARM_Y0, ARM_Y1, arm);
         RenderQuads.topQuad(consumer, pose,
                 Math.min(0.5F, tipX) - Math.abs(sideX), Math.min(0.5F, tipZ) - Math.abs(sideZ),
                 Math.max(0.5F, tipX) + Math.abs(sideX), Math.max(0.5F, tipZ) + Math.abs(sideZ),
-                ARM_Y1, ARM);
+                ARM_Y1, arm);
     }
 
     /**
@@ -109,7 +119,9 @@ public class AnemometerRenderer implements BlockEntityRenderer<AnemometerBlockEn
      * along it and a floor - rather than a solid block, because the open mouth is what makes a rotating
      * cup read as a cup rather than as a spinning lump.
      */
-    private static void cup(VertexConsumer consumer, PoseStack.Pose pose, float dx, float dz) {
+    private static void cup(VertexConsumer consumer, PoseStack.Pose pose, float dx, float dz, float shade) {
+        int cup = RenderQuads.lit(CUP, shade);
+        int cupShade = RenderQuads.lit(CUP_SHADE, shade);
         float tipX = 0.5F + dx * REACH;
         float tipZ = 0.5F + dz * REACH;
         float innerX = tipX - dx * CUP_DEPTH;
@@ -120,15 +132,15 @@ public class AnemometerRenderer implements BlockEntityRenderer<AnemometerBlockEn
 
         // Mouth end, across the arm.
         RenderQuads.ribbon(consumer, pose,
-                tipX + acrossX, tipZ + acrossZ, tipX - acrossX, tipZ - acrossZ, CUP_Y0, CUP_Y1, CUP);
+                tipX + acrossX, tipZ + acrossZ, tipX - acrossX, tipZ - acrossZ, CUP_Y0, CUP_Y1, cup);
         // The two sides, running back toward the hub, so the opening faces outward.
         RenderQuads.ribbon(consumer, pose,
-                tipX + acrossX, tipZ + acrossZ, innerX + acrossX, innerZ + acrossZ, CUP_Y0, CUP_Y1, CUP_SHADE);
+                tipX + acrossX, tipZ + acrossZ, innerX + acrossX, innerZ + acrossZ, CUP_Y0, CUP_Y1, cupShade);
         RenderQuads.ribbon(consumer, pose,
-                tipX - acrossX, tipZ - acrossZ, innerX - acrossX, innerZ - acrossZ, CUP_Y0, CUP_Y1, CUP_SHADE);
+                tipX - acrossX, tipZ - acrossZ, innerX - acrossX, innerZ - acrossZ, CUP_Y0, CUP_Y1, cupShade);
         RenderQuads.topQuad(consumer, pose,
                 Math.min(innerX, tipX) - Math.abs(acrossX), Math.min(innerZ, tipZ) - Math.abs(acrossZ),
                 Math.max(innerX, tipX) + Math.abs(acrossX), Math.max(innerZ, tipZ) + Math.abs(acrossZ),
-                CUP_Y0, CUP_SHADE);
+                CUP_Y0, cupShade);
     }
 }

@@ -1,0 +1,20 @@
+{
+  "textures": {
+    "cable": "expandedweather2dynamics:block/instrument_dark",
+    "core": "expandedweather2dynamics:block/instrument_metal"
+  },
+  "elements": [
+    {
+      "from": [5, 5, 5],
+      "to": [11, 11, 11],
+      "faces": {
+        "down":  { "texture": "#core", "cullface": "down" },
+        "up":    { "texture": "#core", "cullface": "up" },
+        "north": { "texture": "#core" },
+        "south": { "texture": "#core" },
+        "west":  { "texture": "#core" },
+        "east":  { "texture": "#core" }
+      }
+    }
+  ]
+}

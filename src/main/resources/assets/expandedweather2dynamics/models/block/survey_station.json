@@ -1,0 +1,64 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "expandedweather2dynamics:block/instrument_metal",
+    "metal": "expandedweather2dynamics:block/instrument_metal",
+    "dark": "expandedweather2dynamics:block/instrument_dark",
+    "glass": "expandedweather2dynamics:block/instrument_glass",
+    "face": "expandedweather2dynamics:block/survey_station"
+  },
+  "elements": [
+    {
+      "comment": "Base plate the tripod stands on.",
+      "from": [0, 0, 0],
+      "to": [16, 2, 16],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Post. Slim on purpose: this is the block a villager claims, not a wall.",
+      "from": [6, 2, 6],
+      "to": [10, 12, 10],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Head unit: the sighting instrument the villager reads a track with.",
+      "from": [0, 12, 0.4],
+      "to": [16, 16, 16],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"uv": [0, 0, 16, 4], "texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "The sighting plate the head shows from the front: the station's own painted face, its lens and graduations, one texel per pixel across the whole face rather than squeezed into a strip.",
+      "from": [1, 12.2, 0],
+      "to": [15, 15.8, 0.4],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"uv": [0, 0, 16, 16], "texture": "#face"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    }
+  ]
+}

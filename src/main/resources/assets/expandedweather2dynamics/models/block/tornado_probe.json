@@ -1,0 +1,137 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "expandedweather2dynamics:block/instrument_dark",
+    "face": "expandedweather2dynamics:block/tornado_probe",
+    "dark": "expandedweather2dynamics:block/instrument_dark",
+    "metal": "expandedweather2dynamics:block/instrument_metal"
+  },
+  "elements": [
+    {
+      "comment": "Head. Full width on purpose: the readout plate is drawn just above the block's top face, so the top must be flat and complete or the plate overhangs into the air.",
+      "from": [0, 11, 0],
+      "to": [16, 16, 16],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Body the instrument head is mounted on.",
+      "from": [1, 4, 1],
+      "to": [15, 11.6, 15],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Data plate standing proud of the body. The front carries the instrument's own texture one texel per pixel - the little screen and its readout.",
+      "from": [3, 4.4, 0.2],
+      "to": [13, 11, 1.8],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"uv": [3, 2, 13, 9], "texture": "#face"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Hazard band, wrapped around the body using the striped rows of the instrument's own texture. Three pixels tall so the stripes land one texel per pixel like the artwork does.",
+      "from": [0.6, 5.4, 0.6],
+      "to": [15.4, 8.4, 15.4],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"uv": [0, 11, 16, 14], "texture": "#face"},
+        "south": {"uv": [0, 11, 16, 14], "texture": "#face"},
+        "west": {"uv": [0, 11, 16, 14], "texture": "#face"},
+        "east": {"uv": [0, 11, 16, 14], "texture": "#face"}
+      }
+    },
+    {
+      "comment": "Four legs, so the probe stands on the ground rather than being sunk into it.",
+      "from": [2, 0, 2],
+      "to": [4, 4.6, 4],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [12, 0, 2],
+      "to": [14, 4.6, 4],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [2, 0, 12],
+      "to": [4, 4.6, 14],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [12, 0, 12],
+      "to": [14, 4.6, 14],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Lashing tabs on the sides, which is what stops the head turning in the wind.",
+      "from": [0.4, 9.2, 7],
+      "to": [1.6, 10.8, 9],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "from": [14.4, 9.2, 7],
+      "to": [15.6, 10.8, 9],
+      "faces": {
+        "down": {"texture": "#metal"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    }
+  ]
+}

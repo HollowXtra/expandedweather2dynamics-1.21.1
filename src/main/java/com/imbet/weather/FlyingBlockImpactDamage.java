@@ -12,7 +12,7 @@ public final class FlyingBlockImpactDamage {
     }
 
     public static void tick(ServerLevel level, StormObject storm, DynamicStormState state) {
-        if (!Config.DAMAGE_ENABLED.get()
+        if (!Config.damageEnabled()
                 || !Config.DAMAGE_FLYING_BLOCK_IMPACT_DAMAGE.get()
                 || storm == null
                 || storm.pos == null

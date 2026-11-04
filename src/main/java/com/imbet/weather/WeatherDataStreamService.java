@@ -94,6 +94,16 @@ public final class WeatherDataStreamService {
         double maxWind = dynamicVortex ? TornadoWindField.maxWindMph(storm) : wind.speedMph();
         float damageWidth = dynamicVortex ? Math.max(8.0F, state.damagePathWidth()) : Math.max(24.0F, storm.getSize());
         float visibleWidth = dynamicVortex ? Math.max(4.0F, state.visibleFunnelWidth()) : damageWidth;
+        // The storm's own structure, sampled from the service the sky and the wind field already use, so an
+        // echo can be shaped by where this storm's mesocyclone, hook and hail core actually are rather than
+        // by a procedural offset from the storm centre. A vortex that is not itself a storm (everything
+        // below, plus satellites) gets stormRadius 0 and no structure at all.
+        SupercellStructureService.StructureSample structure = SupercellStructureService.sample(storm, state);
+        boolean structured = SupercellStructureService.isEligible(storm) && state.supercellStructureStrength() > 0.05F;
+        // The echo is the size of the storm the player can see, which is also what makes the LP and HP
+        // difference land: character scales the drawn shield, not this.
+        float stormRadius = (float) DynamicStormController.stormPrecipRadius(storm);
+        boolean precipitating = precipitatingStorm(storm, subtype, structured);
         result.add(new WeatherPhysicalSnapshot(
                 TornadoTrackService.stormSourceKey(storm.ID),
                 storm.ID,
@@ -109,9 +119,19 @@ public final class WeatherDataStreamService {
                 (float) Math.max(3.0D, DynamicStormController.baseRadiusForWind(storm) * 0.32D),
                 (float) DynamicStormController.radiusOfMaxWind(storm),
                 storm.levelCurIntensityStage,
-                stageLabelFor(storm.levelCurIntensityStage, storm.levelStormIntensityMax),
+                StormStageLabel.label(storm, state, maxWind, level.getGameTime()),
                 dynamicVortex,
-                !storm.isDead && !state.isAbsorbedOrDecaying()
+                !storm.isDead && !state.isAbsorbedOrDecaying(),
+                precipitating,
+                structured ? structure.mesocyclone() : storm.pos,
+                structured ? structure.hookEchoNotch() : storm.pos,
+                structured ? structure.hailShaft() : storm.pos,
+                stormRadius,
+                structured ? state.supercellStructureStrength() : 0.0F,
+                structured ? state.mesocycloneStrength() : 0.0F,
+                structured ? state.ffdStrength() : 0.0F,
+                structured ? state.hailCoreStrength() : 0.0F,
+                structured ? SupercellStructureService.modeFor(storm, state).ordinal() : SupercellStructureService.SupercellMode.CLASSIC.ordinal()
         ));
         if (dynamicVortex) {
             for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
@@ -136,9 +156,26 @@ public final class WeatherDataStreamService {
                         Math.max(2.0F, width * 0.20F),
                         Math.max(2.0F, width * 0.36F),
                         storm.levelCurIntensityStage,
-                        stageLabelFor(storm.levelCurIntensityStage, storm.levelStormIntensityMax),
+                        // A satellite's stage is its own wind, not the parent's rung: the parent can sit at
+                        // full strength while the satellite is a weak, roping circulation.
+                        StormStageLabel.satelliteLabel(satelliteWind),
                         satellite.touchedDown(),
-                        !storm.isDead && !state.isAbsorbedOrDecaying()
+                        !storm.isDead && !state.isAbsorbedOrDecaying(),
+                        // A satellite is a circulation, not a body of precipitation: it is kept on the radar by
+                        // its circulation, and draws its signature inside the parent's echo.
+                        false,
+                        // A satellite tornado is a circulation inside the parent storm's echo, so it draws no
+                        // precipitation shield of its own - it used to paint a second echo blob centred on the
+                        // parent's position, one per satellite, right on top of the parent's own return.
+                        Vec3.ZERO,
+                        Vec3.ZERO,
+                        Vec3.ZERO,
+                        0.0F,
+                        0.0F,
+                        0.0F,
+                        0.0F,
+                        0.0F,
+                        SupercellStructureService.SupercellMode.CLASSIC.ordinal()
                 ));
             }
         }
@@ -228,7 +265,19 @@ public final class WeatherDataStreamService {
                 0,
                 "",
                 false,
-                !storm.isDead
+                !storm.isDead,
+                // Snow and blowing sand are what a radar would see in a particle storm; a flammagenitus is a
+                // cloud, and nothing falls out of it.
+                subtype != StormSubtype.FLAMMAGENITUS,
+                Vec3.ZERO,
+                Vec3.ZERO,
+                Vec3.ZERO,
+                Math.max(24.0F, storm.getSize()),
+                0.0F,
+                0.0F,
+                0.0F,
+                0.0F,
+                SupercellStructureService.SupercellMode.CLASSIC.ordinal()
         ));
     }
 
@@ -242,7 +291,7 @@ public final class WeatherDataStreamService {
         Vec3 wind = event.isLine()
                 ? (motion == null ? Vec3.ZERO : new Vec3(motion.x, 0.0D, motion.z).normalize().scale(maxWindMph))
                 : (motion == null || motion.horizontalDistanceSqr() < 1.0E-5D ? Vec3.ZERO : motion.normalize().scale(maxWindMph));
-        boolean vortex = event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT || event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL || event.type() == StormSubtype.GUSTNADO || event.type() == StormSubtype.FIRE_WHIRL || event.type() == StormSubtype.FLOATER_TORNADO || event.type() == StormSubtype.SATELLITE_TORNADO || event.type() == StormSubtype.TORNADO;
+        boolean vortex = event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT || event.type() == StormSubtype.FUNNEL_CLOUD || event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL || event.type() == StormSubtype.GUSTNADO || event.type() == StormSubtype.FIRE_WHIRL || event.type() == StormSubtype.FLOATER_TORNADO || event.type() == StormSubtype.SATELLITE_TORNADO || event.type() == StormSubtype.TORNADO;
         result.add(new WeatherPhysicalSnapshot(
                 TornadoTrackService.addonSourceKey(event.id()),
                 event.id(),
@@ -260,8 +309,44 @@ public final class WeatherDataStreamService {
                 inferredStage((float) maxWindMph),
                 inferredStageLabel((float) maxWindMph),
                 vortex,
-                true
+                true,
+                precipitatingEvent(event.type()),
+                Vec3.ZERO,
+                Vec3.ZERO,
+                Vec3.ZERO,
+                Math.max(24.0F, event.radius()),
+                0.0F,
+                0.0F,
+                0.0F,
+                0.0F,
+                SupercellStructureService.SupercellMode.CLASSIC.ordinal()
         ));
+    }
+
+    /**
+     * Whether a storm is putting anything in the air for a radar to see.
+     *
+     * <p>A weather radar returns precipitation and the debris a circulation lifts, not cloud: a tower that has
+     * not started raining is invisible to it until its first echo appears. Weather2 marks a storm as
+     * precipitating while it rains, and its stages run cloud, thunderstorm, high wind, hail - so a storm at or
+     * beyond the thunderstorm stage is raining somewhere even if the flag has not caught up, a resolved
+     * supercell is precipitating by definition, and a hurricane, cyclone or squall line is a rain system.
+     */
+    private static boolean precipitatingStorm(StormObject storm, StormSubtype subtype, boolean structured) {
+        return storm.isPrecipitating()
+                || storm.levelCurIntensityStage >= StormObject.STATE_THUNDER
+                || structured
+                || subtype == StormSubtype.HURRICANE
+                || subtype == StormSubtype.CYCLONE
+                || subtype == StormSubtype.SQUALL_LINE;
+    }
+
+    /** Whether an addon event's own nature puts precipitation in the air, as opposed to being a cloud. */
+    private static boolean precipitatingEvent(StormSubtype type) {
+        return switch (type) {
+            case HURRICANE, CYCLONE, SQUALL_LINE, THUNDERSTORM, SUPERCELL, SNOWSTORM, SANDSTORM -> true;
+            default -> false;
+        };
     }
 
     private static int inferredStage(float windMph) {
@@ -287,14 +372,10 @@ public final class WeatherDataStreamService {
     }
 
     private static String inferredStageLabel(float windMph) {
-        int stage = inferredStage(windMph);
-        return stage <= 0 ? "" : "Stage " + stage;
-    }
-
-    private static String stageLabelFor(int stage, int maxStage) {
-        if (stage <= 0) {
-            return "";
-        }
-        return maxStage > 0 ? "Stage " + stage + "/" + maxStage : "Stage " + stage;
+        String tag = StormStageLabel.tornadoTag(inferredStage(windMph));
+        // An addon vortex (landspout, waterspout, gustnado, dust devil) never climbs Weather2's
+        // ladder, so its label has always been inferred from wind - report that as a tornado stage
+        // rather than a raw rung, which claimed "Stage 9" for a 200 mph whirl that is not one.
+        return tag == null ? "" : tag;
     }
 }

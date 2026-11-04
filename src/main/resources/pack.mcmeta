@@ -1,0 +1,15 @@
+{
+  "pack": {
+    "description": "Expanded Weather2 Dynamics — mod resources",
+    "pack_format": 34,
+    "supported_formats": [34, 48]
+  },
+  "sodium": {
+    "ignored_shaders": [
+      "rendertype_cutout.vsh",
+      "rendertype_cutout.json",
+      "rendertype_cutout_mipped.vsh",
+      "rendertype_cutout_mipped.json"
+    ]
+  }
+}

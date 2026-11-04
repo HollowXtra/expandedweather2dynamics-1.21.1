@@ -1,0 +1,26 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "GAG",
+    "ICI",
+    "III"
+  ],
+  "key": {
+    "G": {
+      "item": "minecraft:glass_pane"
+    },
+    "A": {
+      "item": "minecraft:arrow"
+    },
+    "C": {
+      "item": "minecraft:compass"
+    },
+    "I": {
+      "item": "minecraft:iron_ingot"
+    }
+  },
+  "result": {
+    "id": "expandedweather2dynamics:weather_station",
+    "count": 1
+  }
+}

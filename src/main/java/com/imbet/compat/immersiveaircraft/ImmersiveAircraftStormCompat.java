@@ -31,7 +31,7 @@ public final class ImmersiveAircraftStormCompat {
     }
 
     public static void tick(ServerLevel level) {
-        if (level == null || level.isClientSide() || !Config.DAMAGE_ENABLED.get() || !CompatHooks.immersiveAircraftLoaded()) {
+        if (level == null || level.isClientSide() || !Config.damageEnabled() || !CompatHooks.immersiveAircraftLoaded()) {
             return;
         }
         Class<?> aircraftClass = aircraftEntityClass();
@@ -86,7 +86,10 @@ public final class ImmersiveAircraftStormCompat {
         }
 
         double maxDelta = Math.max(0.08D, Config.IMMERSIVE_VEHICLES_MAX_MOTION_DELTA_PER_TICK.get() * 1.15D);
-        double severity = clamp(windMph / Math.max(1.0D, Config.WINDFIELD_STAGE5_MPH.get()), 0.0D, 1.35D);
+        // The reference carries the strength dial. Severity scales a force that is already proportional to the
+        // wind, so a raw reference would count the setting twice - and here that would be a quarter of the
+        // intended effect at half strength, and close to a tenth of it with the squared term below.
+        double severity = clamp(windMph / Math.max(1.0D, Config.windMph(Config.WINDFIELD_STAGE5_MPH.get())), 0.0D, 1.35D);
         Vec3 windBlocksPerTick = safeVector(influence.wind.mphVector()).scale(MPH_TO_BLOCKS_PER_TICK);
         Vec3 relativeAir = windBlocksPerTick.subtract(aircraft.getDeltaMovement());
         double airborneFactor = aircraft.onGround() ? 0.72D : 1.0D;
@@ -150,7 +153,7 @@ public final class ImmersiveAircraftStormCompat {
         if (horizontalWind.lengthSqr() < 1.0E-4D) {
             return;
         }
-        double severity = clamp(windMph / Math.max(1.0D, Config.WINDFIELD_STAGE5_MPH.get()), 0.0D, 1.25D);
+        double severity = clamp(windMph / Math.max(1.0D, Config.windMph(Config.WINDFIELD_STAGE5_MPH.get())), 0.0D, 1.25D);
         double yawRad = Math.toRadians(aircraft.getYRot());
         Vec3 right = new Vec3(Math.cos(yawRad), 0.0D, -Math.sin(yawRad));
         double sideLoad = horizontalWind.normalize().dot(right);

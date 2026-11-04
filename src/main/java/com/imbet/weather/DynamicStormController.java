@@ -66,15 +66,29 @@ public final class DynamicStormController {
         DynamicStormState state = stateFor(storm);
         long gameTime = world.getGameTime();
         if (world instanceof ServerLevel serverLevel) {
+            // Restore-from-mirror before anything else: if Weather2's own NBT round trip dropped
+            // our tag (the rejoin size-reset bug), this puts the storm's saved width/bend back on
+            // its first server tick instead of letting it re-grow from defaults. A storm that
+            // loaded fine from Weather2's NBT finds nothing here and loses nothing but one map
+            // lookup - restore() consumes, so a deliberately gone storm cannot resurrect forever.
+            CompoundTag mirrored = StormAddonStateMirror.restore(serverLevel, storm.ID);
+            if (mirrored != null && !mirrored.isEmpty()) {
+                state.load(mirrored);
+            }
             applyNativeCycloneProgression(serverLevel, storm);
             state.tickServer(serverLevel, storm, gameTime);
             applyRotationDirection(serverLevel, storm, state);
             applyMergeOrbit(storm, state, gameTime);
+            StormAddonStateMirror.save(serverLevel, storm.ID, state, gameTime);
+            if (gameTime % 600L == 0L) {
+                StormAddonStateMirror.get(serverLevel).prune(gameTime);
+            }
         } else {
             CompoundTag syncedState = ClientStormStateStore.consume(storm.ID);
             if (syncedState != null && !syncedState.isEmpty()) {
                 state.loadClientSync(syncedState);
             }
+            clearStrayWaterspoutTag(storm);
             applyRotationDirection(world, storm, state);
             state.tickVisual(gameTime);
             state.steerSatelliteTornadoes(storm.pos, storm.motion);
@@ -96,8 +110,10 @@ public final class DynamicStormController {
             CirculationDamage.tick(serverLevel, storm, state);
             FlyingBlockImpactDamage.tick(serverLevel, storm, state);
             StructureLift.tick(serverLevel, storm, state);
+            TreeLift.tick(serverLevel, storm, state);
             applyEnvironmentalIntensity(serverLevel, storm, state);
             TreeDamage.tick(serverLevel, storm, state);
+            HailDamage.tick(serverLevel, storm, state);
             if (CycloidalMarks.tick(serverLevel, storm, state)) {
                 awardNearby(serverLevel, storm.pos, AdvancementAwarder.CYCLOIDAL_MARKS, 96.0D);
             }
@@ -125,15 +141,40 @@ public final class DynamicStormController {
         return originalAngle + stateFor(storm).wanderAngle();
     }
 
+    /**
+     * The storm's rung, raised by how wide the funnel actually is. Scouring depth used to key on
+     * {@code levelCurIntensityStage} alone, so a widening wedge ploughed the same shallow groove as a
+     * rope at the same rung - the ground never answered the funnel growing. Width is taken from the live
+     * visible funnel, so this tracks growth and retreat both, and a big-boned but low-rung tornado still
+     * has to be genuinely wide before it earns the deeper tiers.
+     */
+    public static int scouringStage(StormObject storm) {
+        int stage = storm.levelCurIntensityStage;
+        if (!Config.VARIABLE_WIDTHS_ENABLED.get() || !isDynamicVortex(storm)) {
+            return stage;
+        }
+        float visible = stateFor(storm).visibleFunnelWidth();
+        if (visible >= Config.milesToBlocks(1.0D)) {
+            return Math.max(stage, Config.DAMAGE_HEAVY_SCOURING_STAGE.get());
+        }
+        if (visible >= Config.milesToBlocks(0.4D)) {
+            return Math.max(stage, Config.DAMAGE_MEDIUM_SCOURING_STAGE.get());
+        }
+        return stage;
+    }
+
     public static int adjustedTornadoBaseSize(StormObject storm, int originalSize) {
         if (!Config.VARIABLE_WIDTHS_ENABLED.get() || storm == null || !isDynamicVortex(storm)) {
             return originalSize;
         }
         DynamicStormState state = stateFor(storm);
         int visibleCap = Math.max(3, (int) Math.min(Integer.MAX_VALUE, Math.round(Config.effectiveMaxVisibleFunnelWidthBlocks())));
-        if (state.wedgeMorphologyActive()) {
-            int forcedWedgeCap = (int) Math.round(Math.min(Config.milesToBlocks(1.0D), Math.max(state.visibleFunnelWidth(), Config.milesToBlocks(0.5D))));
-            visibleCap = Math.max(visibleCap, forcedWedgeCap);
+        // Keyed on the width, not on the wedge: a wide cone or barrel is drawn by the same Weather2
+        // particles and needs the same allowance, or its particles collapse to the plain cap while its own
+        // state says it is a mile across.
+        if (state.wideTornado()) {
+            int forcedWideCap = (int) Math.round(Math.min(Config.milesToBlocks(3.0D), Math.max(state.visibleFunnelWidth(), Config.milesToBlocks(0.5D))));
+            visibleCap = Math.max(visibleCap, forcedWideCap);
         }
         if (Config.TORNADO_REALISTIC_WIDTH_MODEL.get()) {
             return Mth.clamp(Math.round(state.visibleFunnelWidth()), 3, visibleCap);
@@ -146,7 +187,7 @@ public final class DynamicStormController {
             return layerPos;
         }
         DynamicStormState state = stateFor(storm);
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         float motionAngle = motionAngleDegrees(storm);
         float bendAngle = state.bendAngle();
         if (storm.motion != null && storm.motion.horizontalDistanceSqr() > 0.0004D) {
@@ -197,7 +238,7 @@ public final class DynamicStormController {
             return Vec3.ZERO;
         }
         DynamicStormState state = stateFor(storm);
-        FunnelMorphology morphology = state.targetFunnelMorphology().shaped() ? state.targetFunnelMorphology() : state.funnelMorphology();
+        FunnelMorphology morphology = state.funnelMorphologyInForce();
         if (morphology == FunnelMorphology.DEFAULT) {
             return Vec3.ZERO;
         }
@@ -217,7 +258,7 @@ public final class DynamicStormController {
         if (blend <= 0.001F) {
             return Vec3.ZERO;
         }
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         double anchor = Math.min(0.08D, Math.max(0.035D, Config.TORNADO_FUNNEL_BEND_ANCHOR_FRACTION.get() * 0.55D));
         if (fraction <= anchor) {
             return Vec3.ZERO;
@@ -295,7 +336,7 @@ public final class DynamicStormController {
         if (state.subVortices().isEmpty()) {
             return 1.0F;
         }
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         return state.funnelPinchAt(fraction, storm.manager.getWorld().getGameTime());
     }
 
@@ -305,7 +346,7 @@ public final class DynamicStormController {
             return multivortexScale;
         }
         DynamicStormState state = stateFor(storm);
-        FunnelMorphology morphology = state.targetFunnelMorphology().shaped() ? state.targetFunnelMorphology() : state.funnelMorphology();
+        FunnelMorphology morphology = state.funnelMorphologyInForce();
         if (morphology == FunnelMorphology.DEFAULT) {
             return multivortexScale;
         }
@@ -322,7 +363,7 @@ public final class DynamicStormController {
         if (blend <= 0.001F) {
             return multivortexScale;
         }
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         if (morphology == FunnelMorphology.WEDGE) {
             float diameterScale = state.damagePathWidth() / Math.max(1.0F, state.visibleFunnelWidth());
             float groundScale = Mth.clamp(Math.max(1.35F, diameterScale), 1.35F, 5.25F);
@@ -377,17 +418,17 @@ public final class DynamicStormController {
             return Mth.lerp(blend, 1.0F, cork) * multivortexScale;
         }
         if (morphology == FunnelMorphology.BOWL) {
-            // Top flares into the wall cloud, narrows to a waist, then a firm base. The flare is a
-            // RIM that peaks just under the cloud base and feathers back in at the very top, rather
-            // than a ramp that keeps growing all the way up: otherwise the topmost layer became the
-            // widest ring in the whole funnel, so the top layer visibly swelled past every layer
-            // below it (and snapped back whenever the shape ended). A bowl's widest ring belongs
-            // under the wall cloud, where it merges into the cloud base.
+            // Top flares into the wall cloud, narrows to a waist, then a firm base. The flare runs all
+            // the way up on purpose, so the topmost ring really is the widest ring in the funnel: a
+            // bowl's widest part is where it merges into the cloud base, not a rim that stops short of
+            // it. The top layer is deliberately NOT clamped back to the size of the layer underneath -
+            // the fix for the step at the top of this shape is the layer fraction the profile is read
+            // against (see layerFraction), which glides through Weather2's layer-count changes, not a
+            // ceiling on the top ring.
             float topFlare = smoothstep(Mth.clamp((fraction - 0.55F) / 0.45F, 0.0F, 1.0F));
-            float rimTaper = smoothstep(Mth.clamp((fraction - 0.90F) / 0.10F, 0.0F, 1.0F));
             float waist = 1.0F - smoothstep(Mth.clamp(Math.abs(fraction - 0.38F) / 0.24F, 0.0F, 1.0F));
             float base = 1.0F - smoothstep(Mth.clamp(fraction / 0.18F, 0.0F, 1.0F));
-            float bowl = 0.62F + topFlare * 0.66F - rimTaper * 0.22F + waist * 0.22F + base * 0.30F;
+            float bowl = 0.62F + topFlare * 0.66F + waist * 0.22F + base * 0.30F;
             bowl = Mth.clamp(bowl, 0.55F, 1.35F);
             return Mth.lerp(blend, 1.0F, bowl) * multivortexScale;
         }
@@ -419,7 +460,7 @@ public final class DynamicStormController {
         if (storm == null || layerCount <= 1 || !Config.TORNADO_FORMING_ANIMATION_ENABLED.get() || storm.attrib_waterSpout) {
             return 1.0F;
         }
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
         float intensity = Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F);
         boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
@@ -471,7 +512,7 @@ public final class DynamicStormController {
         if (storm == null || layerCount <= 1 || !Config.TORNADO_FORMING_ANIMATION_ENABLED.get() || storm.attrib_waterSpout) {
             return 1.0F;
         }
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
         float intensity = Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F);
         boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
@@ -493,7 +534,7 @@ public final class DynamicStormController {
         if (radiusScale >= 0.999F && multivortexScale >= 0.999F) {
             return 1.0F;
         }
-        float fraction = Mth.clamp(layerIndex / (float) Math.max(1, layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         float topSoftening = Mth.lerp(fraction, 0.05F, 0.22F);
         return Mth.clamp(radiusScale * 0.88F + topSoftening * multivortexScale, 0.06F, 1.20F);
     }
@@ -504,11 +545,14 @@ public final class DynamicStormController {
         }
         DynamicStormState state = stateFor(storm);
         return switch (state.multiVortexFlavour()) {
-            // Lifted: the parent is out of the way entirely, which is what the vortices are for.
-            case LIFTED -> true;
+            // Lifted: only the part of the column below the retraction is clear air. What is above it is
+            // the parent, so an episode takes the funnel's foot away, never the funnel.
+            case LIFTED -> liftedParentHidden()
+                    ? true
+                    : MultiVortexParentProfile.liftedCulled(liftedTipFraction(storm, state), layerFraction(storm, layerIndex, layerCount));
             // Ground swarm: only the layers below the tip are cut, so the condensation visibly stops
             // short of the ground with the swirls turning in the gap under it.
-            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmCulled(state.parentTipFraction(), layerFraction(layerIndex, layerCount));
+            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmCulled(state.parentTipFraction(), layerFraction(storm, layerIndex, layerCount));
             // Embedded: the parent is planted on the ground exactly as usual. Nothing is cut.
             case EMBEDDED -> false;
         };
@@ -519,9 +563,11 @@ public final class DynamicStormController {
             return 1.0F;
         }
         DynamicStormState state = stateFor(storm);
-        float fraction = layerFraction(layerIndex, layerCount);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         return switch (state.multiVortexFlavour()) {
-            case LIFTED -> 0.0F;
+            case LIFTED -> liftedParentHidden()
+                    ? 0.0F
+                    : MultiVortexParentProfile.liftedAlpha(liftedTipFraction(storm, state), fraction);
             case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmAlpha(state.parentTipFraction(), fraction);
             case EMBEDDED -> MultiVortexParentProfile.embeddedAlpha(fraction);
         };
@@ -538,9 +584,24 @@ public final class DynamicStormController {
         if (!hasActiveMultivortexVisual(storm)) {
             return false;
         }
-        // Only a lifted parent is hidden. A ground swarm's parent still has to tick - it is drawn as a
-        // thin rope that stops short - and an embedded one is the parent a tornado normally has.
-        return stateFor(storm).multiVortexFlavour() == MultiVortexFlavour.LIFTED;
+        // Only a lifted parent is ever hidden, and only when that is what the config asks for -
+        // by default its foot simply retracts instead. A ground swarm's parent still has to tick - it is
+        // drawn as a thin rope that stops short - and an embedded one is the parent a tornado normally
+        // has.
+        return stateFor(storm).multiVortexFlavour() == MultiVortexFlavour.LIFTED && liftedParentHidden();
+    }
+
+    /**
+     * Whether a lifted episode hides the parent completely. Off by default: a lifted parent normally
+     * keeps drawing the column above its retraction, so a multi-vortex tornado is still a tornado.
+     */
+    private static boolean liftedParentHidden() {
+        return !Config.MULTIVORTEX_LIFTED_PARENT_VISIBLE.get();
+    }
+
+    /** How far up this storm's lifted parent has retracted right now, as a layer fraction. */
+    private static float liftedTipFraction(StormObject storm, DynamicStormState state) {
+        return state.parentLiftFraction(stormGameTime(storm));
     }
 
     /**
@@ -555,22 +616,38 @@ public final class DynamicStormController {
      * refuse grabs and rips on the same storms, so nothing is being rendered hollow.</p>
      */
     public static boolean shouldSuppressHelperFunnel(StormObject storm) {
-        // Native waterspouts are exempt on purpose: they are also TYPE_WATER storms at the forming
-        // stage, but a waterspout IS a funnel - hiding it would erase the feature.
-        if (storm == null || storm.attrib_waterSpout) {
+        if (storm == null) {
             return false;
         }
-        if (Config.HURRICANES_ENABLED.get() && AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
-            return true;
+        // A tropical system is decided before the waterspout exemption, because Weather2's waterspout pass
+        // tags water storms and a tagged hurricane would otherwise escape suppression and draw its own
+        // tornado. A waterspout that is genuinely one is still exempt: it has not climbed the ladder.
+        boolean tropical = isTropicalSystem(storm) || isNativeCyclone(storm);
+        if (!tropical && storm.attrib_waterSpout) {
+            return false;
         }
-        return Config.CYCLONES_ENABLED.get() && isNativeCyclone(storm);
+        if (AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+            return Config.HURRICANES_ENABLED.get();
+        }
+        if (!tropical) {
+            return false;
+        }
+        // The real water storm this mod now forms is a hurricane, not a tornado, however strong it
+        // gets - and Weather2's own funnel branch only ever fires for a LAND storm, so the storm type
+        // is the whole story here. This is also the gate Weather2's block grabbing, ripping and the
+        // ground scouring read, so a hurricane can neither wear a tornado's silhouette nor tear a
+        // tornado's trench through the world while it does it.
+        if (!isNativeCyclone(storm)) {
+            return false;
+        }
+        return Config.HURRICANES_ENABLED.get() || Config.CYCLONES_ENABLED.get();
     }
 
     /**
      * Whether the parent's own dust cloud and debris should be held back during an episode. They are:
-     * under a lifted parent there is nothing at the surface to raise them, and under a ground swarm the
-     * surface is the vortices' business. A planted parent keeps its own dust exactly as it always has -
-     * its base is on the ground and should look like it.
+     * under a lifted parent the base has pulled up off the surface, so there is nothing down there to
+     * raise them, and under a ground swarm the surface is the vortices' business. A planted parent keeps
+     * its own dust exactly as it always has - its base is on the ground and should look like it.
      */
     public static boolean suppressMultivortexParentDust(StormObject storm) {
         return hasActiveMultivortexVisual(storm) && !stateFor(storm).multiVortexFlavour().parentOnTheGround();
@@ -581,20 +658,21 @@ public final class DynamicStormController {
             return 0.0D;
         }
         DynamicStormState state = stateFor(storm);
-        FunnelMorphology morphology = state.targetFunnelMorphology().shaped() ? state.targetFunnelMorphology() : state.funnelMorphology();
+        FunnelMorphology morphology = state.funnelMorphologyInForce();
         if (morphology == FunnelMorphology.FLOATER && Config.FLOATER_TORNADOES_ENABLED.get()) {
             float blend = state.funnelMorphologyBlend();
             if (blend <= 0.001F) {
                 return 0.0D;
             }
-            float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+            float fraction = layerFraction(storm, layerIndex, layerCount);
             double lowerWeight = 1.0D - smoothstep(Mth.clamp(fraction / 0.68F, 0.0F, 1.0F));
             double lift = Mth.clamp(18.0D + state.visibleFunnelWidth() * 0.22D, 18.0D, 64.0D);
             return lift * lowerWeight * blend;
         }
         // Every multi-vortex arrangement leaves the main funnel where it is. A lifted parent is culled
-        // layer by layer, a ground swarm's rope is culled below its tip, and an embedded parent is not
-        // moved at all - the vortices come to it. So there is no ground lift for any of them.
+        // layer by layer below its retraction, a ground swarm's rope is culled below its tip, and an
+        // embedded parent is not moved at all - the vortices come to it. So there is no ground lift for
+        // any of them: the funnel's foot is what changes, not the funnel's height in the sky.
         return 0.0D;
     }
 
@@ -614,6 +692,12 @@ public final class DynamicStormController {
         double physicsWind = parentWind * (0.58D + intensity * 0.86D);
         double explicitRangeWind = 100.0D + intensity * 155.0D + stageBlend * 74.0D;
         double wind = Mth.clamp(Math.max(physicsWind, explicitRangeWind), 100.0D, 335.0D);
+        // Suction vortices live on gusts: each one surges and relaxes on its own deterministic
+        // event train (id-keyed, so server and clients agree without syncing), which is what
+        // makes real multi-vortex damage look swirly and stochastic instead of uniform.
+        long gameTime = storm.manager != null && storm.manager.getWorld() != null
+                ? storm.manager.getWorld().getGameTime() : 0L;
+        wind *= 1.0D + 0.28D * TornadoGustModel.pointTurbulence(vortex.id() * 31L + 7L, gameTime);
         return wind * vortex.type().windScale();
     }
 
@@ -621,7 +705,7 @@ public final class DynamicStormController {
         if (!hasActiveMultivortexParent(storm, layerCount)) {
             return 1.0F;
         }
-        float fraction = layerFraction(layerIndex, layerCount);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         DynamicStormState state = stateFor(storm);
         MultiVortexFlavour flavour = state.multiVortexFlavour();
         if (flavour == MultiVortexFlavour.GROUND_SWARM) {
@@ -630,6 +714,9 @@ public final class DynamicStormController {
         if (flavour == MultiVortexFlavour.EMBEDDED) {
             return MultiVortexParentProfile.embeddedWidthScale(fraction);
         }
+        if (!liftedParentHidden()) {
+            return MultiVortexParentProfile.liftedWidthScale(liftedTipFraction(storm, state), fraction);
+        }
         float lowerBlend = 1.0F - smoothstep(Mth.clamp(fraction / MULTIVORTEX_PARENT_LIFT_FRACTION, 0.0F, 1.0F));
         return Mth.lerp(lowerBlend, 1.0F, 0.018F);
     }
@@ -637,9 +724,35 @@ public final class DynamicStormController {
     /**
      * Height of a funnel layer as a fraction of the whole funnel: 0 is the ground and 1 the cloud base.
      * Every layer index in the mod is interpreted this way, so the layer-profile helpers share it.
+     *
+     * <p>The quotient's denominator is the layer count, and Weather2 does not fix that count for the
+     * life of a funnel: it derives it from the tornado's own height every tick and appends a layer the
+     * moment the funnel grew enough to need one. So `index / (count - 1)` re-indexes EVERY layer in one
+     * tick, and the layer it moves most is the one at the top of the profile, where the shape itself
+     * changes fastest - a bowl's flare climbs over its whole upper half. The ring one layer down jumped
+     * wider than the ring above it, then the next append did it again: the top of the funnel swelled and
+     * reset, over and over, and it was the top layer that paid for it. Nothing below the top was clamped
+     * to fix that - the count the profile is read against is glided instead (see
+     * {@link DynamicStormState#glideLayerCount}), so the shape moves through a growing funnel instead of
+     * stepping, and a steady funnel is untouched.
      */
-    private static float layerFraction(int layerIndex, int layerCount) {
-        return Mth.clamp(layerIndex / (float) Math.max(1, layerCount - 1), 0.0F, 1.0F);
+    private static float layerFraction(StormObject storm, int layerIndex, int layerCount) {
+        float effectiveCount = effectiveLayerCount(storm, layerCount);
+        return Mth.clamp(layerIndex / Math.max(1.0F, effectiveCount - 1.0F), 0.0F, 1.0F);
+    }
+
+    /**
+     * The layer count the shape profiles are actually read against: Weather2's own count, glided over a
+     * handful of ticks so a layer appearing re-shapes the column smoothly rather than snapping every
+     * ring at once. It is never LOWER than the count that exists (a layer must keep a sane fraction), so
+     * the newest, topmost layer reads 1.0 - the cloud base - while the ones under it slide down into
+     * their new places.
+     */
+    private static float effectiveLayerCount(StormObject storm, int layerCount) {
+        if (storm == null || layerCount <= 1) {
+            return Math.max(1, layerCount);
+        }
+        return stateFor(storm).glideLayerCount(layerCount, stormGameTime(storm));
     }
 
     private static boolean hasActiveMultivortexParent(StormObject storm, int layerCount) {
@@ -708,25 +821,66 @@ public final class DynamicStormController {
         double severity = Mth.clamp((outlook.risk().severity() - SpcRisk.MARGINAL.severity()) / 4.0D, 0.0D, 1.0D);
         double cape = Mth.clamp(outlook.profile().capeJkg() / 4500.0D, 0.0D, 1.0D);
         double shear = Mth.clamp(outlook.profile().deepLayerShearMps() / 32.0D, 0.0D, 1.0D);
+        // The simple settings' storm limit: at the cap, no further storm in this player's weather is promoted
+        // to tornado-capable, so the storms already running are the ones that finish. A storm that is already a
+        // tornado keeps its intensity - the limit is on new ones, not a way to disarm the sky mid-funnel.
+        if (storm.levelCurIntensityStage < StormObject.STATE_FORMING
+                && Config.atStormLimit(countPromotedStormsNear(level, storm.pos))) {
+            return originalMax;
+        }
         boolean alreadyTornadoCapable = originalMax >= StormObject.STATE_FORMING || storm.levelCurIntensityStage >= StormObject.STATE_FORMING;
         if (!alreadyTornadoCapable) {
+            // The ground first, then the odds: a storm over country a tornado does not belong to is
+            // refused at the one place a natural promotion happens, and never gets to roll at all. A
+            // tornado already on the ground is not sent back by this - the gate is on becoming one, not
+            // on being one - so a funnel that wanders over a forest keeps its funnel.
+            if (!TornadoGenesisGate.allows(level, origin)) {
+                return originalMax;
+            }
             double rateBoost = Mth.clamp(Config.TORNADO_CAPABLE_RATE_BOOST.get(), 0.0D, 4.0D);
-            double tornadoCapableChance = Mth.clamp((0.025D + outlook.tornadoProbability() * 0.34D + severity * 0.035D) * rateBoost, 0.0D, 0.34D);
+            // A front decides how much of this environment's instability can actually reach the ground as
+            // rotation: a warm front and the warm sector produce tornadoes, a cold front forces a line and
+            // a post-frontal air mass produces almost none.
+            // What the country itself is worth, on top of the air: the same storm is promoted more often in
+            // dryline country than over frozen ground. The base chance keeps its own ceiling, and the belt is
+            // allowed to lift that ceiling by a quarter rather than being open-ended, so an alley day is a
+            // busy day without the promotion rate being unbounded.
+            double tornadoOdds = BiomeClimateService.odds(level, origin).tornado();
+            // And the season on top of the country: the same plains afternoon is worth more in spring
+            // than in autumn, which is the whole reason a world has a calendar.
+            double seasonOdds = SeasonCalendarService.effect(level).tornado();
+            double tornadoCapableChance = Mth.clamp((0.025D + outlook.tornadoProbability() * 0.34D + severity * 0.035D)
+                    * rateBoost * outlook.frontalTornadoSpawnFactor() * tornadoOdds * seasonOdds, 0.0D, 0.42D);
             if (level.random.nextDouble() >= tornadoCapableChance) {
                 return originalMax;
             }
         }
-        int weightedStage = weightedNaturalTornadoMaxStage(level, severity, cape, shear, outlook.allowsViolentOutbreak());
+        int weightedStage = weightedNaturalTornadoMaxStage(level, severity, cape, shear,
+                outlook.allowsViolentOutbreak(), outlook.linearForcedConvection());
         return Mth.clamp(Math.max(weightedStage, storm.levelCurIntensityStage), originalMax >= StormObject.STATE_FORMING ? StormObject.STATE_FORMING : originalMax, StormObject.STATE_STAGE5);
     }
 
-    private static int weightedNaturalTornadoMaxStage(ServerLevel level, double severity, double cape, double shear, boolean violentOutbreak) {
+    /**
+     * The tornado intensity a naturally spawning storm may reach, drawn from a weighted distribution.
+     *
+     * <p>{@code linearForced} is the cold front's shape of convection: a squall line does spin up
+     * tornadoes, but they are the short-lived QLCS kind, so the violent end of the distribution is
+     * damped rather than the whole roll being scaled down. A line still produces tornadoes; it just
+     * almost never produces an EF4.
+     */
+    private static int weightedNaturalTornadoMaxStage(ServerLevel level, double severity, double cape, double shear,
+                                                      boolean violentOutbreak, boolean linearForced) {
         double formingWeight = 58.0D - severity * 12.0D;
         double ef1Weight = 43.0D + severity * 8.0D;
         double ef2Weight = 16.0D + severity * 14.0D + cape * 5.0D;
         double ef3Weight = 7.0D + severity * 10.0D + shear * 7.0D;
         double ef4Weight = 1.0D + severity * 3.2D + (severity >= 0.70D ? 1.4D : 0.0D);
         double ef5Weight = 0.20D + (violentOutbreak ? 1.15D : 0.0D) + Math.max(0.0D, severity - 0.82D) * 3.0D;
+        if (linearForced) {
+            ef3Weight *= 0.75D;
+            ef4Weight *= 0.40D;
+            ef5Weight *= 0.20D;
+        }
         double total = formingWeight + ef1Weight + ef2Weight + ef3Weight + ef4Weight + ef5Weight;
         double roll = level.random.nextDouble() * total;
         if ((roll -= formingWeight) < 0.0D) {
@@ -763,20 +917,27 @@ public final class DynamicStormController {
         if (!Config.WINDFIELD_ENABLED.get() || storm == null || storm.manager == null || storm.manager.getWorld() == null) {
             return originalMotion;
         }
-        TornadoWindField.WindSample sample = isDynamicVortex(storm)
+        boolean dynamicVortex = isDynamicVortex(storm);
+        // A hurricane is neither a tornado nor a supercell: it has its own broad wind field, and the
+        // 1.12.2 hurricane was a violent wind storm first and a rain system second. Standing in its eye
+        // wall has to move the player, so the shield storm is sampled through the vortex profile (its
+        // eyewall), pushed by the shared wind-push path, and only denied the tornado's core capture -
+        // there is nothing to be caught in, because the middle of this storm is calm.
+        boolean shieldStorm = !dynamicVortex && HurricaneShield.isShieldStorm(storm);
+        TornadoWindField.WindSample sample = dynamicVortex || shieldStorm
                 ? TornadoWindField.sample(storm, storm.manager.getWorld(), position)
                 : SupercellStructureService.sampleWind(storm, storm.manager.getWorld(), position);
-        if (!isDynamicVortex(storm) && !Config.SUPERCELL_STRUCTURE_RFD_STRAIGHT_LINE_WIND.get()) {
+        if (!dynamicVortex && !shieldStorm && !Config.SUPERCELL_STRUCTURE_RFD_STRAIGHT_LINE_WIND.get()) {
             return originalMotion;
         }
         if (sample.speedMph() <= 1.0D) {
             return originalMotion;
         }
-        return TornadoDamageModel.adjustEntityMotion(storm, sample, originalMotion, forPlayer, forCube, grabAdj);
+        return TornadoDamageModel.adjustEntityMotion(storm, sample, originalMotion, forPlayer, forCube, grabAdj, !shieldStorm);
     }
 
     public static boolean shouldTryRip(TornadoHelper helper, Level level, BlockPos pos) {
-        if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null) {
+        if (!Config.damageEnabled() || helper == null || helper.storm == null) {
             return false;
         }
         // A hurricane's Weather2 core is a rain engine, not a tornado: even if its progression
@@ -811,7 +972,7 @@ public final class DynamicStormController {
     }
 
     public static boolean canGrabBlock(TornadoHelper helper, Level level, BlockState state, BlockPos pos) {
-        if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null) {
+        if (!Config.damageEnabled() || helper == null || helper.storm == null) {
             return false;
         }
         if (shouldSuppressHelperFunnel(helper.storm)) {
@@ -856,7 +1017,7 @@ public final class DynamicStormController {
             if (surfaceDepth >= 4) {
                 requiredStage = Config.DAMAGE_HEAVY_SCOURING_STAGE.get();
             }
-            if (helper.storm.levelCurIntensityStage < requiredStage) {
+            if (scouringStage(helper.storm) < requiredStage) {
                 return false;
             }
         }
@@ -864,7 +1025,7 @@ public final class DynamicStormController {
     }
 
     public static boolean canGrabEntity(TornadoHelper helper, Entity entity) {
-        if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null) {
+        if (!Config.damageEnabled() || helper == null || helper.storm == null) {
             return false;
         }
         if (shouldSuppressHelperFunnel(helper.storm)) {
@@ -883,7 +1044,7 @@ public final class DynamicStormController {
     }
 
     public static boolean shouldForceGrabEntity(TornadoHelper helper, Entity entity) {
-        if (!Config.DAMAGE_ENABLED.get() || helper == null || helper.storm == null || entity == null) {
+        if (!Config.damageEnabled() || helper == null || helper.storm == null || entity == null) {
             return false;
         }
         if (shouldSuppressHelperFunnel(helper.storm)) {
@@ -938,19 +1099,101 @@ public final class DynamicStormController {
         if (storm == null) {
             return false;
         }
+        // The tropical check comes FIRST, before the waterspout tag, and that order is the whole point of this
+        // method. Weather2 sets attrib_waterSpout on water storms in its own waterspout pass, and this branch
+        // used to read that tag first - so a hurricane carrying it was treated as a tornado: a tornado's wind
+        // field, a tornado's damage path, and a tornado's funnel drawn down the middle of the hurricane. A
+        // storm that has climbed the tropical ladder is not a waterspout no matter what the tag says; a real
+        // waterspout never leaves the low rungs, so it is still caught by the tag below.
+        if (isTropicalSystem(storm) || AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+            return false;
+        }
         if (storm.attrib_waterSpout) {
             return true;
         }
-        if (isNativeCyclone(storm) || AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+        return storm.isTornadoFormingOrGreater();
+    }
+
+    /**
+     * Whether this storm is a tropical system - a hurricane or a cyclone - <b>regardless of its waterspout
+     * tag</b>.
+     *
+     * <p>That exemption is deliberate and it is the fix for a real bug. {@link #isNativeTropicalSystem} cannot
+     * answer this question, because it excludes waterspouts by the very flag that gets set on hurricanes: with
+     * the flag set it says a hurricane is not a tropical system, every consumer believes it, and the storm is
+     * handed to the tornado code - which is how a hurricane ended up wearing a funnel in its middle. The rung
+     * the storm has climbed is evidence the flag cannot touch: a waterspout is a funnel over water and never
+     * reaches the tropical storm rung, while everything on the ladder above it is a tropical system by
+     * definition, which is what 1.12.2's {@code StormType.WATER} meant.
+     */
+    public static boolean isTropicalSystem(StormObject storm) {
+        if (storm == null || storm.stormType != StormObject.TYPE_WATER) {
             return false;
         }
-        return storm.isTornadoFormingOrGreater();
+        StormSubtype subtype = stateFor(storm).subtype();
+        if (subtype == StormSubtype.HURRICANE || subtype == StormSubtype.CYCLONE) {
+            return true;
+        }
+        return storm.levelCurIntensityStage >= TropicalCyclone.STORM_STAGE;
+    }
+
+    /**
+     * Whether the southern hemisphere of this world is the cyclones' half.
+     *
+     * <p>Minecraft has no latitude, so there is no such thing as "the tropics" and no such thing as a
+     * hemisphere until a line is drawn. This draws it on the Z axis - south is +Z, which is the direction a
+     * compass reads as south - with the line's position configurable so a world whose warm water sits on one
+     * side can be lined up with it.
+     */
+    public static boolean southernHemisphere(double z) {
+        return z > Config.TROPICAL_HEMISPHERE_EQUATOR_Z.get();
+    }
+
+    /**
+     * Which tropical family a storm here may join: {@code TRUE} for an anticyclonic cyclone, {@code FALSE}
+     * for a cyclonic hurricane, or {@code null} when that family is switched off and the storm must stay a
+     * land storm.
+     *
+     * <p>With the split on, the hemisphere decides the family and the family's own switch decides whether it
+     * exists at all - so the northern half of a world with cyclones disabled simply has no tropical systems
+     * south of the line, instead of quietly forming hurricanes on both sides.
+     *
+     * <p>With the split off this falls back to the older behaviour, kept because a player who liked the old
+     * rule should not lose it: whichever families are enabled are chosen between at random, anywhere.
+     */
+    public static Boolean tropicalFamilyAt(Level level, double z) {
+        if (Config.TROPICAL_HEMISPHERE_SPLIT.get()) {
+            if (southernHemisphere(z)) {
+                return Config.CYCLONES_ENABLED.get() ? Boolean.TRUE : null;
+            }
+            return Config.HURRICANES_ENABLED.get() ? Boolean.FALSE : null;
+        }
+        if (Config.HURRICANES_ENABLED.get() && Config.CYCLONES_ENABLED.get()) {
+            return level != null && level.random.nextDouble() < Config.ANTI_CYCLONIC_TORNADO_CHANCE.get();
+        }
+        if (Config.HURRICANES_ENABLED.get()) {
+            return Boolean.FALSE;
+        }
+        return Config.CYCLONES_ENABLED.get() ? Boolean.TRUE : null;
     }
 
     public static boolean isNativeCyclone(StormObject storm) {
         return storm != null
                 && storm.stormType == StormObject.TYPE_WATER
                 && storm.levelCurIntensityStage >= StormObject.STATE_FORMING;
+    }
+
+    /**
+     * Any storm on the tropical ladder, a tropical disturbance upward - not just the ones that have
+     * already climbed to the forming rung or to hurricane strength. A water storm is a tropical system
+     * for its whole life, which is what 1.12.2's {@code StormType.WATER} meant; the names it wears over
+     * that life (disturbance, depression, tropical storm, hurricane) all hang off this.
+     */
+    public static boolean isNativeTropicalSystem(StormObject storm) {
+        return storm != null
+                && !storm.attrib_waterSpout
+                && storm.stormType == StormObject.TYPE_WATER
+                && TropicalCyclone.isTropical(storm.levelCurIntensityStage);
     }
 
     public static boolean isNativeTropicalCyclone(StormObject storm) {
@@ -1018,13 +1261,12 @@ public final class DynamicStormController {
         if (!force && !isOceanCycloneCandidate(level, storm)) {
             return false;
         }
-        storm.stormType = StormObject.TYPE_WATER;
-        storm.attrib_waterSpout = false;
-        storm.setPrecipitating(true);
-        storm.setCloudlessStorm(false);
-        storm.isGrowing = true;
-        storm.hasStormPeaked = false;
-        storm.canBeDeadly = true;
+        // One path into being a water storm, so a promoted cyclone and a hurricane that formed on
+        // its own are the same kind of storm wearing opposite spins. The cyclone command then only
+        // has to add the strength it was asked for.
+        if (!startTropicalStorm(level, storm, true)) {
+            return false;
+        }
 
         int requestedStage = cycloneStageForWind(targetWindMph);
         int rolledMax = storm.rollDiceOnMaxIntensity();
@@ -1044,7 +1286,6 @@ public final class DynamicStormController {
         if (Math.abs(storm.spinSpeed) < 0.02D) {
             storm.spinSpeed = 0.035D;
         }
-        stateFor(storm).setSubtype(isNativeHurricane(storm) ? StormSubtype.HURRICANE : StormSubtype.CYCLONE);
         if (storm.manager instanceof WeatherManagerServer manager) {
             manager.syncStormUpdate(storm);
         }
@@ -1087,7 +1328,7 @@ public final class DynamicStormController {
         if (storm == null || !Config.TORNADO_WIND_SPEED_SPIN_ENABLED.get() || !storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout || layerCount <= 1) {
             return 0.0F;
         }
-        float fraction = Mth.clamp(layerIndex / (float) (layerCount - 1), 0.0F, 1.0F);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         float layerScale = Mth.lerp(fraction, 0.65F, 1.0F);
         float baseline = Math.max(0.0F, Config.TORNADO_WIND_SPEED_SPIN_MIN.get().floatValue());
         DynamicStormState state = stateFor(storm);
@@ -1147,6 +1388,22 @@ public final class DynamicStormController {
     }
 
     /**
+     * World Y of the funnel's top (cloud-base) anchor, or NaN when no funnel exists yet.
+     * Together with the ground this gives the funnel's real world height, so debris-cloud
+     * features can be placed as a FRACTION of the funnel instead of absolute block heights
+     * - a wedge's dust climbs hundreds of blocks while a rope's climbs tens, which is what
+     * keeps a big storm's debris cloud from reading as a flat disc under a tall funnel.
+     */
+    public static double funnelTopWorldY(StormObject storm) {
+        if (storm == null) {
+            return Double.NaN;
+        }
+        TornadoFunnelSimple funnel = storm.getTornadoFunnelSimple();
+        Vec3 top = funnel == null ? null : funnel.getPosTop();
+        return top == null ? Double.NaN : top.y;
+    }
+
+    /**
      * Center line of the funnel at a given height fraction, read from Weather2's own rendered
      * layers (interpolated between the two nearest ones) so anything anchored to the funnel
      * stays on it even when the funnel leans or bends away from the storm coordinate.
@@ -1196,6 +1453,25 @@ public final class DynamicStormController {
         return Math.max(3.0D, baseRadiusForWind(storm) * 0.55D);
     }
 
+    /**
+     * The storm's precipitation extent in blocks - how big it actually looks in the sky, by the same rule the
+     * volumetric precipitation renderer draws with.
+     *
+     * <p>Exists so the radar echoes a storm of the size the player can see. The radar used to size its returns
+     * from the tornado's damage-path width on a fixed base, which made every storm roughly the same size and
+     * made a violent tornado's storm look broader than a large storm with a weak one.
+     */
+    public static double stormPrecipRadius(StormObject storm) {
+        if (storm == null) {
+            return 56.0D;
+        }
+        double size = Math.max(Math.max(storm.getSize(), storm.size), storm.maxSize * 0.55D);
+        if (isDynamicVortex(storm)) {
+            size = Math.max(size, stateFor(storm).damagePathWidth() * 1.4D);
+        }
+        return Mth.clamp(size * 1.25D, 56.0D, 360.0D);
+    }
+
     public static Vec3 satelliteCenter(StormObject storm, DynamicStormState.TornadoCirculationState satellite, double y) {
         return satellite.center(storm.pos, y);
     }
@@ -1234,20 +1510,207 @@ public final class DynamicStormController {
     }
 
     private static void applyNativeCycloneProgression(ServerLevel level, StormObject storm) {
-        if (!Config.CYCLONES_ENABLED.get() || storm == null || storm.pos == null) {
+        if (storm == null || storm.pos == null) {
             return;
         }
-        if (isNativeCyclone(storm) || storm.stormType == StormObject.TYPE_WATER) {
+        // A water storm is a tropical system for its whole life. Its subtype is set once, at
+        // genesis, and only ever refreshed - the ladder name it wears (disturbance, depression,
+        // tropical storm, hurricane) is read off its stage by TropicalCyclone, so it does not need
+        // to be re-derived here.
+        if (storm.stormType == StormObject.TYPE_WATER) {
             storm.attrib_waterSpout = false;
+            DynamicStormState state = stateFor(storm);
             if (storm.levelCurIntensityStage >= StormObject.STATE_FORMING) {
-                stateFor(storm).setSubtype(isNativeHurricane(storm) ? StormSubtype.HURRICANE : StormSubtype.CYCLONE);
+                StormSubtype expected = state.isAntiCyclonic() ? StormSubtype.CYCLONE : StormSubtype.HURRICANE;
+                if (state.subtype() != expected) {
+                    state.setSubtype(expected);
+                }
             }
             return;
         }
-        if (isOceanCycloneCandidate(level, storm)) {
+        if (Config.CYCLONES_ENABLED.get() && isOceanCycloneCandidate(level, storm)) {
             double targetWind = Math.max(74.0D, TornadoWindField.maxWindMph(storm) * 0.42D);
             promoteNativeCyclone(level, storm, false, targetWind);
+            return;
         }
+        if (Config.HURRICANES_ENABLED.get()) {
+            maybeBeginTropicalGenesis(level, storm);
+        }
+    }
+
+    /**
+     * The 1.12.2 hurricane's way in: a storm sitting over warm ocean in the tropical window can
+     * become a water storm and thereafter live on the tropical ladder. Weather2 1.12.2 decided this
+     * once, at storm genesis, from the biome underneath - which meant a hurricane could never form
+     * anywhere a player could watch it happen, and never over a warm sea the storm had drifted onto.
+     * This decides it per attempt instead, so the same thing 1.12.2 did is available to storms that
+     * reach warm water, and the storm visibly changes character rather than being born decided.
+     */
+    private static void maybeBeginTropicalGenesis(ServerLevel level, StormObject storm) {
+        if (storm.stormType == StormObject.TYPE_WATER
+                || storm.attrib_waterSpout
+                || storm.weatherMachineControlled
+                || storm.isPlayerControlled()
+                || storm.isPet()
+                || storm.isDead
+                || AddonWeatherEventService.isHurricaneHelperStorm(storm)
+                || AddonWeatherEventService.isSquallLineHelperStorm(storm)) {
+            return;
+        }
+        // Below a thunderstorm there is nothing to organize; past the forming stage the storm has
+        // already committed to being a land storm, and a tornado that is already on the ground is
+        // not going to turn into a hurricane.
+        if (storm.levelCurIntensityStage < StormObject.STATE_THUNDER
+                || storm.levelCurIntensityStage > StormObject.STATE_FORMING
+                || storm.isTornadoFormingOrGreater()) {
+            return;
+        }
+        if (countNativeTropicalStorms(level) >= Config.HURRICANE_MAX_ACTIVE.get()) {
+            return;
+        }
+        if (!DailySpcOutlookService.hurricaneWindow(level, BlockPos.containing(storm.pos))) {
+            return;
+        }
+        if (!isOverWaterOrOcean(level, storm.pos.x, storm.pos.z)) {
+            return;
+        }
+        // Which family this water may grow belongs to is decided before the roll, not after it: a storm in a
+        // hemisphere whose family is switched off must not spend the chance and then produce nothing.
+        Boolean family = tropicalFamilyAt(level, storm.pos.z);
+        if (family == null) {
+            return;
+        }
+        DailySpcOutlook outlook = DailySpcOutlookService.current(level, BlockPos.containing(storm.pos));
+        double chance = Config.naturalSpawnChance(
+                Config.HURRICANE_SPAWN_CHANCE.get() * Math.max(0.10D, outlook.hurricaneSpawnMultiplier())
+                        * BiomeClimateService.odds(level, storm.pos).hurricane());
+        if (level.random.nextDouble() >= chance) {
+            return;
+        }
+        startTropicalStorm(level, storm, family);
+    }
+
+    /**
+     * Turns a storm into a tropical system. Everything downstream - the ladder name, the category,
+     * the wind profile, radar, warnings - reads the storm's own type and stage from here on, so this
+     * only has to establish the storm as a water storm and give it the room a hurricane needs.
+     *
+     * @param antiCyclonic the anticyclonic sibling: same ladder, opposite spin, named a cyclone.
+     */
+    public static boolean startTropicalStorm(ServerLevel level, StormObject storm, boolean antiCyclonic) {
+        if (level == null || storm == null || storm.pos == null) {
+            return false;
+        }
+        storm.stormType = StormObject.TYPE_WATER;
+        storm.attrib_waterSpout = false;
+        storm.setPrecipitating(true);
+        storm.setCloudlessStorm(false);
+        // A tropical system is one of this mod's own storms too, so whether it may be promoted into a deadly
+        // one is the air's question like everywhere else: a hurricane born under a capped sky is still the
+        // storm its own ladder makes it, it is simply not handed Weather2's deadly promotion on top.
+        storm.canBeDeadly = AddonWeatherEventService.deadlyAirSupports(level, storm.pos);
+        storm.isGrowing = true;
+        storm.hasStormPeaked = false;
+        storm.tempAngleFormingTornado = 0.0F;
+        storm.angleMovementTornadoOverride = 0.0F;
+        storm.angleIsOverridden = false;
+
+        // A hurricane's shield is twice a supercell's (1.12.2 gave water storms three times the base
+        // size a land storm got, against one and a half), so the storm is grown into that footprint
+        // as it climbs. The floor is a tropical storm's size, not a hurricane's: this is genesis.
+        double shield = Config.HURRICANE_SHIELD_SIZE_MULTIPLIER.get();
+        int sizeFloor = Mth.clamp((int) Math.round(220.0D * shield), 220, 1400);
+        int maxSizeFloor = Mth.clamp((int) Math.round(360.0D * shield), 320, 2000);
+        storm.size = Math.max(storm.size, sizeFloor);
+        storm.maxSize = Math.max(storm.maxSize, maxSizeFloor);
+        storm.levelStormIntensityMax = Math.max(storm.levelStormIntensityMax, StormObject.STATE_STAGE5);
+        storm.maxIntensityStage = Math.max(storm.maxIntensityStage, StormObject.STATE_STAGE5);
+        storm.levelCurStagesIntensity = Math.max(storm.levelCurStagesIntensity, 0.30F);
+        storm.levelWater = Math.max(storm.levelWater, Math.max(160, storm.levelWaterStartRaining * 4));
+        storm.levelWindMomentum = Math.max(storm.levelWindMomentum, 0.9F);
+
+        DynamicStormState state = stateFor(storm);
+        state.setAntiCyclonic(antiCyclonic);
+        state.setSubtype(antiCyclonic ? StormSubtype.CYCLONE : StormSubtype.HURRICANE);
+        applyRotationDirection(level, storm, state);
+        if (storm.manager instanceof WeatherManagerServer manager) {
+            manager.syncStormUpdate(storm);
+        }
+        ExpandedWeather2Dynamics.LOGGER.info("Storm {} began tropical genesis over warm ocean: {}", storm.ID,
+                TropicalCyclone.label(storm.ID, storm.levelCurIntensityStage,
+                        TornadoWindField.maxWindMph(storm), antiCyclonic));
+        return true;
+    }
+
+    /**
+     * Clears a stray waterspout tag on a tropical system, on whichever side is ticking it.
+     *
+     * <p>Weather2 sets {@code attrib_waterSpout} from its own waterspout pass, and the value it settles on for
+     * a hurricane is not ours to trust. The server already clears it every tick for any water storm, but the
+     * flag is synced, so a tag set after that clear - or carried across from a save - puts a client into a
+     * state where its own copy says "waterspout" and every classification that reads the flag follows it. This
+     * is the client half of that clear: a tropical system is never a waterspout, and the tag says otherwise
+     * only because nobody asked it not to.
+     */
+    private static void clearStrayWaterspoutTag(StormObject storm) {
+        if (storm != null && storm.attrib_waterSpout && isTropicalSystem(storm)) {
+            storm.attrib_waterSpout = false;
+        }
+    }
+
+    /** How many storms are currently tropical systems at or past hurricane strength. */
+    /**
+     * How many of the mod's own storms are already going near a position: what the simple settings' limit is
+     * counted against.
+     *
+     * <p>Deliberately counts storms that have committed - a supercell that is tornadic or is at least a
+     * thunderstorm of the mod's own making - rather than every Weather2 storm entity in the world, because the
+     * modest rain showers Weather2 spawns on its own are not what a player means by "too many storms". Only
+     * storms within the configured ring count, so weather in another biome does not suppress the one forming
+     * overhead, and helper storms belonging to a squall line or a hurricane are skipped because they are parts
+     * of one event rather than separate ones.
+     */
+    private static int countPromotedStormsNear(ServerLevel level, Vec3 near) {
+        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
+        if (manager == null || near == null) {
+            return 0;
+        }
+        double range = Config.stormLimitRangeBlocks();
+        double rangeSqr = range * range;
+        int count = 0;
+        for (WeatherObject object : manager.getStormObjects()) {
+            if (!(object instanceof StormObject candidate) || candidate.pos == null || candidate.isDead) {
+                continue;
+            }
+            if (AddonWeatherEventService.isSquallLineHelperStorm(candidate)
+                    || AddonWeatherEventService.isHurricaneHelperStorm(candidate)) {
+                continue;
+            }
+            if (candidate.levelCurIntensityStage < StormObject.STATE_THUNDER && !isDynamicVortex(candidate)) {
+                continue;
+            }
+            if (candidate.pos.distanceToSqr(near) > rangeSqr) {
+                continue;
+            }
+            count++;
+        }
+        return count;
+    }
+
+    private static int countNativeTropicalStorms(ServerLevel level) {
+        WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
+        if (manager == null) {
+            return 0;
+        }
+        int count = 0;
+        for (WeatherObject object : manager.getStormObjects()) {
+            if (object instanceof StormObject candidate
+                    && candidate.stormType == StormObject.TYPE_WATER
+                    && candidate.levelCurIntensityStage >= TropicalCyclone.HURRICANE_STAGE) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static boolean isOceanCycloneCandidate(ServerLevel level, StormObject storm) {
@@ -1259,6 +1722,12 @@ public final class DynamicStormController {
                 || storm.isPet()
                 || AddonWeatherEventService.isSquallLineHelperStorm(storm)
                 || AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+            return false;
+        }
+        // With the split on, the northern half never promotes a storm to a cyclone: the two families belong to
+        // opposite hemispheres, and the storm that would have been promoted here goes on to become a hurricane
+        // through the ordinary genesis path instead if hurricanes are enabled.
+        if (Config.TROPICAL_HEMISPHERE_SPLIT.get() && !southernHemisphere(storm.pos.z)) {
             return false;
         }
         if (storm.stormType == StormObject.TYPE_WATER) {
@@ -1291,8 +1760,15 @@ public final class DynamicStormController {
     private static void updateSubVortices(StormObject storm, DynamicStormState state) {
         int effectiveMinStage = Math.max(Config.MULTIVORTEX_MIN_STAGE.get(), StormObject.STATE_STAGE2);
         int effectiveMaxCount = Math.min(Math.max(0, Config.MULTIVORTEX_MAX_COUNT.get()), 10);
-        if (!Config.MULTIVORTEX_ENABLED.get() || storm.levelCurIntensityStage < effectiveMinStage || !isDynamicVortex(storm) || effectiveMaxCount <= 0) {
-            state.updateSubVortices(storm.manager.getWorld().getGameTime(), 0, baseRadiusForWind(storm), storm.levelCurIntensityStage, storm.levelCurStagesIntensity);
+        boolean episodePossible = Config.MULTIVORTEX_ENABLED.get() && isDynamicVortex(storm) && effectiveMaxCount > 0;
+        if (!episodePossible || storm.levelCurIntensityStage < effectiveMinStage) {
+            // The 5th argument holds an already-running episode through a stage dip: Weather2's
+            // stage ladder oscillates with intensity, and without the hold a live episode was torn
+            // down the first time the stage breathed below the minimum - for a ground swarm that
+            // meant the whole tornado vanishing, since its faint parent rope is drawn culled by
+            // design and the vortices were the only visible part. The stage gate still prevents
+            // new episodes from starting while the storm is below it.
+            state.updateSubVortices(storm.manager.getWorld().getGameTime(), 0, baseRadiusForWind(storm), storm.levelCurIntensityStage, storm.levelCurStagesIntensity, episodePossible);
             return;
         }
         int stageOverMinimum = Math.max(0, storm.levelCurIntensityStage - effectiveMinStage);
@@ -1304,7 +1780,9 @@ public final class DynamicStormController {
         if (storm.levelCurStagesIntensity > 0.78F) {
             desired += 2;
         }
-        if (state.wedgeMorphologyActive()) {
+        if (state.wideTornado()) {
+            // A big tornado is a big deal whatever shape it took; this used to ask only about wedges, which
+            // would have made an identically sized cone read two stages weaker.
             desired += 2;
         }
         if (maxWind >= 190.0D) {
@@ -1314,13 +1792,21 @@ public final class DynamicStormController {
             desired++;
         }
         desired = Mth.clamp(desired, 0, effectiveMaxCount);
-        state.updateSubVortices(storm.manager.getWorld().getGameTime(), desired, baseRadiusForWind(storm), storm.levelCurIntensityStage, storm.levelCurStagesIntensity);
+        state.updateSubVortices(storm.manager.getWorld().getGameTime(), desired, baseRadiusForWind(storm), storm.levelCurIntensityStage, storm.levelCurStagesIntensity, false);
     }
 
     private static void updateHorizontalVortices(StormObject storm, DynamicStormState state) {
         int effectiveMaxCount = Math.min(Math.max(0, Config.HORIZONTAL_VORTICES_MAX_COUNT.get()), 10);
         int effectiveMinStage = Math.max(Config.HORIZONTAL_VORTICES_MIN_STAGE.get(), StormObject.STATE_STAGE1);
         if (!Config.HORIZONTAL_VORTICES_ENABLED.get() || storm.levelCurIntensityStage < effectiveMinStage || !isDynamicVortex(storm) || effectiveMaxCount <= 0) {
+            state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), 0, funnelWallRadiusAt(storm, 0.0F), funnelWallRadiusAt(storm, 1.0F), false);
+            return;
+        }
+        // Not every tornado grows them: whether this storm is one of the carriers is rolled here, on
+        // the first tick it is strong enough to have them, and held for the storm's life. The roll
+        // must happen after the eligibility gate above, so a storm that never reaches the stage
+        // never spends its roll.
+        if (!state.horizontalVorticesAllowed(storm.levelCurIntensityStage, storm.levelCurStagesIntensity)) {
             state.updateHorizontalVortices(storm.manager.getWorld().getGameTime(), 0, funnelWallRadiusAt(storm, 0.0F), funnelWallRadiusAt(storm, 1.0F), false);
             return;
         }
@@ -1338,7 +1824,7 @@ public final class DynamicStormController {
         if (state.multiVortexVisualActive()) {
             desired += Math.min(3, Math.max(1, state.subVortices().size() / 3));
         }
-        if (state.wedgeMorphologyActive()) {
+        if (state.wideTornado()) {
             desired++;
         }
         desired = Mth.clamp(desired, 0, effectiveMaxCount);
@@ -1479,7 +1965,11 @@ public final class DynamicStormController {
         if (gameTime % interval != 0L || !hasSyncableAddonState(storm)) {
             return;
         }
-        NetworkSafety.sendToPlayersNear(level, storm.pos.x, storm.pos.y, storm.pos.z, Config.MULTIPLAYER_SYNC_RANGE_BLOCKS.get(), new StormStateSyncPayload(storm.ID, state.save()));
+        // The same distance the storm box was widened to, so a funnel out over LOD-only terrain reaches the
+        // client that can see it with its real circulation instead of its default sliver.
+        NetworkSafety.sendToPlayersNear(level, storm.pos.x, storm.pos.y, storm.pos.z,
+                LodStormEnvelope.syncRange(Config.MULTIPLAYER_SYNC_RANGE_BLOCKS.get()),
+                new StormStateSyncPayload(storm.ID, state.save()));
     }
 
     /**
@@ -1499,7 +1989,8 @@ public final class DynamicStormController {
      * on the distance- and interval-gated {@link #syncAddonState} schedule.
      *
      * <p>That schedule only fires on every {@code multiplayer.stateSyncIntervalTicks} boundary and
-     * only for storms currently inside {@code multiplayer.syncRangeBlocks}, so a player who has just
+     * only for storms currently inside {@code multiplayer.syncRangeBlocks} (widened, with the LOD compat on,
+     * to whatever distance the storm box was widened to), so a player who has just
      * logged in renders whatever default the client holds until the next boundary: a mature wedge as
      * a sliver, no satellites, no sub-vortices, no horizontal vortices, and its funnel replaying its
      * birth ramp. The server state is correct the whole time - the client simply has not been handed
@@ -1517,7 +2008,7 @@ public final class DynamicStormController {
         if (manager == null) {
             return;
         }
-        double range = Config.MULTIPLAYER_SYNC_RANGE_BLOCKS.get();
+        double range = LodStormEnvelope.syncRange(Config.MULTIPLAYER_SYNC_RANGE_BLOCKS.get());
         double rangeSqr = range * range;
         int pushed = 0;
         for (WeatherObject object : new ArrayList<>(manager.getStormObjects())) {
@@ -1554,6 +2045,9 @@ public final class DynamicStormController {
         }
 
         double score = environmentScore(level, storm);
+        if (tryStrengthen(storm, state, score, gameTime)) {
+            return;
+        }
         if (score >= Config.ENVIRONMENT_REINTENSIFY_THRESHOLD.get() && storm.levelCurIntensityStage < Math.min(storm.maxIntensityStage, StormObject.STATE_STAGE5)) {
             storm.hasStormPeaked = false;
             storm.levelCurStagesIntensity = Math.min(1.05F, storm.levelCurStagesIntensity + 0.22F);
@@ -1568,6 +2062,53 @@ public final class DynamicStormController {
                 state.markIntensityChanged(gameTime, false);
             }
         }
+    }
+
+    /**
+     * Lets a tornado over-perform the intensity ceiling it rolled at birth.
+     *
+     * <p>The ceiling is what Weather2 rolls at genesis - the thing that makes EF0s common and EF5s rare - and
+     * it is a <em>forecast</em>, made before the storm has finished organizing in air nobody has measured
+     * yet. Two consequences followed from treating it as final. A tornado that rolled low kept that ceiling
+     * for its whole life no matter what it moved into, and a tornado that had already reached its own ceiling
+     * could only ever weaken: both branches of the intensity logic below are gated on
+     * {@code stage < maxIntensityStage}, so for that storm the {@code >=} branch was simply unreachable.
+     *
+     * <p>This is the missing third case. A storm already <em>at</em> its ceiling, in air scoring above the
+     * strengthening threshold, earns one more rung - up to the top of the ladder, and at most the configured
+     * number of rungs in its life. It is deliberately scarce three times over: the score has to beat a
+     * threshold set above the ordinary reintensify one, the ordinary 20-second intensity cooldown still
+     * applies because this runs inside it, and the allowance is persisted per storm so a reload cannot
+     * refill it.
+     *
+     * <p>Raising the ceiling is not the same as reaching it. The next scan's ordinary reintensify path still
+     * has to fill the rung's intensity and call {@code stageNext}, so a tornado grows over minutes with the
+     * wind, the width and the scouring all following the stage they always follow - which is what makes this
+     * read as a storm strengthening rather than as a number changing.
+     */
+    private static boolean tryStrengthen(StormObject storm, DynamicStormState state, double score, long gameTime) {
+        if (!Config.TORNADO_STRENGTHENING_ENABLED.get()) {
+            return false;
+        }
+        int ceiling = Math.min(storm.maxIntensityStage, StormObject.STATE_STAGE5);
+        if (storm.levelCurIntensityStage < ceiling || ceiling >= StormObject.STATE_STAGE5) {
+            return false;
+        }
+        if (state.strengtheningRungs() >= Config.TORNADO_STRENGTHENING_MAX_RUNGS.get()) {
+            return false;
+        }
+        if (score < Config.TORNADO_STRENGTHENING_SCORE.get()) {
+            return false;
+        }
+        storm.maxIntensityStage = Math.min(StormObject.STATE_STAGE5, ceiling + 1);
+        storm.levelStormIntensityMax = Math.max(storm.levelStormIntensityMax, storm.maxIntensityStage);
+        // Weather2 sets this once a storm has begun its decline and will not climb again while it is set; the
+        // whole point here is that this storm has not finished organizing.
+        storm.hasStormPeaked = false;
+        storm.levelCurStagesIntensity = Mth.clamp(storm.levelCurStagesIntensity + 0.18F, -1.0F, 1.0F);
+        state.noteStrengtheningRung();
+        state.markIntensityChanged(gameTime, true);
+        return true;
     }
 
     private static double environmentScore(ServerLevel level, StormObject storm) {

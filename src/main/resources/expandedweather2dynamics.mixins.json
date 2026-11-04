@@ -8,15 +8,23 @@
     "PacketNBTFromServerMixin",
     "StormObjectMixin",
     "TornadoFunnelSimpleMixin",
-    "TornadoHelperMixin"
+    "TornadoHelperMixin",
+    "WeatherManagerServerMixin"
   ],
   "client": [
     "BlockRenderDispatcherMixin",
+    "CameraDroneMixin",
+    "ClientLevelMixin",
+    "CrossedArmsItemLayerMixin",
     "EntityRotFXPauseMixin",
     "GameRendererMixin",
     "LevelRendererMixin",
+    "LightTextureMixin",
+    "LightningBoltRendererMixin",
+    "LightningBoltWeatherNewRendererMixin",
     "LivingEntityRendererMixin",
-    "StormObjectCloudDeckMixin"
+    "StormObjectCloudDeckMixin",
+    "Weather2SceneEnhancerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

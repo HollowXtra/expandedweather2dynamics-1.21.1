@@ -1,5 +1,6 @@
 package com.imbet.weather;
 
+import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
 public record WeatherPhysicalSnapshot(
@@ -19,7 +20,25 @@ public record WeatherPhysicalSnapshot(
         int stage,
         String stageLabel,
         boolean confirmedCirculation,
-        boolean active
+        boolean active,
+        // Whether this object is putting anything in the air for a radar to see. A cloud that has not started
+        // raining is not: a weather radar returns precipitation and the debris a circulation lifts, so a storm
+        // in its cloud stage is invisible on the scope until its first echo appears.
+        boolean precipitating,
+        // Supercell structure, straight from SupercellStructureService. It travels with the snapshot because
+        // the radar used to reconstruct a storm's hook echo from a procedural offset off the storm centre,
+        // which put the hook somewhere other than where the storm actually had it - and left the tornado
+        // marker sitting outside its own hook. stormRadius is the storm's precipitation extent in blocks and
+        // is 0 for anything that is a circulation inside a parent storm rather than a storm itself.
+        Vec3 structureMesocyclone,
+        Vec3 structureHook,
+        Vec3 structureHail,
+        float stormRadius,
+        float structureStrength,
+        float mesocycloneStrength,
+        float ffdStrength,
+        float hailStrength,
+        int structureMode
 ) {
     public WeatherPhysicalSnapshot {
         sourceKey = sourceKey == null || sourceKey.isBlank() ? "unknown:" + sourceId : sourceKey;
@@ -34,7 +53,22 @@ public record WeatherPhysicalSnapshot(
         coreRadius = finite(coreRadius);
         radiusOfMaxWind = finite(radiusOfMaxWind);
         stageLabel = stageLabel == null ? "" : stageLabel;
+        structureMesocyclone = safeVec(structureMesocyclone);
+        structureHook = safeVec(structureHook);
+        structureHail = safeVec(structureHail);
+        stormRadius = Math.max(0.0F, finite(stormRadius));
+        structureStrength = clamp01(structureStrength);
+        mesocycloneStrength = clamp01(mesocycloneStrength);
+        ffdStrength = clamp01(ffdStrength);
+        hailStrength = clamp01(hailStrength);
+        structureMode = Mth.clamp(structureMode, 0, 2);
     }
+
+    /** Whether this snapshot carries a real supercell structure worth shaping an echo around. */
+    public boolean hasStructure() {
+        return structureStrength > 0.05F && stormRadius > 1.0F;
+    }
+
 
     public boolean trackableVortex() {
         return active && confirmedCirculation && (subtype == StormSubtype.TORNADO
@@ -45,11 +79,38 @@ public record WeatherPhysicalSnapshot(
                 || subtype == StormSubtype.SNOW_DEVIL
                 || subtype == StormSubtype.FIRE_WHIRL
                 || subtype == StormSubtype.FLOATER_TORNADO
-                || subtype == StormSubtype.GUSTNADO);
+                || subtype == StormSubtype.GUSTNADO
+                || subtype == StormSubtype.FUNNEL_CLOUD);
+    }
+
+    /**
+     * Whether this is a circulation a chase can be a chase of: a tornado on the ground, in each of the forms
+     * the mod gives it - the supercell tornado, the satellite inside its parent, the floater and the
+     * landspout - and nothing else.
+     *
+     * <p>A chase log is narrower than a radar. Everything it prints about an encounter is a statement about a
+     * tornado: the class comes from the published EF bands, which rate tornadoes, and the line says a storm
+     * was chased. A dust devil, a snow devil, a fire whirl and a gustnado are circulations the mod draws and
+     * tracks, and none of them is a tornado or has an EF rating; a waterspout is the same circulation over
+     * water that damages nothing on land; and a funnel cloud puts nothing at all on the ground. Those are
+     * exactly the exclusions the spotter net and the storm camera already attribute to the chase log in prose
+     * while the log itself was reading the wider list of trackable vortices, which is how a fire whirl came to
+     * be filed as an EF1 chase.
+     */
+    public boolean chaseableVortex() {
+        return active && confirmedCirculation && (subtype == StormSubtype.TORNADO
+                || subtype == StormSubtype.SATELLITE_TORNADO
+                || subtype == StormSubtype.LANDSPOUT
+                || subtype == StormSubtype.FLOATER_TORNADO);
     }
 
     public TornadoWindField.WindSample sampleAt(Vec3 position) {
         if (position == null || !active) {
+            return TornadoWindField.WindSample.CALM;
+        }
+        // A funnel cloud is trackable and visible but has no surface circulation whatsoever, so
+        // every surface consumer of this snapshot reads calm - which is the type's whole definition.
+        if (subtype == StormSubtype.FUNNEL_CLOUD) {
             return TornadoWindField.WindSample.CALM;
         }
         if (subtype == StormSubtype.SQUALL_LINE) {
@@ -88,6 +149,10 @@ public record WeatherPhysicalSnapshot(
 
     private static float finite(float value) {
         return Float.isFinite(value) ? value : 0.0F;
+    }
+
+    private static float clamp01(float value) {
+        return Mth.clamp(finite(value), 0.0F, 1.0F);
     }
 
     private static double finite(double value) {

@@ -1,9 +1,12 @@
 package com.imbet.anemometer;
 
 import com.imbet.Config;
+import com.imbet.alert.SensorNetwork;
+import com.imbet.instruments.SensorSite;
 import com.imbet.registry.ModContent;
 import com.imbet.weather.AdvancementAwarder;
 import com.imbet.weather.TornadoWindField;
+import com.imbet.weather.WeatherInstruments;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
@@ -13,7 +16,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
-public class AnemometerBlockEntity extends BlockEntity {
+public class AnemometerBlockEntity extends BlockEntity implements SensorSite {
     private float angle;
     private float anglePrev;
     private float rotationalVelocity;
@@ -67,6 +70,27 @@ public class AnemometerBlockEntity extends BlockEntity {
     }
 
     public double getWindMph() {
+        return windMph;
+    }
+
+    /**
+     * The anemometer's contribution to a sensor network: the wind, in the mod's own words for it.
+     *
+     * <p>It reports the ladder rather than the number alone, because a network reading is read in a list and
+     * "24" says nothing while "24 mph strong wind" says what the line means.
+     */
+    @Override
+    public SensorNetwork.Kind sensorKind() {
+        return SensorNetwork.Kind.WIND;
+    }
+
+    @Override
+    public String sensorLine() {
+        return WeatherInstruments.mph(windMph) + ", " + com.imbet.instruments.HandheldInstrument.windBand(windMph);
+    }
+
+    @Override
+    public double sensorValue() {
         return windMph;
     }
 

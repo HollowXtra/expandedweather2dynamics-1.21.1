@@ -11,6 +11,10 @@
     { "name": "EyeIntensity", "type": "float", "count": 1, "values": [ 0.0 ] },
     { "name": "WindDirection", "type": "float", "count": 2, "values": [ 1.0, 0.0 ] },
     { "name": "EyeClearRadius", "type": "float", "count": 1, "values": [ 0.34 ] },
-    { "name": "Opacity", "type": "float", "count": 1, "values": [ 0.72 ] }
+    { "name": "Opacity", "type": "float", "count": 1, "values": [ 0.72 ] },
+    { "name": "WhiteoutIntensity", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "VeilOnly", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "FunnelViolence", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "DebrisIntensity", "type": "float", "count": 1, "values": [ 1.0 ] }
   ]
 }

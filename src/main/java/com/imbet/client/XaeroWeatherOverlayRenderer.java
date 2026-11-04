@@ -5,6 +5,7 @@ import com.imbet.weather.AddonWeatherEvent;
 import com.imbet.weather.ClientAddonWeatherEventStore;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.DynamicStormState;
+import com.imbet.weather.StormStageLabel;
 import com.imbet.weather.StormSubtype;
 import com.imbet.weather.TornadoWindField;
 import com.imbet.radar.ClientRadarStore;
@@ -113,7 +114,9 @@ public final class XaeroWeatherOverlayRenderer {
             if (event == null || event.position() == null || event.position().distanceToSqr(playerPos) > rangeSqr) {
                 continue;
             }
-            if (event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT) {
+            // Funnel clouds are worth plotting: they are the one vortex on the map whose position is
+            // a genuine question, because it is in the air rather than marking ground damage.
+            if (event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT || event.type() == StormSubtype.FUNNEL_CLOUD) {
                 entries.add(Entry.addon(event));
             }
         }
@@ -290,9 +293,12 @@ public final class XaeroWeatherOverlayRenderer {
     }
 
     private static String stageLabel(StormObject storm) {
-        int stage = Math.max(0, storm.levelCurIntensityStage);
-        int maxStage = Math.max(0, storm.levelStormIntensityMax);
-        return maxStage > 0 ? "Stage " + stage + "/" + maxStage : "Stage " + stage;
+        // Weather2's raw rung is not a tornado scale (its rung 5 is tornado stage 1), so the label
+        // is built from the tornado's own stage, its genesis phase and its live EF instead. See
+        // StormStageLabel for why the old "5/8" read as a lie next to a 20 mph forming tornado.
+        DynamicStormState state = DynamicStormController.stateFor(storm);
+        long gameTime = Minecraft.getInstance().level == null ? Long.MIN_VALUE : Minecraft.getInstance().level.getGameTime();
+        return StormStageLabel.label(storm, state, TornadoWindField.maxWindMph(storm), gameTime);
     }
 
     private record Projection(double centerX, double centerZ, double pixelsPerBlock, boolean reflectedXaeroMap) {

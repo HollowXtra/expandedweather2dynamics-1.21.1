@@ -10,6 +10,9 @@ uniform vec2 WindDirection;
 uniform float EyeClearRadius;
 uniform float Opacity;
 uniform float WhiteoutIntensity;
+uniform float VeilOnly;
+uniform float FunnelViolence;
+uniform float DebrisIntensity;
 
 in vec2 texCoord0;
 in vec4 vertexColor;
@@ -46,6 +49,23 @@ float streakField(vec2 p, vec2 dir, float time, float core) {
     return stripe * (0.36 + pulse * 0.82) * outerGate;
 }
 
+// The dark solids in the dust: boards, sheet metal and whole sheets of roofing carried past the camera.
+// Shared by the veil and the inflow overlay because being inside the funnel is what produces them, not
+// whichever of the two paths happens to be drawing.
+//
+// Two details are load-bearing. The noise is sampled in the wind's own frame and squashed across it, so
+// every clump is a streak pointing the way the debris is travelling - scaling on the screen axes instead
+// would tilt the debris against the wind whenever the wind was not horizontal. And the threshold sits
+// high in the noise's distribution, whose top decile is above 0.80, with a narrow ramp: cut at 0.60 -
+// where it looks reasonable on paper - and the clumps merge into one connected mass over half the screen,
+// which is a second layer of dust rather than objects passing.
+float debrisSilhouette(vec2 p, vec2 dir, float violence, float debris, float time) {
+    vec2 clumpUv = vec2(dot(p, dir) * 2.4, dot(p, vec2(-dir.y, dir.x)) * 7.0);
+    clumpUv += vec2(time * (1.9 + violence * 4.4), time * 0.40);
+    float edge = 0.84 - violence * 0.06;
+    return smoothstep(edge, edge + 0.06, noise(clumpUv)) * (0.16 + violence * 0.62) * debris;
+}
+
 void main() {
     vec2 uv = texCoord0;
     vec2 centered = uv - vec2(0.5);
@@ -58,16 +78,59 @@ void main() {
     float core = clamp(CoreIntensity, 0.0, 1.0);
     float eye = clamp(EyeIntensity, 0.0, 1.0);
     float whiteout = clamp(WhiteoutIntensity, 0.0, 1.0);
-    float strength = clamp((path * 0.55 + core * 0.78 + whiteout * 0.42) * Opacity, 0.0, 1.0);
-    if (strength <= 0.01) {
-        discard;
-    }
 
     vec2 dir = WindDirection;
     if (length(dir) < 0.001) {
         dir = vec2(0.75, 0.42);
     }
     dir = normalize(dir);
+
+    if (VeilOnly > 0.5) {
+        // Whiteout veil. The player is inside the funnel, so this is the wall of dust rather than the
+        // low-level inflow stream: an opaque fill with three things riding on it, all scaled by how
+        // violent the funnel is, so an EF1 is murk you can half see through and an EF4 is a brownout.
+        // Nothing here uses the overlay's wall ring or eye - those belong to the inflow overlay, which
+        // stays a separate opt-in.
+        float violence = clamp(FunnelViolence, 0.0, 1.0);
+        float debris = clamp(DebrisIntensity, 0.0, 1.5);
+
+        float churn = noise(p * 7.0 + vec2(GameTime * 1.5, -GameTime * 0.95)) * 0.6
+                + noise(p * 19.0 + vec2(-GameTime * 2.7, GameTime * 1.8)) * 0.4;
+        float veilAlpha = clamp(whiteout * Opacity * (0.84 + churn * 0.16), 0.0, 0.97);
+        if (veilAlpha < 0.015) {
+            discard;
+        }
+        vec3 veilColor = mix(vec3(0.46, 0.45, 0.43), vec3(0.88, 0.87, 0.84), 0.45 + churn * 0.55);
+
+        // 1. Dust tearing past. Debris travels with the air, so these are the same lanes the inflow
+        // overlay uses, sped up and thinned: a few faint smears at low violence, a continuous rip at
+        // high. Bright, because lit dust against a darker core is what reads as speed.
+        float streakSpeed = 1.0 + violence * 3.0;
+        float streaks = streakField(p, dir, GameTime * streakSpeed, 0.30 + violence * 0.65)
+                * (0.20 + violence * 1.05) * debris;
+        veilColor += vec3(0.10, 0.10, 0.09) * streaks;
+
+        // 2. The solids carried through the veil. Darker than the dust around them, but never black - a
+        // hole in the veil would read as a rendering fault rather than as debris.
+        float silhouette = debrisSilhouette(p, dir, violence, debris, GameTime);
+        veilColor = mix(veilColor, vec3(0.17, 0.16, 0.15), clamp(silhouette, 0.0, 0.72));
+
+        // 3. A fine grain over the whole veil, drifting at speed, so it never reads as a flat fill.
+        float grit = noise(p * 44.0 + dir * GameTime * (4.0 + violence * 5.0));
+        veilColor += (grit - 0.5) * (0.05 + violence * 0.07) * debris;
+
+        // The streaks add on top of the churn, and unbounded they push the veil past pure white, which
+        // reads as a blown highlight rather than as lit dust. Held just under full so it stays dust.
+        veilColor = min(veilColor, vec3(0.95));
+
+        fragColor = vec4(veilColor, veilAlpha) * vertexColor * ColorModulator;
+        return;
+    }
+
+    float strength = clamp((path * 0.55 + core * 0.78 + whiteout * 0.42) * Opacity, 0.0, 1.0);
+    if (strength <= 0.01) {
+        discard;
+    }
 
     // Deep inside the core everything whooshes past faster and denser
     float whoosh = 1.0 + whiteout * 2.4;
@@ -97,6 +160,14 @@ void main() {
 
     vec3 color = dustColor * dust + streakColor * streaks + wallColor * spinWall + eyeColor;
     color = mix(color, whiteoutColor, whiteout * 0.88);
+    // The solids belong to being engulfed, not to the veil's own branch, so they are drawn here too when
+    // the player is deep inside - otherwise switching the inflow overlay on would be the one setting that
+    // silently removed the debris.
+    if (whiteout > 0.01) {
+        float solids = debrisSilhouette(p, dir, clamp(FunnelViolence, 0.0, 1.0),
+                clamp(DebrisIntensity, 0.0, 1.5), GameTime) * whiteout;
+        color = mix(color, vec3(0.17, 0.16, 0.15), clamp(solids, 0.0, 0.72));
+    }
     float alpha = clamp((dust * 0.72 + streaks * 0.58 + spinWall * 0.54 + eyeCenter * 0.10) * (1.0 + whiteout * 0.18), 0.0, 0.82 + whiteout * 0.17) * strength;
     alpha += eyeRing * strength * 0.16;
 

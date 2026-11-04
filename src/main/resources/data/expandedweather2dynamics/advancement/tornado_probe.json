@@ -1,0 +1,22 @@
+{
+  "parent": "expandedweather2dynamics:use_anemometer",
+  "display": {
+    "icon": {
+      "id": "expandedweather2dynamics:tornado_probe"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.tornado_probe.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.tornado_probe.description"
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

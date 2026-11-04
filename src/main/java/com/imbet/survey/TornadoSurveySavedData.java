@@ -71,6 +71,26 @@ public final class TornadoSurveySavedData extends SavedData {
         return Optional.ofNullable(best);
     }
 
+    /**
+     * The ground every recent storm's own track covered, for asking whether torn ground is damage.
+     *
+     * <p>Recent, not every track ever recorded: a village that a tornado went through a season ago would
+     * otherwise have its own streets counted as damage for the rest of the world's life, and the point of
+     * the question is what still needs putting back.
+     */
+    public TrackFootprint recentFootprint(int cellSize, long gameTime, long maxAgeTicks) {
+        TrackFootprint footprint = new TrackFootprint(cellSize);
+        for (TornadoTrack track : tracksByDisplayId.values()) {
+            if (track.points().isEmpty() || track.endTick() + maxAgeTicks < gameTime) {
+                continue;
+            }
+            for (TrackPoint point : track.points()) {
+                footprint.add(point.x(), point.z(), point.widthBlocks());
+            }
+        }
+        return footprint;
+    }
+
     public void recordMerge(String absorberSourceKey, String absorbedSourceKey) {
         TornadoTrack absorber = trackBySource(absorberSourceKey);
         TornadoTrack absorbed = trackBySource(absorbedSourceKey);

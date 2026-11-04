@@ -1,6 +1,5 @@
 package com.imbet.weather;
 
-import com.imbet.Config;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
@@ -10,38 +9,50 @@ import weather2.weathersystem.storm.StormObject;
 import weather2.weathersystem.storm.WeatherObject;
 
 /**
- * The live outlook: the day's issued forecast refined by what is actually out there.
+ * The outlook in force here: the current issuance, read against what is actually out there.
  *
- * <p>It works the way SPC works. Every source of risk - each storm, each eyewitness addon vortex -
- * proposes a category for the hazard it threatens, and a conditional intensity group; the category is
- * then expressed as the issued probability and CIG pair whose SPC decision-matrix conversion is that
- * same category, and the categorical risk is the strongest hazard. So the panel, the chat readout and
- * the redstone output all agree with the probability numbers shown beside them, instead of each
- * carrying its own hand-written mapping.
+ * <p>Every category and every issued number comes from the issuance and from nothing else. That is
+ * what makes it an outlook: SPC derives its categorical risk from probability forecasts of the three
+ * severe hazards, so the product forecasts the environment, and a tornado that deepens on the ground
+ * does not upgrade it. Observed severe weather is what watches, mesoscale discussions and warnings
+ * are for, and the addon keeps the same split - storms and addon events are counted and named here so
+ * the panel still says what is happening within range, but they can no longer raise a probability, a
+ * conditional intensity group or the category itself.
+ *
+ * <p>This used to be the other way round, with each storm proposing a category from its own intensity
+ * stage and each addon event proposing one from its own measured wind. The effect was that the scale
+ * lit up as a function of whatever had already spawned, which made the outlook a readout of the storms
+ * rather than a forecast of them, and let a single violent vortex push the day onto the extension
+ * tiers. Those tiers are still reachable; they are earned by the environment at issuance, through the
+ * extension CIG columns built from CAPE, shear and storm mode.
+ *
+ * <p>Because the issued numbers are the issuance's own probability and CIG cells, the SPC decision
+ * matrix converts them back to the same categories the panel lights, so a probability can never
+ * disagree with the category printed beside it.
  */
 public final class SpcOutlookService {
+    /** Forecaster's severe-wind criterion; the observational counterpart of the 58 mph report. */
+    private static final double SEVERE_WIND_MPH = 58.0D;
+
     private SpcOutlookService() {
     }
 
     public static Outlook compute(ServerLevel level, Vec3 origin, int rangeBlocks) {
         DailySpcOutlook daily = DailySpcOutlookService.current(level, BlockPos.containing(origin));
 
-        SpcRisk tornadoTier = daily.hazardRisk(SpcHazard.TORNADO);
-        SpcRisk windTier = daily.hazardRisk(SpcHazard.WIND);
-        SpcRisk hailTier = daily.hazardRisk(SpcHazard.HAIL);
-        double tornadoEstimate = daily.tornadoPercent();
-        double windEstimate = daily.windPercent();
-        double hailEstimate = daily.hailPercent();
-        int tornadoCig = daily.tornadoCig();
-        int windCig = daily.windCig();
-        int hailCig = daily.hailCig();
-        SpcRisk categoricalFloor = daily.risk();
-        String hazard = "Daily " + daily.risk().label() + " thermodynamics";
+        SpcRisk tornado = daily.hazardRisk(SpcHazard.TORNADO);
+        SpcRisk wind = daily.hazardRisk(SpcHazard.WIND);
+        SpcRisk hail = daily.hazardRisk(SpcHazard.HAIL);
+        // The issued category, widened to cover each hazard's own conversion. The matrix can
+        // legitimately place a hazard below the day's category when that hazard cannot express it
+        // alone - hail never reaches high risk - and the panel must never print a category weaker
+        // than one of the rows underneath it.
+        SpcRisk categorical = SpcRisk.max(daily.risk(), daily.categoricalFromProduct());
+
         int stormCount = 0;
         int severeCount = 0;
-        int tornadoCount = 0;
-        int squallLineCount = 0;
         double maxWindMph = 0.0D;
+        Observed strongest = null;
 
         WeatherManagerServer manager = ServerTickHandler.getWeatherManagerFor(level);
         if (manager != null) {
@@ -49,81 +60,29 @@ public final class SpcOutlookService {
                 if (!(object instanceof StormObject storm) || storm.pos == null || storm.isDead || storm.pos.distanceTo(origin) > rangeBlocks) {
                     continue;
                 }
-
                 DynamicStormState state = DynamicStormController.stateFor(storm);
                 if (state.isAbsorbedOrDecaying()) {
                     continue;
                 }
-                StormSubtype subtype = StormClassifier.classify(storm, state);
-                if (storm.levelCurIntensityStage >= StormObject.STATE_THUNDER || storm.isPrecipitating()) {
-                    stormCount++;
+                if (storm.levelCurIntensityStage < StormObject.STATE_THUNDER && !storm.isPrecipitating()) {
+                    continue;
                 }
+
+                StormSubtype subtype = StormClassifier.classify(storm, state);
+                stormCount++;
 
                 double stormWindMph = TornadoWindField.maxWindMph(storm);
                 maxWindMph = Math.max(maxWindMph, stormWindMph);
 
-                SpcRisk stormTornado = tornadoRisk(storm, state, subtype);
-                SpcRisk stormWind = windRisk(storm);
-                SpcRisk stormHail = hailRisk(storm);
-
-                if (subtype == StormSubtype.WATERSPOUT) {
-                    stormTornado = SpcRisk.cap(stormTornado, SpcRisk.MARGINAL);
-                }
-                if (subtype == StormSubtype.CYCLONE || subtype == StormSubtype.HURRICANE) {
-                    stormTornado = SpcRisk.NONE;
-                }
-
-                if (stormTornado.severity() > tornadoTier.severity()) {
-                    tornadoTier = stormTornado;
-                }
-                if (stormWind.severity() > windTier.severity()) {
-                    windTier = stormWind;
-                }
-                if (stormHail.severity() > hailTier.severity()) {
-                    hailTier = stormHail;
-                }
-                if (stormTornado.severity() > SpcRisk.NONE.severity()) {
-                    tornadoCig = Math.max(tornadoCig, SpcIntensity.tornadoCigForWind(stormWindMph));
-                    tornadoEstimate = Math.max(tornadoEstimate, tornadoPercentForStage(storm, state));
-                }
-                if (stormWind.severity() > SpcRisk.NONE.severity()) {
-                    windCig = Math.max(windCig, SpcIntensity.windCigForWind(stormWindMph));
-                    windEstimate = Math.max(windEstimate, windPercentForStage(storm));
-                }
-                if (stormHail.severity() > SpcRisk.NONE.severity()) {
-                    hailCig = Math.max(hailCig, SpcIntensity.hailCigForStage(storm.levelCurIntensityStage));
-                    hailEstimate = Math.max(hailEstimate, hailPercentForStage(storm));
-                }
-
-                if (stormTornado.severity() >= SpcRisk.SLIGHT.severity()) {
-                    tornadoCount++;
-                    hazard = state.satelliteTornadoes().isEmpty() ? "Tornado Potential" : "Tornado/Satellite Potential";
-                }
-                if (stormWind.severity() >= SpcRisk.SLIGHT.severity() || stormHail.severity() >= SpcRisk.SLIGHT.severity()) {
+                // Severe by observation, not by stage: a 58 mph measured wind or large hail is what a
+                // storm report would carry, and it is what the panel's severe counter means.
+                if (stormWindMph >= SEVERE_WIND_MPH || storm.levelCurIntensityStage >= StormObject.STATE_HAIL) {
                     severeCount++;
-                    if ("None".equals(hazard)) {
-                        hazard = stormWind.severity() >= stormHail.severity() ? "Damaging Wind" : "Hail";
-                    }
                 }
-                if (state.recentlyReintensified() && stormTornado.severity() >= SpcRisk.SLIGHT.severity()) {
-                    tornadoTier = SpcRisk.max(tornadoTier, bump(tornadoTier));
-                    tornadoEstimate = Math.max(tornadoEstimate, SpcHazard.TORNADO.lowestProbability() * 5.0D);
-                    hazard = "Reintensifying Tornado Potential";
-                }
-                if (Config.SUPERCELL_STRUCTURE_WALL_CLOUD_RISK_BOOST.get()
-                        && state.wallCloudPersistenceTicks() >= Config.SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_PERSISTENCE_TICKS.get()
-                        && state.wallCloudRotationStrength() >= 0.50F
-                        && subtype != StormSubtype.WATERSPOUT
-                        && subtype != StormSubtype.CYCLONE) {
-                    SpcRisk wallCloudRisk = state.wallCloudRotationStrength() >= 0.72F && storm.levelCurIntensityStage >= StormObject.STATE_HAIL
-                            ? SpcRisk.SLIGHT : SpcRisk.MARGINAL;
-                    tornadoTier = SpcRisk.max(tornadoTier, wallCloudRisk);
-                    categoricalFloor = SpcRisk.max(categoricalFloor, wallCloudRisk);
-                    tornadoEstimate = Math.max(tornadoEstimate,
-                            wallCloudRisk == SpcRisk.SLIGHT ? SpcHazard.TORNADO.probabilityAt(1) : SpcHazard.TORNADO.lowestProbability());
-                    if ("None".equals(hazard) || hazard.endsWith("Advisory")) {
-                        hazard = "Persistent Rotating Wall Cloud";
-                    }
+
+                Observed stormSignal = stormSignal(subtype, state, stormWindMph, storm.levelCurIntensityStage);
+                if (stormSignal != null && (strongest == null || stormSignal.rank() > strongest.rank())) {
+                    strongest = stormSignal;
                 }
             }
         }
@@ -132,251 +91,155 @@ public final class SpcOutlookService {
             if (event.position().distanceTo(origin) > rangeBlocks + event.radius()) {
                 continue;
             }
-            if (event.type() == StormSubtype.SQUALL_LINE) {
-                squallLineCount++;
-                SpcRisk lineRisk = squallLineWindRisk(event.maxWindMph());
-                windTier = SpcRisk.max(windTier, lineRisk);
-                windCig = Math.max(windCig, SpcIntensity.windCigForWind(event.maxWindMph()));
-                windEstimate = Math.max(windEstimate, event.maxWindMph() >= 58.0F ? 45.0D : 30.0D);
-                categoricalFloor = SpcRisk.max(categoricalFloor, lineRisk);
-                maxWindMph = Math.max(maxWindMph, event.maxWindMph());
-                hazard = "Organized Squall-Line Wind";
-                severeCount++;
-            } else if (event.type() == StormSubtype.HURRICANE) {
-                SpcRisk hurricaneRisk = hurricaneWindRisk(event.maxWindMph());
-                windTier = SpcRisk.max(windTier, hurricaneRisk);
-                windCig = Math.max(windCig, SpcIntensity.windCigForWind(event.maxWindMph()));
-                windEstimate = Math.max(windEstimate, event.maxWindMph() >= 96.0F ? 60.0D : 45.0D);
-                categoricalFloor = SpcRisk.max(categoricalFloor, hurricaneRisk);
-                maxWindMph = Math.max(maxWindMph, event.maxWindMph());
-                hazard = "Maritime Hurricane Wind";
-                severeCount++;
-            } else if (event.type() == StormSubtype.WILDFIRE || event.type() == StormSubtype.FIRE_WHIRL || event.type() == StormSubtype.FLAMMAGENITUS) {
-                SpcRisk fireRisk = fireRisk(event);
-                categoricalFloor = SpcRisk.max(categoricalFloor, fireRisk);
-                if (event.type() == StormSubtype.FIRE_WHIRL) {
-                    windTier = SpcRisk.max(windTier, fireRisk);
-                    windEstimate = Math.max(windEstimate, 45.0D);
-                    maxWindMph = Math.max(maxWindMph, event.maxWindMph());
+            maxWindMph = Math.max(maxWindMph, event.maxWindMph());
+            switch (event.type()) {
+                // The cyclone is the anticyclonic counterpart of the hurricane and the same class of
+                // system, so it counts here too; the original only named the hurricane.
+                case SQUALL_LINE, HURRICANE, CYCLONE, WILDFIRE, FIRE_WHIRL, FLAMMAGENITUS -> severeCount++;
+                default -> {
                 }
-                hazard = event.type() == StormSubtype.FIRE_WHIRL ? "Fire Whirl / Extreme Fire Weather"
-                        : event.type() == StormSubtype.FLAMMAGENITUS ? "Flammagenitus Fire-Plume Risk" : "Wildfire Spread Risk";
-                severeCount++;
-            } else if (event.type() == StormSubtype.FLOATER_TORNADO) {
-                SpcRisk floaterRisk = event.maxWindMph() >= 96.0F ? SpcRisk.SLIGHT : SpcRisk.MARGINAL;
-                tornadoTier = SpcRisk.max(tornadoTier, floaterRisk);
-                tornadoEstimate = Math.max(tornadoEstimate, floaterRisk == SpcRisk.SLIGHT ? SpcHazard.TORNADO.probabilityAt(1) : SpcHazard.TORNADO.lowestProbability());
-                categoricalFloor = SpcRisk.max(categoricalFloor, floaterRisk);
-                maxWindMph = Math.max(maxWindMph, event.maxWindMph());
-                hazard = "Elevated Floater Tornado";
-            } else if (event.type() == StormSubtype.LANDSPOUT || event.type() == StormSubtype.WATERSPOUT) {
-                tornadoTier = SpcRisk.max(tornadoTier, SpcRisk.MARGINAL);
-                tornadoEstimate = Math.max(tornadoEstimate, SpcHazard.TORNADO.lowestProbability());
-                categoricalFloor = SpcRisk.max(categoricalFloor, SpcRisk.MARGINAL);
-                hazard = event.type() == StormSubtype.LANDSPOUT ? "Landspout Advisory" : "Waterspout Advisory";
-            } else if (event.type() == StormSubtype.SNOW_DEVIL) {
-                categoricalFloor = SpcRisk.max(categoricalFloor, SpcRisk.MARGINAL);
-                hazard = "Rare Snow Devil Advisory";
-            } else if (event.type() == StormSubtype.DUST_DEVIL) {
-                categoricalFloor = SpcRisk.max(categoricalFloor, SpcRisk.MARGINAL);
-                hazard = "Dust Devil Advisory";
-            } else if (event.type() == StormSubtype.GUSTNADO) {
-                windTier = SpcRisk.max(windTier, SpcRisk.MARGINAL);
-                windEstimate = Math.max(windEstimate, SpcHazard.WIND.lowestProbability());
-                categoricalFloor = SpcRisk.max(categoricalFloor, SpcRisk.MARGINAL);
-                maxWindMph = Math.max(maxWindMph, event.maxWindMph());
-                hazard = "Gustnado Advisory";
+            }
+            // eventSignal is null for the types that are not a hazard of their own - a broad
+            // rotating storm event among them, which is a tropical system rather than a null signal.
+            Observed signal = eventSignal(event);
+            if (signal != null && (strongest == null || signal.rank() > strongest.rank())) {
+                strongest = signal;
             }
         }
 
-        if (stormCount >= 3 && severeCount > 0) {
-            categoricalFloor = SpcRisk.max(categoricalFloor, SpcRisk.SLIGHT);
-            windEstimate = Math.max(windEstimate, 15.0D);
-        }
-        if (stormCount >= 5 && severeCount >= 3) {
-            categoricalFloor = SpcRisk.max(categoricalFloor, SpcRisk.ENHANCED);
-            windTier = SpcRisk.max(windTier, SpcRisk.ENHANCED);
-            windEstimate = Math.max(windEstimate, 30.0D);
-        }
-        if (tornadoCount >= 2 && tornadoTier.severity() >= SpcRisk.ENHANCED.severity()) {
-            tornadoTier = SpcRisk.max(tornadoTier, SpcRisk.MODERATE);
-        }
-        if (squallLineCount > 0 && stormCount >= 3) {
-            windTier = SpcRisk.max(windTier, SpcRisk.ENHANCED);
-            windEstimate = Math.max(windEstimate, 30.0D);
-        }
-
-        // The published ladder stops at high risk. An environment observed past CIG 3 - a 200 mph
-        // tornado, a 130 mph derecho gust, a major hurricane - is off that ladder whatever the
-        // forecast said, so it carries its hazard onto the addon's extension tiers. This is the path
-        // that matters in practice: it is earned by a vortex that actually exists, so a violent
-        // tornado lights the top of the scale on the panel and the radar the moment it forms.
-        tornadoTier = SpcRisk.escalateObserved(tornadoTier, tornadoCig);
-        windTier = SpcRisk.escalateObserved(windTier, windCig);
-
-        int[] tornadoCell = SpcHazard.TORNADO.bestCellForTier(SpcRisk.cap(tornadoTier, SpcHazard.TORNADO.maxExpressible()), tornadoEstimate, tornadoCig);
-        int[] windCell = SpcHazard.WIND.bestCellForTier(SpcRisk.cap(windTier, SpcHazard.WIND.maxExpressible()), windEstimate, windCig);
-        int[] hailCell = SpcHazard.HAIL.bestCellForTier(SpcRisk.cap(hailTier, SpcHazard.HAIL.maxExpressible()), hailEstimate, hailCig);
-
-        SpcRisk tornado = SpcRisk.fromHazard(SpcHazard.TORNADO, tornadoCell[0], tornadoCell[1]);
-        SpcRisk wind = SpcRisk.fromHazard(SpcHazard.WIND, windCell[0], windCell[1]);
-        SpcRisk hail = SpcRisk.fromHazard(SpcHazard.HAIL, hailCell[0], hailCell[1]);
-        SpcRisk categorical = SpcRisk.max(categoricalFloor, SpcRisk.max(tornado, SpcRisk.max(wind, hail)));
+        // A thunderstorm area is still an outlook statement, so any storm in range at least says
+        // general thunder. It cannot lift the day above that on its own.
         if (stormCount > 0) {
             categorical = SpcRisk.max(categorical, SpcRisk.TSTM);
         }
 
+        String hazard = strongest != null ? strongest.text() : forecastHazardText(tornado, wind, hail);
+
         return new Outlook(categorical, tornado, wind, hail,
-                tornadoCell[0], windCell[0], hailCell[0],
-                tornadoCell[1], windCell[1], hailCell[1],
+                daily.tornadoPercent(), daily.windPercent(), daily.hailPercent(),
+                daily.tornadoCig(), daily.windCig(), daily.hailCig(),
                 daily.issuance(), hazard, stormCount, severeCount, maxWindMph);
     }
 
-    private static SpcRisk fireRisk(AddonWeatherEvent event) {
-        if (!Config.FIRE_WEATHER_RISK_ENABLED.get()) {
-            return SpcRisk.NONE;
+    /** The observed signal a storm in range presents, or null when it presents nothing worth naming. */
+    private static Observed stormSignal(StormSubtype subtype, DynamicStormState state, double windMph, int intensityStage) {
+        if (!state.satelliteTornadoes().isEmpty()) {
+            return Observed.SATELLITE_TORNADO;
         }
-        if (event.type() == StormSubtype.FIRE_WHIRL) {
-            return event.maxWindMph() >= 105.0F ? SpcRisk.MODERATE : event.maxWindMph() >= 82.0F ? SpcRisk.ENHANCED : SpcRisk.SLIGHT;
+        if (subtype == StormSubtype.TORNADO || subtype == StormSubtype.FLOATER_TORNADO) {
+            return Observed.TORNADO;
         }
-        if (event.type() == StormSubtype.FLAMMAGENITUS) {
-            return event.radius() >= 160.0F ? SpcRisk.ENHANCED : SpcRisk.SLIGHT;
+        if (subtype == StormSubtype.HURRICANE || subtype == StormSubtype.CYCLONE) {
+            return Observed.TROPICAL_CYCLONE;
         }
-        if (event.radius() >= 110.0F) {
-            return SpcRisk.MODERATE;
+        if (subtype == StormSubtype.LANDSPOUT) {
+            return Observed.LANDSPOUT;
         }
-        if (event.radius() >= 75.0F) {
-            return SpcRisk.ENHANCED;
+        if (subtype == StormSubtype.WATERSPOUT) {
+            return Observed.WATERSPOUT;
         }
-        if (event.radius() >= 45.0F) {
-            return SpcRisk.SLIGHT;
+        if (subtype == StormSubtype.GUSTNADO) {
+            return Observed.GUSTNADO;
         }
-        return SpcRisk.MARGINAL;
-    }
-
-    private static SpcRisk tornadoRisk(StormObject storm, DynamicStormState state, StormSubtype subtype) {
-        if (subtype != StormSubtype.TORNADO && state.satelliteTornadoes().isEmpty()) {
-            return SpcRisk.NONE;
+        if (subtype == StormSubtype.SQUALL_LINE) {
+            return Observed.SQUALL_LINE;
         }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE5) {
-            return SpcRisk.HIGH;
+        if (windMph >= SEVERE_WIND_MPH) {
+            return Observed.DAMAGING_WIND;
         }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE4) {
-            return SpcRisk.MODERATE;
+        if (intensityStage >= StormObject.STATE_HAIL) {
+            return Observed.LARGE_HAIL;
         }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE2 || !state.satelliteTornadoes().isEmpty()) {
-            return SpcRisk.ENHANCED;
-        }
-        return SpcRisk.SLIGHT;
-    }
-
-    /** The probability contour an observed tornado is behaving like, used to pick the issued cell. */
-    private static double tornadoPercentForStage(StormObject storm, DynamicStormState state) {
-        int stage = storm.levelCurIntensityStage;
-        if (stage >= StormObject.STATE_STAGE5) {
-            return 45.0D;
-        }
-        if (stage >= StormObject.STATE_STAGE4) {
-            return 30.0D;
-        }
-        if (stage >= StormObject.STATE_STAGE3) {
-            return 15.0D;
-        }
-        if (stage >= StormObject.STATE_STAGE2) {
-            return 10.0D;
-        }
-        return state.satelliteTornadoes().isEmpty() ? 5.0D : 10.0D;
-    }
-
-    private static SpcRisk windRisk(StormObject storm) {
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE5 || DynamicStormController.isNativeHurricane(storm)) {
-            return SpcRisk.HIGH;
-        }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE4 || DynamicStormController.isNativeTropicalCyclone(storm)) {
-            return SpcRisk.MODERATE;
-        }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE2) {
-            return SpcRisk.ENHANCED;
-        }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_HIGHWIND) {
-            return SpcRisk.SLIGHT;
-        }
-        return SpcRisk.NONE;
-    }
-
-    private static double windPercentForStage(StormObject storm) {
-        int stage = storm.levelCurIntensityStage;
-        if (stage >= StormObject.STATE_STAGE5 || DynamicStormController.isNativeHurricane(storm)) {
-            return 75.0D;
-        }
-        if (stage >= StormObject.STATE_STAGE4 || DynamicStormController.isNativeTropicalCyclone(storm)) {
-            return 60.0D;
-        }
-        if (stage >= StormObject.STATE_STAGE3) {
-            return 45.0D;
-        }
-        if (stage >= StormObject.STATE_STAGE2) {
-            return 30.0D;
-        }
-        return 15.0D;
-    }
-
-    private static SpcRisk hailRisk(StormObject storm) {
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE4) {
-            return SpcRisk.MODERATE;
-        }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE2) {
-            return SpcRisk.ENHANCED;
-        }
-        if (storm.levelCurIntensityStage >= StormObject.STATE_HAIL) {
-            return SpcRisk.SLIGHT;
-        }
-        return SpcRisk.NONE;
-    }
-
-    private static double hailPercentForStage(StormObject storm) {
-        int stage = storm.levelCurIntensityStage;
-        if (stage >= StormObject.STATE_STAGE4) {
-            return 45.0D;
-        }
-        if (stage >= StormObject.STATE_STAGE2) {
-            return 30.0D;
-        }
-        return 15.0D;
-    }
-
-    private static SpcRisk squallLineWindRisk(float maxWindMph) {
-        if (maxWindMph >= 90.0F) {
-            return SpcRisk.HIGH;
-        }
-        if (maxWindMph >= 75.0F) {
-            return SpcRisk.MODERATE;
-        }
-        if (maxWindMph >= 58.0F) {
-            return SpcRisk.ENHANCED;
-        }
-        return SpcRisk.SLIGHT;
-    }
-
-    private static SpcRisk hurricaneWindRisk(float maxWindMph) {
-        if (maxWindMph >= 130.0F) {
-            return SpcRisk.HIGH;
-        }
-        if (maxWindMph >= 96.0F) {
-            return SpcRisk.MODERATE;
-        }
-        return SpcRisk.ENHANCED;
-    }
-
-    /** A one-step escalation within the published ladder; the extension tiers are earned, not bumped. */
-    private static SpcRisk bump(SpcRisk risk) {
-        return SpcRisk.cap(SpcRisk.fromSeverity(risk.severity() + 1), SpcRisk.HIGH);
+        return Observed.THUNDERSTORMS;
     }
 
     /**
-     * The live outlook. Each hazard carries the probability level and conditional intensity group
-     * that were issued for it, and every category here is the SPC decision-matrix conversion of
-     * exactly those numbers.
+     * The observed signal an addon event presents, or null for a type that is not a hazard of its own.
+     *
+     * <p>Every type named here is a hazard that would earn its own alert; none of them can move the
+     * outlook's numbers any more. The severe counter is incremented separately at the call site, and
+     * only for the synoptic types, which is where it has always counted.
+     */
+    private static Observed eventSignal(AddonWeatherEvent event) {
+        return switch (event.type()) {
+            case SQUALL_LINE -> Observed.SQUALL_LINE;
+            case HURRICANE, CYCLONE -> Observed.TROPICAL_CYCLONE;
+            case FLOATER_TORNADO -> Observed.FLOATER_TORNADO;
+            case LANDSPOUT -> Observed.LANDSPOUT;
+            case WATERSPOUT -> Observed.WATERSPOUT;
+            case FUNNEL_CLOUD -> Observed.FUNNEL_CLOUD;
+            case GUSTNADO -> Observed.GUSTNADO;
+            case SNOW_DEVIL -> Observed.SNOW_DEVIL;
+            case DUST_DEVIL -> Observed.DUST_DEVIL;
+            case FIRE_WHIRL -> Observed.FIRE_WHIRL;
+            case FLAMMAGENITUS -> Observed.FLAMMAGENITUS;
+            case WILDFIRE -> Observed.WILDFIRE;
+            default -> null;
+        };
+    }
+
+    /**
+     * What the forecast alone is calling for, used when nothing in range is worth naming.
+     *
+     * <p>Kept short on purpose: this is the panel's bottom row, which fits seventeen characters.
+     */
+    private static String forecastHazardText(SpcRisk tornado, SpcRisk wind, SpcRisk hail) {
+        if (SpcRisk.max(tornado, SpcRisk.max(wind, hail)).severity() <= SpcRisk.TSTM.severity()) {
+            return "No convective risk";
+        }
+        if (tornado.severity() >= wind.severity() && tornado.severity() >= hail.severity()) {
+            return "Tornado forecast";
+        }
+        return wind.severity() >= hail.severity() ? "Damaging wind forecast" : "Large hail forecast";
+    }
+
+    /**
+     * The observed signals the hazard line can carry, weakest first.
+     *
+     * <p>Ranks exist so the strongest thing actually in range names the line, instead of whichever
+     * storm the weather manager happened to return last.
+     */
+    private enum Observed {
+        THUNDERSTORMS(1, "Thunderstorms"),
+        DUST_DEVIL(2, "Dust Devil Advisory"),
+        LARGE_HAIL(3, "Large Hail"),
+        SNOW_DEVIL(4, "Rare Snow Devil Advisory"),
+        GUSTNADO(5, "Gustnado Advisory"),
+        LANDSPOUT(6, "Landspout Advisory"),
+        WATERSPOUT(6, "Waterspout Advisory"),
+        FUNNEL_CLOUD(6, "Funnel Cloud Advisory"),
+        WILDFIRE(7, "Wildfire Spread Risk"),
+        DAMAGING_WIND(8, "Damaging Wind"),
+        FIRE_WHIRL(9, "Fire Whirl / Extreme Fire Weather"),
+        FLAMMAGENITUS(9, "Flammagenitus Fire-Plume Risk"),
+        TROPICAL_CYCLONE(10, "Tropical Cyclone"),
+        SQUALL_LINE(11, "Organized Squall-Line Wind"),
+        TORNADO(12, "Tornado Potential"),
+        FLOATER_TORNADO(12, "Elevated Floater Tornado"),
+        SATELLITE_TORNADO(13, "Tornado/Satellite Potential");
+
+        private final int rank;
+        private final String text;
+
+        Observed(int rank, String text) {
+            this.rank = rank;
+            this.text = text;
+        }
+
+        int rank() {
+            return rank;
+        }
+
+        String text() {
+            return text;
+        }
+    }
+
+    /**
+     * The outlook. Each hazard carries the probability level and conditional intensity group that
+     * were issued for it, and every category here is the SPC decision-matrix conversion of exactly
+     * those numbers. The storm and severe counts are observations within range, reported alongside
+     * the forecast rather than folded into it.
      */
     public record Outlook(
             SpcRisk categorical,

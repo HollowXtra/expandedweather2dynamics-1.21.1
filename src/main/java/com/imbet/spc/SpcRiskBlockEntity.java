@@ -10,6 +10,7 @@ import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -34,7 +35,18 @@ public class SpcRiskBlockEntity extends BlockEntity {
     private double maxWindMph;
 
     public SpcRiskBlockEntity(BlockPos pos, BlockState blockState) {
-        super(ModContent.SPC_RISK_BLOCK_ENTITY.get(), pos, blockState);
+        this(ModContent.SPC_RISK_BLOCK_ENTITY.get(), pos, blockState);
+    }
+
+    /**
+     * The same instrument in another case.
+     *
+     * <p>The weather computer is a second block showing the same outlook, and it extends this class rather
+     * than copying it so the two can never disagree: one tick, one computation, one set of numbers. This
+     * constructor is what lets a subclass name its own block entity type.
+     */
+    protected SpcRiskBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState blockState) {
+        super(type, pos, blockState);
     }
 
     public int getPower() {

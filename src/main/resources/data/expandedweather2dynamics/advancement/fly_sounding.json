@@ -1,0 +1,22 @@
+{
+  "parent": "expandedweather2dynamics:use_anemometer",
+  "display": {
+    "icon": {
+      "id": "expandedweather2dynamics:weather_balloon"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.fly_sounding.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.fly_sounding.description"
+    },
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

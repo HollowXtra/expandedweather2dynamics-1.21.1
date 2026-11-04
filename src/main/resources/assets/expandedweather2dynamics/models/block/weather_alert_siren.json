@@ -1,6 +1,211 @@
 {
-  "parent": "minecraft:block/cube_all",
+  "parent": "minecraft:block/block",
   "textures": {
-    "all": "expandedweather2dynamics:block/weather_alert_siren"
-  }
+    "particle": "expandedweather2dynamics:block/weather_alert_siren",
+    "plate": "expandedweather2dynamics:block/weather_alert_siren",
+    "metal": "expandedweather2dynamics:block/instrument_metal",
+    "brass": "expandedweather2dynamics:block/instrument_brass",
+    "dark": "expandedweather2dynamics:block/instrument_dark"
+  },
+  "elements": [
+    {
+      "comment": "Plinth. It leaves a one-pixel reveal around the housing so the machine reads as standing on something rather than as being the block.",
+      "from": [1, 0, 1],
+      "to": [15, 2, 15],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "Local control cabinet. All four sides carry the warning plate one texel per pixel, mapped to the plate's own frame in the texture rather than to the whole skin, so the cross stays a cross instead of being squashed into a flag.",
+      "from": [2, 2, 2],
+      "to": [14, 11, 14],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"uv": [3, 4, 13, 12], "texture": "#plate"},
+        "south": {"uv": [3, 4, 13, 12], "texture": "#plate"},
+        "west": {"uv": [3, 4, 13, 12], "texture": "#plate"},
+        "east": {"uv": [3, 4, 13, 12], "texture": "#plate"}
+      }
+    },
+    {
+      "comment": "Machinery cap between cabinet and roof. Solid on purpose: the mast inside it is hidden by it, which is what makes the antenna look like it comes out of the housing.",
+      "from": [3, 11, 3],
+      "to": [13, 13, 13],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "comment": "Vent slats, one per side of the cap.",
+      "from": [5, 11.5, 2.5],
+      "to": [11, 12.5, 3],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [5, 11.5, 13],
+      "to": [11, 12.5, 13.5],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [2.5, 11.5, 5],
+      "to": [3, 12.5, 11],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [13, 11.5, 5],
+      "to": [13.5, 12.5, 11],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Roof plate. The mast passes through its middle, and the animated dish's status lamps sit on it in the four quadrants between the horns, which is why it is one full surface rather than a ring with a mast hole: a hole would show the open interior from above.",
+      "from": [1, 13, 1],
+      "to": [15, 14, 15],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "Horn throats, four-way symmetric around the mast. Each mouth faces outward, which is what a tornado siren actually is: a housing with a horn cluster on top.",
+      "from": [6, 14, 3.5],
+      "to": [10, 16, 6],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "from": [6, 14, 10],
+      "to": [10, 16, 12.5],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "from": [3.5, 14, 6],
+      "to": [6, 16, 10],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "from": [10, 14, 6],
+      "to": [12.5, 16, 10],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "comment": "Horn mouths. The outward face is the dark metal so the opening reads as a throat and not as a brass plate.",
+      "from": [5, 13, 0.5],
+      "to": [11, 16, 3.5],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "from": [5, 13, 12.5],
+      "to": [11, 16, 15.5],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "from": [0.5, 13, 5],
+      "to": [3.5, 16, 11],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#brass"}
+      }
+    },
+    {
+      "from": [12.5, 13, 5],
+      "to": [15.5, 16, 11],
+      "faces": {
+        "down": {"texture": "#brass"},
+        "up": {"texture": "#brass"},
+        "north": {"texture": "#brass"},
+        "south": {"texture": "#brass"},
+        "west": {"texture": "#brass"},
+        "east": {"texture": "#dark"}
+      }
+    }
+  ]
 }

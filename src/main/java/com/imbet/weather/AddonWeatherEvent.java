@@ -14,6 +14,21 @@ public final class AddonWeatherEvent {
     private long expireTick;
     private Vec3 lineStart;
     private Vec3 lineEnd;
+    /**
+     * Which rung of {@link DerechoModel} this line has been recognised at, as its ordinal, or 0 for an
+     * ordinary squall line. It is a marker rather than a number so that everything acting on a derecho -
+     * the damage swath, the alert, the shelf the client draws - reads the same classification the server
+     * made, instead of each of them re-deriving one from the geometry and possibly disagreeing.
+     */
+    private int derechoCategory;
+    /**
+     * Which shape of derecho it is, as a {@link DerechoModel.Type} ordinal. Kept beside the rung because the
+     * two together are the whole classification, and a line that is announced as one kind and acts as another
+     * is exactly the sort of disagreement the marker exists to prevent.
+     */
+    private int derechoType;
+    /** How far this system has actually moved since it formed, in blocks, accumulated as it moves. */
+    private double travelledBlocks;
     private long lastAlertTick = -1_000_000L;
 
     public AddonWeatherEvent(long id, StormSubtype type, Vec3 position, Vec3 motion, float radius, float maxWindMph, long spawnTick, long expireTick) {
@@ -86,6 +101,24 @@ public final class AddonWeatherEvent {
         return lineStart != null && lineEnd != null;
     }
 
+    public int derechoCategory() {
+        return derechoCategory;
+    }
+
+    public int derechoType() {
+        return derechoType;
+    }
+
+    public void setDerechoMarker(int derechoType, int derechoCategory) {
+        this.derechoType = Math.max(0, derechoType);
+        this.derechoCategory = Math.max(0, derechoCategory);
+    }
+
+    /** How far the system has travelled since it formed, in blocks. */
+    public double travelledBlocks() {
+        return travelledBlocks;
+    }
+
     public long lastAlertTick() {
         return lastAlertTick;
     }
@@ -95,6 +128,10 @@ public final class AddonWeatherEvent {
     }
 
     public void tick() {
+        double step = motion == null ? 0.0D : Math.sqrt(motion.x * motion.x + motion.z * motion.z);
+        if (Double.isFinite(step)) {
+            travelledBlocks += step;
+        }
         if (!isLine()) {
             position = position.add(motion);
             motion = keepMinimumHorizontalMotion(motion.scale(motionDrag()));
@@ -116,6 +153,9 @@ public final class AddonWeatherEvent {
     public AddonWeatherEvent snapshot() {
         AddonWeatherEvent copy = new AddonWeatherEvent(id, type, position, motion, radius, maxWindMph, spawnTick, expireTick);
         copy.lastAlertTick = lastAlertTick;
+        copy.derechoCategory = derechoCategory;
+        copy.derechoType = derechoType;
+        copy.travelledBlocks = travelledBlocks;
         if (isLine()) {
             copy.lineStart = safeVec(lineStart);
             copy.lineEnd = safeVec(lineEnd);
@@ -141,6 +181,8 @@ public final class AddonWeatherEvent {
             writeVec(buf, lineStart);
             writeVec(buf, lineEnd);
         }
+        buf.writeByte(derechoType);
+        buf.writeByte(derechoCategory);
     }
 
     public static AddonWeatherEvent read(FriendlyByteBuf buf) {
@@ -157,6 +199,8 @@ public final class AddonWeatherEvent {
             event.lineStart = readVec(buf);
             event.lineEnd = readVec(buf);
         }
+        event.derechoType = Math.max(0, buf.readByte());
+        event.derechoCategory = Math.max(0, buf.readByte());
         return event;
     }
 
@@ -189,12 +233,15 @@ public final class AddonWeatherEvent {
             case CYCLONE -> 0.9995D;
             case WILDFIRE -> 0.999D;
             case FLOATER_TORNADO -> 0.9965D;
+            case FUNNEL_CLOUD -> 0.9988D;
             case WATERSPOUT -> 0.9975D;
             case LANDSPOUT -> 0.996D;
             case FIRE_WHIRL -> 0.993D;
             case GUSTNADO -> 0.992D;
             case SNOW_DEVIL -> 0.990D;
             case DUST_DEVIL -> 0.990D;
+            case LAVA_WHIRL -> 0.986D;
+            case STEAM_DEVIL -> 0.994D;
             default -> 0.985D;
         };
     }
@@ -208,7 +255,10 @@ public final class AddonWeatherEvent {
             case WILDFIRE -> 0.004D;
             case SNOW_DEVIL -> 0.010D;
             case DUST_DEVIL -> 0.010D;
+            case LAVA_WHIRL -> 0.008D;
+            case STEAM_DEVIL -> 0.006D;
             case LANDSPOUT -> 0.014D;
+            case FUNNEL_CLOUD -> 0.006D;
             case WATERSPOUT -> 0.012D;
             default -> 0.0D;
         };

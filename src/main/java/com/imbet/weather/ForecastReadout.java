@@ -49,6 +49,12 @@ public final class ForecastReadout {
     private static final double ALERT_POLYGON_REISSUE_DIRECTION_DOT = Math.cos(Math.toRadians(12.0D));
     private static final double ALERT_POLYGON_MIN_LEAD_BLOCKS = 720.0D;
     private static final long ALERT_POLYGON_CACHE_TTL_TICKS = 20L * 60L * 10L;
+    /**
+     * How far above neutral a phenomenon's odds have to be before the readout calls it this place's own
+     * weather. A tenth either way is inside the noise of one blended table, and naming a winner that is
+     * only 1.04x would read as a claim the world is not making.
+     */
+    private static final double ODDS_WORTH_NAMING = 1.15D;
 
     private ForecastReadout() {
     }
@@ -92,7 +98,8 @@ public final class ForecastReadout {
             sendRiskLines(player, payload.risk(), snapshots);
             return InteractionResult.CONSUME;
         }
-        sendEnvironmentLine(player, manager, pos);
+        sendEnvironmentLine(serverLevel, player, manager, pos);
+        sendSeasonLine(serverLevel, player, manager, pos);
         sendLowPressureLine(serverLevel, player, pos);
         if (snapshots.isEmpty()) {
             player.sendSystemMessage(Component.literal("Radar: no tracked storm/tornado returns inside " + range + " blocks.").withStyle(ChatFormatting.GRAY));
@@ -281,6 +288,85 @@ public final class ForecastReadout {
         }
     }
 
+    /**
+     * What the ground under the player is worth: which family of country they are standing on, which
+     * belt that mixture of families amounts to, and what this place is unusually prone to.
+     *
+     * <p>Every figure comes through the service the spawn sites themselves call, and through the same
+     * strength blend, so this line can only ever name air the spawn code is already running in - a
+     * readout that sampled its own climate would be a second opinion about the same map. Climate off
+     * prints nothing at all, because with it off every place is the same place and there is no belt to
+     * name.
+     */
+    private static void sendAirLine(Player player) {
+        if (!Config.CLIMATE_ENABLED.get() || !(player.level() instanceof ServerLevel level)) {
+            return;
+        }
+        BiomeClimate.Reading air = BiomeClimateService.reading(level, player.blockPosition());
+        BiomeClimate.Odds odds = BiomeClimateService.odds(level, player.blockPosition());
+        BiomeClimate.Phenomenon strongest = odds.strongest();
+        String most = strongest.label().toLowerCase(Locale.ROOT);
+        double peak = odds.strongestValue();
+        String bias = peak >= ODDS_WORTH_NAMING
+                ? String.format(Locale.ROOT, "odds strongest for %s at %.2fx", most, peak)
+                : String.format(Locale.ROOT, "nothing standing out (%s, the strongest, at %.2fx)", most, peak);
+        player.sendSystemMessage(Component.literal("Air: " + air.label()
+                + " - " + (air.tornadic() ? "tornadic country" : "not tornado country")
+                + ", " + bias).withStyle(ChatFormatting.DARK_AQUA));
+    }
+
+    /**
+     * The season, while one is running: what it is called, which day of it this is, and what it is doing
+     * where the reader is standing - the rain it is delivering, the water it has already put on the ground,
+     * and which of its own rain bands they are under.
+     *
+     * <p>Like the air line above it, every figure comes out of the service rather than out of the calendar,
+     * so this can only ever print a season the world is actually running and air the season is actually
+     * making. The belt multiplier is named in words rather than printed as a number because it is the one
+     * figure a player can act on: the difference between the heaviest air and the dry air at the season's
+     * edge is the difference between a band arriving overhead and one passing over.
+     */
+    private static void sendMonsoonLine(Player player) {
+        if (!Config.MONSOON_ENABLED.get()) {
+            return;
+        }
+        MonsoonModel.Report report = MonsoonService.report(player.level());
+        if (report == null || !report.active()) {
+            return;
+        }
+        MonsoonService.Conditions conditions = MonsoonService.conditions(player.level(), player.position());
+        String belt = conditions.beltMultiplier() >= 1.35D
+                ? "heaviest air"
+                : conditions.beltMultiplier() >= 1.0D ? "wet air" : "dry air, most of the season passing over";
+        player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
+                "Season: %s - rain %.2f, floods %.2fx, %s (%d bands)",
+                MonsoonModel.label(report),
+                conditions.rainIntensity(),
+                conditions.floodMultiplier(),
+                belt,
+                conditions.cells()
+        )).withStyle(ChatFormatting.DARK_GREEN));
+    }
+
+    /**
+     * What season the forecast block is standing in, and how ready this place's sky is to make a storm: the
+     * biome-based spawn chance the environment line already reports, named beside the season so the two read
+     * together. The season comes through the calendar service rather than out of the calendar itself, so this
+     * can only ever name a season the world is actually running - and with the calendar switched off it says
+     * so instead of inventing one.
+     */
+    private static void sendSeasonLine(ServerLevel level, Player player, WeatherManagerServer manager, BlockPos pos) {
+        String season = SeasonCalendarService.enabled()
+                ? SeasonCalendarService.day(level).label()
+                : "no meteorological season (calendar off)";
+        float chance = manager == null ? 0.0F : manager.getBiomeBasedStormSpawnChanceInArea(pos);
+        player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
+                "Season: %s - storm chance %.1f%% here",
+                season,
+                chance * 100.0F
+        )).withStyle(ChatFormatting.DARK_GREEN));
+    }
+
     private static void sendRiskLines(Player player, ForecastRiskSnapshot risk, List<RadarStormSnapshot> snapshots) {
         ForecastRiskSnapshot safe = risk == null ? ForecastRiskSnapshot.EMPTY : risk;
         player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
@@ -301,6 +387,27 @@ public final class ForecastReadout {
                 safe.severeCount(),
                 safe.maxWindMph()
         )).withStyle(ChatFormatting.GRAY));
+        // The belt the place sits in, and the belt's own supply: a live reading of the climate the day is
+        // happening in, from the same source the genesis code uses, so a readout can never name a belt the
+        // lows are not actually being born in.
+        player.sendSystemMessage(Component.literal("Belts: " + ThermalCirculation.beltLabel(player.getZ())
+                + " - " + ThermalCirculation.beltNote(player.getZ())).withStyle(ChatFormatting.DARK_AQUA));
+        sendAirLine(player);
+        sendMonsoonLine(player);
+        if (player.level() instanceof ServerLevel serverLevel) {
+            ThermalCirculation.Belt belt = ThermalCirculation.belt(player.getZ());
+            if (belt == ThermalCirculation.Belt.RISING_BELT) {
+                player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
+                        "Rising supply: %.0f%% of the day's peak right now",
+                        ThermalCirculation.solarFactor(serverLevel.getDayTime()) * 100.0D))
+                        .withStyle(ChatFormatting.DARK_AQUA));
+            }
+            OutbreakService.Episode outbreak = OutbreakService.active(serverLevel);
+            if (outbreak != null) {
+                player.sendSystemMessage(Component.literal(OutbreakService.progressLine(outbreak))
+                        .withStyle(ChatFormatting.DARK_RED));
+            }
+        }
         if (outbreakPotential(safe, snapshots)) {
             player.sendSystemMessage(Component.literal("Tornado outbreak setup: multiple tornado-capable storms possible.").withStyle(ChatFormatting.LIGHT_PURPLE));
         }
@@ -311,6 +418,8 @@ public final class ForecastReadout {
         long gameTime = level.getGameTime();
         pruneAlertPolygonCache(level, gameTime);
         long expires = gameTime + Math.max(20L * 60L, Config.ALERT_COOLDOWN_TICKS.get());
+        // The watch range the two watch polygons are capped by, read once rather than once per polygon.
+        double watchRange = Config.ALERT_WATCH_RANGE_BLOCKS.get();
         for (RadarStormSnapshot snapshot : snapshots) {
             if (result.size() >= 18) {
                 break;
@@ -334,9 +443,9 @@ public final class ForecastReadout {
                 continue;
             }
             if (snapshot.hookEcho() && snapshot.severity() >= SpcRisk.SLIGHT.severity()) {
-                result.add(pathPolygon(level, snapshot, "Tornado Watch", "TOR WATCH", ForecastPolygonSnapshot.TYPE_WATCH, 0xE8F6C945, expires, 900.0D, 1500.0D, Math.min(Config.ALERT_WATCH_RANGE_BLOCKS.get(), 2200.0D)));
+                result.add(pathPolygon(level, snapshot, "Tornado Watch", "TOR WATCH", ForecastPolygonSnapshot.TYPE_WATCH, 0xE8F6C945, expires, 900.0D, 1500.0D, Math.min(watchRange, 2200.0D)));
             } else if (snapshot.severity() >= SpcRisk.SLIGHT.severity() && (snapshot.windMph() >= 45.0D || snapshot.reflectivityDbz() >= 45.0D || label.contains("squall") || label.contains("supercell") || label.contains("hail"))) {
-                result.add(pathPolygon(level, snapshot, "Severe Thunderstorm Watch", "SVR WATCH", ForecastPolygonSnapshot.TYPE_WATCH, 0xE8B8F15A, expires, 980.0D, 1650.0D, Math.min(Config.ALERT_WATCH_RANGE_BLOCKS.get(), 2400.0D)));
+                result.add(pathPolygon(level, snapshot, "Severe Thunderstorm Watch", "SVR WATCH", ForecastPolygonSnapshot.TYPE_WATCH, 0xE8B8F15A, expires, 980.0D, 1650.0D, Math.min(watchRange, 2400.0D)));
             }
         }
         addRiskPolygons(result, pos, range, risk, snapshots);
@@ -568,24 +677,57 @@ public final class ForecastReadout {
         return points == null || points.isEmpty() ? null : points.get(points.size() - 1);
     }
 
-    private static void sendEnvironmentLine(Player player, WeatherManagerServer manager, BlockPos pos) {
+    private static void sendEnvironmentLine(ServerLevel level, Player player, WeatherManagerServer manager, BlockPos pos) {
         if (manager == null) {
             player.sendSystemMessage(Component.literal("Environment: Weather2 manager unavailable.").withStyle(ChatFormatting.RED));
             return;
         }
 
         float biomeChance = manager.getBiomeBasedStormSpawnChanceInArea(pos);
-        float randomChance = deadlyRandomChancePerDay();
         String environment = biomeChance >= 0.45F ? "favorable" : biomeChance >= 0.20F ? "conditional" : "quiet";
         player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
-                "Environment: %s severe setup, biome %.1f%%, daily roll %.2f%%",
+                "Environment: %s severe setup, biome %.1f%%, %s",
                 environment,
                 biomeChance * 100.0F,
-                randomChance * 100.0F
+                deadlyOddsLine(level, pos)
         )).withStyle(ChatFormatting.GRAY));
     }
 
+    /**
+     * The deadly-storm line: the air's own reading of the day, or Weather2's flat odds when the air is not
+     * being asked.
+     *
+     * <p>What this replaces is worth naming, because the old line was not wrong about the number it printed -
+     * it was wrong about what the number was. The deadly timer does roll its dice once a day, so "the odds work
+     * out to 33.33% a day" was arithmetic; but it rolled them the same way over a capped, blown-out air mass as
+     * over a loaded afternoon, because nothing in Weather2's timer has ever looked at the sky. Reading it as a
+     * forecast of the day was therefore the mistake, and a player comparing it to a very quiet sky was right to
+     * distrust it. The line now comes from {@link DeadlyStormModel}, which is the same method that decides
+     * whether a cell this mod seeds may be promoted into a deadly storm at all, so the percentage and the flag
+     * cannot drift apart.
+     */
+    private static String deadlyOddsLine(ServerLevel level, BlockPos pos) {
+        double ceiling = deadlyCeilingPerDay();
+        if (!Config.deadlyStormFromAir()) {
+            return String.format(Locale.ROOT, "deadly odds %.2f%% a day - the air is not being asked", ceiling * 100.0D);
+        }
+        ThermodynamicProfile air = ThermodynamicProfileService.compute(level, pos);
+        return DeadlyStormModel.oddsLine(Config.deadlyStormSettings(), ceiling, air.capeJkg(), air.deepLayerShearMps());
+    }
+
     private static void sendLowPressureLine(ServerLevel level, Player player, BlockPos pos) {
+        // Which air mass of the system you are standing in is the part of a synoptic setup that decides
+        // what today can actually do, so it is read out beside the system itself rather than buried.
+        FrontalEnvironment.Influence frontal = FrontalEnvironment.at(level, pos);
+        if (frontal.present()) {
+            player.sendSystemMessage(Component.literal(String.format(Locale.ROOT,
+                    "Frontal: %s of the %s, %d%% influence - %s",
+                    frontal.regime().label(),
+                    frontal.lowLabel().toLowerCase(Locale.ROOT),
+                    Math.round(frontal.proximity() * 100.0D),
+                    frontal.regime().hazardSummary()
+            )).withStyle(ChatFormatting.GOLD));
+        }
         LowPressureService.active(level).stream()
                 .filter(system -> horizontalDistance(pos, system.x(), system.z()) <= Config.LOW_PRESSURE_MAX_DISPLAY_RANGE_BLOCKS.get())
                 .min(Comparator.comparingDouble(system -> horizontalDistance(pos, system.x(), system.z())))
@@ -603,7 +745,16 @@ public final class ForecastReadout {
         return Math.sqrt(dx * dx + dz * dz);
     }
 
-    private static float deadlyRandomChancePerDay() {
+    /**
+     * The per-day chance Weather2's own deadly timer works out to, which is the ceiling the air scales.
+     *
+     * <p>Kept exactly as it was, because it is not this mod's number to change and it is still the right
+     * ceiling: the timer rolls once every {@code Storm_AllTypes_TickRateDelay} ticks and promotes a storm once
+     * the odds against it come in, so a day is that many rolls at those odds. What the air decides is how much
+     * of this a sky is worth - none of it over a lid, all of it over a loaded afternoon - which is the reading
+     * {@link DeadlyStormModel} makes of the same profile the rest of this mod's physics is built on.
+     */
+    private static float deadlyCeilingPerDay() {
         int day = 20 * 60 * 20;
         int diceRollRate = Math.max(1, ConfigStorm.Storm_AllTypes_TickRateDelay);
         int odds = ConfigStorm.Server_Storm_Deadly_UseGlobalRate

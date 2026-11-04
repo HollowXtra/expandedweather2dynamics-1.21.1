@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=south": { "model": "expandedweather2dynamics:block/weather_computer" },
+    "facing=west": { "model": "expandedweather2dynamics:block/weather_computer", "y": 90 },
+    "facing=north": { "model": "expandedweather2dynamics:block/weather_computer", "y": 180 },
+    "facing=east": { "model": "expandedweather2dynamics:block/weather_computer", "y": 270 }
+  }
+}

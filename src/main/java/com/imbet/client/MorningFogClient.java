@@ -35,7 +35,11 @@ public final class MorningFogClient {
         }
 
         float morning = morningWindow(level.getDayTime() % 24000L);
-        float weatherMoisture = Mth.clamp(level.getRainLevel(1.0F) * 0.45F - level.getThunderLevel(1.0F) * 0.35F, 0.0F, 0.45F);
+        // The weather's own moisture, from whichever of the game's rain and this mod's storm is the wetter here: the
+        // storm's share used to arrive through the level's own rain level, which this mod no longer writes to.
+        float rainLevel = Math.max(level.getRainLevel(1.0F), ClientWeatherEffects.stormRainLevel());
+        float thunderLevel = Math.max(level.getThunderLevel(1.0F), ClientWeatherEffects.stormThunderLevel());
+        float weatherMoisture = Mth.clamp(rainLevel * 0.45F - thunderLevel * 0.35F, 0.0F, 0.45F);
         float humidity = Mth.clamp(0.18F + waterHumidity * 0.68F + weatherMoisture, 0.0F, 1.0F);
         float target = morning * humidity * Config.MORNING_FOG_DENSITY.get().floatValue();
         fogIntensity = Mth.lerp(target > fogIntensity ? 0.055F : 0.032F, fogIntensity, target);
@@ -85,7 +89,12 @@ public final class MorningFogClient {
         return Mth.clamp(1.0F - (dayTime - 1200L) / 2000.0F, 0.0F, 1.0F);
     }
 
-    private static float nearbyWaterHumidity(ClientLevel level, BlockPos center) {
+    /**
+     * How much water stands within a dozen blocks of a point, 0 to 1, from a sparse 3D scan of the blocks
+     * around it. Shared with the mist, which is the same question asked about moisture in the ground rather
+     * than about the dawn.
+     */
+    static float nearbyWaterHumidity(ClientLevel level, BlockPos center) {
         int wetSamples = 0;
         int samples = 0;
         BlockPos.MutableBlockPos sample = new BlockPos.MutableBlockPos();

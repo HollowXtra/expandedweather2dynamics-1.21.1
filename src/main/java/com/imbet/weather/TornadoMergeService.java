@@ -24,7 +24,10 @@ public final class TornadoMergeService {
     }
 
     public static void tick(ServerLevel level, StormObject storm, DynamicStormState state) {
-        if (!Config.MERGING_ENABLED.get() || !Config.MERGE_ABSORB_WEAKER.get() || storm == null || storm.pos == null || storm.isDead || state.isAbsorbedOrDecaying() || isRemovalQueued(storm.ID) || !DynamicStormController.isDynamicVortex(storm)) {
+        // A twin neither absorbs nor is absorbed, so a pair of tornadoes running alongside each other
+        // stays a pair: without the second half of this check the first tornado would eat the second
+        // one the moment they converged, which is the sight the pair exists to produce.
+        if (!Config.MERGING_ENABLED.get() || !Config.MERGE_ABSORB_WEAKER.get() || storm == null || storm.pos == null || storm.isDead || state.isAbsorbedOrDecaying() || isRemovalQueued(storm.ID) || !DynamicStormController.isDynamicVortex(storm) || TwinTornadoService.isTwinStorm(storm)) {
             return;
         }
         int interval = Math.max(5, Config.MERGE_SCAN_INTERVAL_TICKS.get());
@@ -38,7 +41,7 @@ public final class TornadoMergeService {
         }
         List<WeatherObject> snapshot = new ArrayList<>(manager.getStormObjects());
         for (WeatherObject object : snapshot) {
-            if (!(object instanceof StormObject other) || other == storm || other.pos == null || other.isDead || DynamicStormController.isAbsorbedOrDecaying(other) || isRemovalQueued(other.ID) || !DynamicStormController.isDynamicVortex(other)) {
+            if (!(object instanceof StormObject other) || other == storm || other.pos == null || other.isDead || DynamicStormController.isAbsorbedOrDecaying(other) || isRemovalQueued(other.ID) || !DynamicStormController.isDynamicVortex(other) || TwinTornadoService.isTwinStorm(other)) {
                 continue;
             }
             if (storm.ID >= other.ID) {
@@ -50,6 +53,8 @@ public final class TornadoMergeService {
 
     private static void mergeSatellitesIntoParent(ServerLevel level, StormObject storm, DynamicStormState state, int interval) {
         double parentRadius = Math.max(8.0D, DynamicStormController.baseRadiusForWind(storm));
+        // The overlap the merge waits out, read once for the satellite loop that asks for it twice.
+        int overlapTicks = Config.MERGE_OVERLAP_TICKS.get();
         for (DynamicStormState.TornadoCirculationState satellite : new ArrayList<>(state.satelliteTornadoes())) {
             if (satellite.absorbed()) {
                 continue;
@@ -61,10 +66,10 @@ public final class TornadoMergeService {
                 continue;
             }
             int ticks = recordOverlap(overlapKey(storm.ID, satellite.id()), interval);
-            if (ticks < Config.MERGE_OVERLAP_TICKS.get()) {
+            if (ticks < overlapTicks) {
                 continue;
             }
-            if (Config.MERGE_ORBIT_BEFORE_ABSORB.get() && ticks < Config.MERGE_OVERLAP_TICKS.get() + Config.MERGE_ORBIT_TICKS.get()) {
+            if (Config.MERGE_ORBIT_BEFORE_ABSORB.get() && ticks < overlapTicks + Config.MERGE_ORBIT_TICKS.get()) {
                 continue;
             }
             satellite.absorb();
@@ -75,19 +80,20 @@ public final class TornadoMergeService {
 
     private static void tryMergeStormPair(ServerLevel level, WeatherManagerServer manager, StormObject first, StormObject second, int interval) {
         double radius = Math.max(12.0D, (DynamicStormController.baseRadiusForWind(first) + DynamicStormController.baseRadiusForWind(second)) * 0.56D);
+        int overlapTicks = Config.MERGE_OVERLAP_TICKS.get();
         if (first.pos.distanceTo(second.pos) > radius || !isConverging(first.pos, first.motion, second.pos, second.motion)) {
             reset(overlapKey(first.ID, second.ID));
             return;
         }
         int ticks = recordOverlap(overlapKey(first.ID, second.ID), interval);
-        if (ticks < Config.MERGE_OVERLAP_TICKS.get()) {
+        if (ticks < overlapTicks) {
             return;
         }
         StormObject stronger = strength(first) >= strength(second) ? first : second;
         StormObject weaker = stronger == first ? second : first;
         DynamicStormState strongerState = DynamicStormController.stateFor(stronger);
         DynamicStormState weakerState = DynamicStormController.stateFor(weaker);
-        if (Config.MERGE_ORBIT_BEFORE_ABSORB.get() && ticks < Config.MERGE_OVERLAP_TICKS.get() + Config.MERGE_ORBIT_TICKS.get()) {
+        if (Config.MERGE_ORBIT_BEFORE_ABSORB.get() && ticks < overlapTicks + Config.MERGE_ORBIT_TICKS.get()) {
             Vec3 center = first.pos.add(second.pos).scale(0.5D);
             double orbitRadius = Math.max(8.0D, first.pos.distanceTo(second.pos) * 0.5D);
             strongerState.beginMergeOrbit(level.getGameTime(), weaker.ID, center, orbitRadius, 1.0F);

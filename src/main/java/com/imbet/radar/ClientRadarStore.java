@@ -17,9 +17,15 @@ public final class ClientRadarStore {
         SNAPSHOTS.put(payload.origin(), payload);
     }
 
-    public static List<RadarStormSnapshot> stormsFor(BlockPos origin) {
-        RadarSnapshotPayload payload = SNAPSHOTS.get(origin);
-        return payload == null ? List.of() : payload.storms();
+    /**
+     * The feed swept from a position, or null if nothing has been swept from there.
+     *
+     * <p>A display reads the feed rather than its own block entity: the feed says which product it is in and
+     * how far it reaches, so a panel or a handheld can render without the block behind it being loaded - and
+     * a mode the block has since been switched to is still correct, because the mode travelled with the feed.
+     */
+    public static RadarSnapshotPayload feedFor(BlockPos origin) {
+        return SNAPSHOTS.get(origin);
     }
 
     public static List<RadarStormSnapshot> allStorms() {

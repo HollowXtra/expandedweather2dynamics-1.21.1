@@ -7,5 +7,101 @@
         "stream": true
       }
     ]
+  },
+  "tornado_roar_far": {
+    "subtitle": "subtitles.expandedweather2dynamics.tornado_roar_far",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:tornado_roar_far",
+        "stream": true
+      }
+    ]
+  },
+  "tornado_hum": {
+    "subtitle": "subtitles.expandedweather2dynamics.tornado_hum",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:tornado_hum"
+      }
+    ]
+  },
+  "drone_rotor": {
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:drone_rotor"
+      }
+    ]
+  },
+  "siren_mechanical": {
+    "subtitle": "subtitles.expandedweather2dynamics.siren_mechanical",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:siren_mechanical"
+      }
+    ]
+  },
+  "siren_electronic": {
+    "subtitle": "subtitles.expandedweather2dynamics.siren_electronic",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:siren_electronic"
+      }
+    ]
+  },
+  "siren_hilo": {
+    "subtitle": "subtitles.expandedweather2dynamics.siren_hilo",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:siren_hilo"
+      }
+    ]
+  },
+  "hail_soft": {
+    "subtitle": "subtitles.expandedweather2dynamics.hail_soft",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:hail_soft"
+      }
+    ]
+  },
+  "hail_wood": {
+    "subtitle": "subtitles.expandedweather2dynamics.hail_wood",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:hail_wood"
+      }
+    ]
+  },
+  "hail_stone": {
+    "subtitle": "subtitles.expandedweather2dynamics.hail_stone",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:hail_stone"
+      }
+    ]
+  },
+  "hail_ice": {
+    "subtitle": "subtitles.expandedweather2dynamics.hail_ice",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:hail_ice"
+      }
+    ]
+  },
+  "hail_glass": {
+    "subtitle": "subtitles.expandedweather2dynamics.hail_glass",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:hail_glass"
+      }
+    ]
+  },
+  "hail_metal": {
+    "subtitle": "subtitles.expandedweather2dynamics.hail_metal",
+    "sounds": [
+      {
+        "name": "expandedweather2dynamics:hail_metal"
+      }
+    ]
   }
 }

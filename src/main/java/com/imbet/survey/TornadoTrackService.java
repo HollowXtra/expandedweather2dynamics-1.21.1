@@ -38,6 +38,12 @@ public final class TornadoTrackService {
                 if (!snapshot.trackableVortex()) {
                     continue;
                 }
+                // A funnel cloud is trackable and shows on the radar as a circulation, but it never
+                // reached the ground, so there is no damage swath to survey and nothing an EF rating
+                // could be assigned to. Recording one would put a zero-damage track in the survey.
+                if (snapshot.subtype() == StormSubtype.FUNNEL_CLOUD) {
+                    continue;
+                }
                 data.recordPoint(
                         snapshot.sourceKey(),
                         snapshot.parentId() == Long.MIN_VALUE ? snapshot.sourceId() : snapshot.parentId(),

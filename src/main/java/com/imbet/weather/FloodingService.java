@@ -6,6 +6,7 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -44,20 +45,28 @@ public final class FloodingService {
                     return;
                 }
                 if (object instanceof StormObject storm && storm.pos != null && !storm.isDead) {
-                    double intensity = weather2RainIntensity(storm);
+                    // The same rain floods harder during the wet season, because the ground it is landing on has
+                    // been wet for days. The season is a reading of the calendar and the local air, so this is
+                    // the one line that couples a storm to it.
+                    double intensity = weather2RainIntensity(storm) * MonsoonService.floodMultiplier(level, storm.pos);
                     if (intensity >= Config.FLOODING_RAIN_THRESHOLD.get()) {
                         double radius = Mth.clamp(Math.max(storm.getSize() * 2.2D, 72.0D + intensity * 95.0D), 48.0D, Config.FLOODING_RANGE_BLOCKS.get());
-                        budget = sampleFloodArea(level, storm.pos, radius, intensity, budget);
+                        budget = sampleStormFlood(level, storm, radius, intensity, budget);
                     }
                 }
             }
+        }
+
+        budget = sampleMonsoonBands(level, budget);
+        if (budget <= 0) {
+            return;
         }
 
         for (AddonWeatherEvent event : AddonWeatherEventService.activeEvents(level)) {
             if (budget <= 0) {
                 return;
             }
-            double intensity = addonRainIntensity(event);
+            double intensity = addonRainIntensity(event) * MonsoonService.floodMultiplier(level, event.position());
             if (intensity < Config.FLOODING_RAIN_THRESHOLD.get()) {
                 continue;
             }
@@ -67,6 +76,35 @@ public final class FloodingService {
                 budget = sampleFloodArea(level, event.position(), Math.min(Config.FLOODING_RANGE_BLOCKS.get(), Math.max(48.0D, event.radius() * (event.type() == StormSubtype.HURRICANE ? 1.15D : 2.0D))), intensity, budget);
             }
         }
+    }
+
+    /**
+     * The season's own rain, which is the only rain in this mod that no storm is responsible for. It falls in
+     * bands a few hundred blocks across, placed on the season's own grid rather than around the player, so the
+     * wet season is a field of downpours crossing the world rather than a bubble following whoever is looking.
+     * Nothing here is a new hazard: it is the same flood water the rest of this service places, from rain that
+     * exists because of the date.
+     */
+    private static int sampleMonsoonBands(ServerLevel level, int budget) {
+        if (!Config.MONSOON_ENABLED.get()) {
+            return budget;
+        }
+        for (ServerPlayer player : level.players()) {
+            if (budget <= 0) {
+                return budget;
+            }
+            for (MonsoonService.Band band : MonsoonService.bandsNear(level, player.position())) {
+                if (budget <= 0) {
+                    return budget;
+                }
+                if (band.intensity() < Config.FLOODING_RAIN_THRESHOLD.get()) {
+                    continue;
+                }
+                budget = sampleFloodArea(level, band.centre(), Math.min(Config.FLOODING_RANGE_BLOCKS.get(), band.radiusBlocks()),
+                        band.intensity(), budget);
+            }
+        }
+        return budget;
     }
 
     private static double weather2RainIntensity(StormObject storm) {
@@ -107,6 +145,40 @@ public final class FloodingService {
             return Mth.clamp(0.42D + event.maxWindMph() / 220.0D, 0.0D, 0.85D);
         }
         return 0.0D;
+    }
+
+    /**
+     * Ground wetness under a storm cell, drawn from the storm's own precipitation field.
+     *
+     * <p>A disc would do, and it is what this used to do, but a rain shield is not a disc and the
+     * difference is not cosmetic: standing in the rain-free notch of a violent supercell while its
+     * forward flank soaks the county is the whole reason the notch is worth modelling. Sampling the
+     * field means the low ground fills where the rain lands and stays dry up the slot, with the same
+     * field the client draws its sheets from, so what a player sees and what the world soaks up agree.
+     */
+    private static int sampleStormFlood(ServerLevel level, StormObject storm, double radius, double intensity, int budget) {
+        DynamicStormState state = DynamicStormController.stateFor(storm);
+        PrecipitationField.Geometry field = SupercellStructureService.precipitationGeometry(storm, state);
+        SupercellStructureService.StructureSample sample = SupercellStructureService.sample(storm, state);
+        Vec3 forward = sample.forward();
+        Vec3 right = sample.right();
+        int attempts = Math.min(64, Math.max(6, budget * 5));
+        for (int i = 0; i < attempts && budget > 0; i++) {
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            double distance = Math.sqrt(level.random.nextDouble()) * radius;
+            double x = storm.pos.x + Math.cos(angle) * distance;
+            double z = storm.pos.z + Math.sin(angle) * distance;
+            double density = PrecipitationField.densityAt(field, storm.pos.x, storm.pos.z,
+                    forward.x, forward.z, right.x, right.z, x, z);
+            if (level.random.nextDouble() >= density) {
+                continue;
+            }
+            // How hard it is raining on this block, not how hard it is raining somewhere in the storm.
+            if (tryPlaceFloodWater(level, new Vec3(x, 0.0D, z), intensity * density)) {
+                budget--;
+            }
+        }
+        return budget;
     }
 
     private static int sampleFloodArea(ServerLevel level, Vec3 center, double radius, double intensity, int budget) {

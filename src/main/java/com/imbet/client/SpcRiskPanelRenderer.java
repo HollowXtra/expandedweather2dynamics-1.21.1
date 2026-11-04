@@ -42,14 +42,10 @@ public class SpcRiskPanelRenderer implements BlockEntityRenderer<SpcRiskBlockEnt
 
     @Override
     public void render(SpcRiskBlockEntity spc, float partialTick, PoseStack stack, MultiBufferSource buffer, int packedLight, int packedOverlay) {
-        // The custom radar_panel program falls back to a dummy under an active Iris shaderpack.
-        if (RenderingCompat.isShaderPackActive()) {
-            return;
-        }
-        VertexConsumer consumer = buffer.getBuffer(RadarShader.radarPanel());
+        VertexConsumer consumer = PanelRenderPath.consumer(buffer, InstrumentPanelShader.panel(), packedLight);
         PoseStack.Pose pose = stack.last();
 
-        // Scope backdrop, then a dark plate the header text sits on.
+        // Panel backdrop, then a dark plate the header text sits on.
         RenderQuads.topQuadUv(consumer, pose, 0.045F, 0.045F, 0.955F, 0.955F, PANEL_Y, 0x66101618);
         RenderQuads.topQuadUv(consumer, pose, 0.075F, 0.060F, 0.925F, 0.245F, PANEL_Y + 0.002F, 0xD0060B0D);
 

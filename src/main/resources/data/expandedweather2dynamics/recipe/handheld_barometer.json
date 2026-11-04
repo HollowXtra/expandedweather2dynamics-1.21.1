@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " C ",
+    "GIG",
+    " I "
+  ],
+  "key": {
+    "C": {
+      "item": "minecraft:compass"
+    },
+    "G": {
+      "item": "minecraft:glass_pane"
+    },
+    "I": {
+      "item": "minecraft:iron_ingot"
+    }
+  },
+  "result": {
+    "id": "expandedweather2dynamics:handheld_barometer",
+    "count": 1
+  }
+}

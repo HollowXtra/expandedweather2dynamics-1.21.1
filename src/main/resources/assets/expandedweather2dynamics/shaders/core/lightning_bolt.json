@@ -1,0 +1,19 @@
+{
+  "vertex": "expandedweather2dynamics:lightning_bolt",
+  "fragment": "expandedweather2dynamics:lightning_bolt",
+  "samplers": [],
+  "uniforms": [
+    { "name": "ModelViewMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ProjMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ColorModulator", "type": "float", "count": 4, "values": [ 1.0, 1.0, 1.0, 1.0 ] },
+    { "name": "LightningAge", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "LightningSeed", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "LightningGain", "type": "float", "count": 1, "values": [ 1.0 ] },
+    { "name": "LightningDistance", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "LightningCore", "type": "float", "count": 1, "values": [ 1.0 ] },
+    { "name": "LightningFilaments", "type": "float", "count": 1, "values": [ 0.55 ] },
+    { "name": "LightningStrobes", "type": "float", "count": 1, "values": [ 1.0 ] },
+    { "name": "LightningHeight", "type": "float", "count": 1, "values": [ 112.0 ] },
+    { "name": "LightningRange", "type": "float", "count": 1, "values": [ 512.0 ] }
+  ]
+}

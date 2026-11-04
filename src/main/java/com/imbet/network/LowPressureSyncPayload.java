@@ -41,7 +41,31 @@ public record LowPressureSyncPayload(List<LowPressureSnapshot> systems) implemen
         return new LowPressureSyncPayload(systems);
     }
 
-    public record LowPressureSnapshot(long id, double x, double z, float radius, float intensity, double motionX, double motionZ, String label) {
+    /**
+     * One synoptic low as the client needs it: where it is, what it is doing, and the geometry of
+     * its own two fronts. The front lengths are blocks of real circulation and the angles are the
+     * leading edge of each front measured from the low's direction of travel, so a chart can draw
+     * the actual system the server is running rather than a fixed symbol at a fixed angle.
+     */
+    public record LowPressureSnapshot(
+            long id,
+            double x,
+            double z,
+            float radius,
+            float intensity,
+            double motionX,
+            double motionZ,
+            float warmFrontLength,
+            float coldFrontLength,
+            float warmFrontAngleDegrees,
+            float coldFrontAngleDegrees,
+            boolean occluded,
+            String label
+    ) {
+        /** A front never lies along the direction of travel; zero means the sender did not say. */
+        public static final float DEFAULT_WARM_FRONT_ANGLE = 42.0F;
+        public static final float DEFAULT_COLD_FRONT_ANGLE = 148.0F;
+
         public LowPressureSnapshot {
             x = finite(x);
             z = finite(z);
@@ -49,6 +73,10 @@ public record LowPressureSyncPayload(List<LowPressureSnapshot> systems) implemen
             intensity = finite(intensity);
             motionX = finite(motionX);
             motionZ = finite(motionZ);
+            warmFrontLength = Math.max(0.0F, finite(warmFrontLength));
+            coldFrontLength = Math.max(0.0F, finite(coldFrontLength));
+            warmFrontAngleDegrees = finite(warmFrontAngleDegrees) == 0.0F ? DEFAULT_WARM_FRONT_ANGLE : finite(warmFrontAngleDegrees);
+            coldFrontAngleDegrees = finite(coldFrontAngleDegrees) == 0.0F ? DEFAULT_COLD_FRONT_ANGLE : finite(coldFrontAngleDegrees);
             label = label == null ? "" : (label.length() <= 24 ? label : label.substring(0, 24));
         }
 
@@ -60,6 +88,11 @@ public record LowPressureSyncPayload(List<LowPressureSnapshot> systems) implemen
             buf.writeFloat(intensity);
             buf.writeDouble(motionX);
             buf.writeDouble(motionZ);
+            buf.writeFloat(warmFrontLength);
+            buf.writeFloat(coldFrontLength);
+            buf.writeFloat(warmFrontAngleDegrees);
+            buf.writeFloat(coldFrontAngleDegrees);
+            buf.writeBoolean(occluded);
             buf.writeUtf(label, 24);
         }
 
@@ -72,6 +105,11 @@ public record LowPressureSyncPayload(List<LowPressureSnapshot> systems) implemen
                     buf.readFloat(),
                     buf.readDouble(),
                     buf.readDouble(),
+                    buf.readFloat(),
+                    buf.readFloat(),
+                    buf.readFloat(),
+                    buf.readFloat(),
+                    buf.readBoolean(),
                     buf.readUtf(24)
             );
         }

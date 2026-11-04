@@ -30,12 +30,17 @@ public abstract class BlockRenderDispatcherMixin {
     )
     private void expandedweather2dynamics$tagFoliageVertices(ModelBlockRenderer renderer, BlockAndTintGetter level, BakedModel model, BlockState state, BlockPos pos, PoseStack poseStack, VertexConsumer consumer, boolean checkSides, RandomSource random, long seed, int packedOverlay, ModelData modelData, RenderType renderType) {
         VertexConsumer target = consumer;
-        int marker = FoliageWindBlocks.markerFor(state);
-        if (marker != FoliageWindBlocks.NONE && FoliageWindController.enabled() && state.getRenderShape() == RenderShape.MODEL && isSupportedCutoutLayer(renderType)) {
-            target = new FoliageWindVertexConsumer(consumer, marker);
+        int foliageClass = FoliageWindBlocks.classFor(state);
+        if (foliageClass != FoliageWindBlocks.NONE && FoliageWindController.enabled() && state.getRenderShape() == RenderShape.MODEL && isSupportedCutoutLayer(renderType)) {
+            // Section meshes bake their vertices relative to the section origin, so the row the block sits in
+            // is what turns a vertex's Y into a height up its own plant. The mask is the section size, and is
+            // exact for negative Y as well - it is the same arithmetic the section grid itself is built on.
+            target = new FoliageWindVertexConsumer(consumer, foliageClass, pos.getY() & SECTION_MASK);
         }
         renderer.tesselateBlock(level, model, state, pos, poseStack, target, checkSides, random, seed, packedOverlay, modelData, renderType);
     }
+
+    private static final int SECTION_MASK = 15;
 
     private static boolean isSupportedCutoutLayer(RenderType renderType) {
         return renderType == RenderType.cutout() || renderType == RenderType.cutoutMipped();

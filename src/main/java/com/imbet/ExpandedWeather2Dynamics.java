@@ -23,14 +23,26 @@ public final class ExpandedWeather2Dynamics {
 
     public ExpandedWeather2Dynamics(IEventBus modEventBus, ModContainer modContainer) {
         ModContent.register(modEventBus);
+        // The village jobs register their own point-of-interest types and professions, and their trades
+        // listen on the game bus, because a profession is a registry entry and a trade list is an event.
+        com.imbet.registry.ModVillagers.register(modEventBus);
         modEventBus.addListener(ModNetworking::register);
         modEventBus.addListener(this::commonSetup);
+        // A saved config beats the code, which is right until what it holds is the old default rather than a
+        // choice - see Config.migrateStaleFoliageDefaults.
+        modEventBus.addListener(Config::onConfigLoaded);
         NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onLevelTick);
         NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onPlayerLoggedIn);
+        NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onPlayerLoggedOut);
         NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onBlockPlaced);
         NeoForge.EVENT_BUS.addListener(WeatherRuntimeEvents::onEntityJoinLevel);
         NeoForge.EVENT_BUS.addListener(com.imbet.weather.TornadoPlayerCapture::onFall);
+        // The world's calendar has two hooks of its own: the datapacks that describe it are read on every
+        // reload, and a world shutting down takes its season with it rather than leaving it for the next save.
+        NeoForge.EVENT_BUS.addListener(com.imbet.weather.SeasonDatapack::onAddReloadListeners);
+        NeoForge.EVENT_BUS.addListener(com.imbet.weather.SeasonCalendarService::onLevelUnload);
         NeoForge.EVENT_BUS.addListener(EwdCommand::register);
+        NeoForge.EVENT_BUS.addListener(com.imbet.command.StormCommandGate::onCommand);
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }
 

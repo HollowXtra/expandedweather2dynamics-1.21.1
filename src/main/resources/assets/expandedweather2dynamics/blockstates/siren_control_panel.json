@@ -1,0 +1,20 @@
+{
+  "variants": {
+    "facing=north,armed=false,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel", "y": 0 },
+    "facing=east,armed=false,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel", "y": 90 },
+    "facing=south,armed=false,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel", "y": 180 },
+    "facing=west,armed=false,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel", "y": 270 },
+    "facing=north,armed=true,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel_armed", "y": 0 },
+    "facing=east,armed=true,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel_armed", "y": 90 },
+    "facing=south,armed=true,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel_armed", "y": 180 },
+    "facing=west,armed=true,powered=false": { "model": "expandedweather2dynamics:block/siren_control_panel_armed", "y": 270 },
+    "facing=north,armed=false,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_signal", "y": 0 },
+    "facing=east,armed=false,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_signal", "y": 90 },
+    "facing=south,armed=false,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_signal", "y": 180 },
+    "facing=west,armed=false,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_signal", "y": 270 },
+    "facing=north,armed=true,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_armed_signal", "y": 0 },
+    "facing=east,armed=true,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_armed_signal", "y": 90 },
+    "facing=south,armed=true,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_armed_signal", "y": 180 },
+    "facing=west,armed=true,powered=true": { "model": "expandedweather2dynamics:block/siren_control_panel_armed_signal", "y": 270 }
+  }
+}

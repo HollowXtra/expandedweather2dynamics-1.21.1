@@ -1,0 +1,60 @@
+{
+  "sources": [
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/cloud256deck"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/cloud256classic"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/cloud256combined"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/rainshaft_light"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/rainshaft"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/rainshaft_heavy"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/rainshaft_virga"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/modern/cloud256"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/modern/funnel"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/modern/downfall3"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/modern/debris_1"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/modern/debris_2"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/modern/debris_3"
+    },
+    {
+      "type": "minecraft:single",
+      "resource": "coroutil:particles/modern/rain_white"
+    }
+  ]
+}

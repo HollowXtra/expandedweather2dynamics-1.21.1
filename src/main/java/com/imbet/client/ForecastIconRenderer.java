@@ -1,5 +1,6 @@
 package com.imbet.client;
 
+import com.imbet.Config;
 import com.imbet.network.ForecastSnapshotPayload;
 import com.imbet.network.ForecastPolygonSnapshot;
 import com.imbet.network.ForecastRiskSnapshot;
@@ -8,6 +9,7 @@ import com.imbet.network.LowPressureSyncPayload;
 import com.imbet.radar.RadarStormSnapshot;
 import com.imbet.weather.ClientForecastStore;
 import com.imbet.weather.ClientLowPressureStore;
+import com.imbet.weather.ForecastPanel;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Minecraft;
@@ -44,11 +46,43 @@ public final class ForecastIconRenderer {
     private static final float PLATE_HALF = 1.55F;
     private static final float RADAR_EXTENT = 1.42F;
 
+    /** The plate's own accent: the scope's outline, the readout's border, and its band with no outlook to colour it. */
+    private static final int PLATE_ACCENT = 0xCC00E4FF;
+
+    /** The readout panel's backing, and the ink its body lines are drawn in. */
+    private static final int PANEL_BACKING = 0xE0080D10;
+    private static final int PANEL_BODY_INK = 0xFFE8F1F3;
+
+    /** The panel's border, in the panel's own pixels, and how far each layer of it stands off the next. */
+    private static final float PANEL_BORDER_PX = 1.0F;
+    private static final float PANEL_BACKING_Z = -0.8F;
+    private static final float PANEL_STRIPE_Z = -0.6F;
+    private static final float PANEL_BAND_Z = -0.4F;
+    private static final float PANEL_RULE_Z = 0.4F;
+    private static final float PANEL_BORDER_Z = 0.8F;
+    /** The rule under the header: the plate's own accent, dimmed so it reads as a join and not a warning. */
+    private static final int PANEL_RULE = 0x9900E4FF;
+    /** The shading behind every other body row, faint enough to be a guide rather than a second panel. */
+    private static final int PANEL_ROW_STRIPE = 0x22FFFFFF;
+    /**
+     * The strip drawn behind each line of glyphs.
+     *
+     * <p>This is the one thing that makes a readout readable over anything: the plate can be over a snowfield
+     * at noon or a dark forest, and a panel that is legible on one of those is invisible on the other. Vanilla
+     * draws the same strip behind a nameplate for the same reason. It is a third of the way to black rather
+     * than solid, because the panel's own backing is already there and the numbers are the point, not the box.
+     */
+    private static final int PANEL_INK_BACKING = 0x55000000;
+
     private ForecastIconRenderer() {
     }
 
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_WEATHER) {
+            return;
+        }
+        // Iris runs every level stage again for its shadow map; this belongs to the visible frame only.
+        if (RenderingCompat.isRenderingShadowPass()) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -99,23 +133,24 @@ public final class ForecastIconRenderer {
         boolean riskMode = display.mode() == ForecastSnapshotPayload.MODE_RISK;
         renderScanPlate(stack, buffer, trackMode ? 0x4A0B090F : riskMode ? 0x4A040806 : storms.isEmpty() ? 0x36000000 : 0x52000000);
         if (riskMode) {
-            renderRiskPolygons(stack, buffer, display, polygons);
+            PlatePolygonRenderer.renderRisk(stack, buffer, display, polygons);
         } else if (!trackMode) {
-            renderAlertPolygons(stack, buffer, display, polygons);
+            PlatePolygonRenderer.renderAlerts(stack, buffer, display, polygons);
             renderLowPressureMarkers(minecraft, stack, buffer, display);
         }
 
+        Vec3 plateCentre = new Vec3(display.origin().getX() + 0.5D, display.origin().getY() + 1.04D, display.origin().getZ() + 0.5D);
         if (trackMode) {
             renderTrackLines(stack, buffer, display, tracks);
-            renderPanelText(minecraft, stack, buffer, trackLines(display.origin(), tracks));
+            renderReadout(minecraft, stack, buffer, plateCentre, camera, trackLines(display.origin(), tracks), PLATE_ACCENT);
         } else if (riskMode) {
-            renderPanelText(minecraft, stack, buffer, riskLines(display.risk(), storms));
+            renderReadout(minecraft, stack, buffer, plateCentre, camera, riskLines(display.risk(), storms), bandColor(display));
         } else if (storms.isEmpty()) {
             renderWeather2IconScan(minecraft, stack, buffer, display, storms);
-            renderPanelText(minecraft, stack, buffer, new String[]{"Weather2 Scan", "No weather returns"});
+            renderReadout(minecraft, stack, buffer, plateCentre, camera, new String[]{"Weather2 Scan", "No weather returns"}, PLATE_ACCENT);
         } else {
             renderWeather2IconScan(minecraft, stack, buffer, display, storms);
-            renderPanelText(minecraft, stack, buffer, liveScanLines(display.origin(), storms.get(0), storms.size()));
+            renderReadout(minecraft, stack, buffer, plateCentre, camera, liveScanLines(display.origin(), storms.get(0), storms.size()), PLATE_ACCENT);
         }
         stack.popPose();
     }
@@ -178,10 +213,10 @@ public final class ForecastIconRenderer {
         float half = PLATE_HALF;
         int alpha = Math.max(64, color >>> 24 & 255);
         RenderQuads.topQuad(consumer, pose, -half, -half, half, half, 0.015F, (alpha << 24) | 0x000000);
-        RenderQuads.topLine(consumer, pose, -half, -half, half, -half, 0.012F, 0.018F, 0xCC00E4FF);
-        RenderQuads.topLine(consumer, pose, half, -half, half, half, 0.012F, 0.018F, 0xCC00E4FF);
-        RenderQuads.topLine(consumer, pose, half, half, -half, half, 0.012F, 0.018F, 0xCC00E4FF);
-        RenderQuads.topLine(consumer, pose, -half, half, -half, -half, 0.012F, 0.018F, 0xCC00E4FF);
+        RenderQuads.topLine(consumer, pose, -half, -half, half, -half, 0.012F, 0.018F, PLATE_ACCENT);
+        RenderQuads.topLine(consumer, pose, half, -half, half, half, 0.012F, 0.018F, PLATE_ACCENT);
+        RenderQuads.topLine(consumer, pose, half, half, -half, half, 0.012F, 0.018F, PLATE_ACCENT);
+        RenderQuads.topLine(consumer, pose, -half, half, -half, -half, 0.012F, 0.018F, PLATE_ACCENT);
     }
 
     private static void renderWeather2IconScan(Minecraft minecraft, PoseStack stack, MultiBufferSource.BufferSource buffer, ClientForecastStore.Display display, List<RadarStormSnapshot> storms) {
@@ -279,156 +314,8 @@ public final class ForecastIconRenderer {
         }
     }
 
-    private static void renderAlertPolygons(PoseStack stack, MultiBufferSource.BufferSource buffer, ClientForecastStore.Display display, List<ForecastPolygonSnapshot> polygons) {
-        if (polygons.isEmpty()) {
-            return;
-        }
-        VertexConsumer consumer = buffer.getBuffer(FORECAST_PLATE);
-        PoseStack.Pose pose = stack.last();
-        polygons.stream()
-                .filter(polygon -> polygon.warning() || polygon.watch())
-                .sorted(Comparator.comparingInt(ForecastIconRenderer::alertPolygonLayer))
-                .forEach(polygon -> renderPolygonFill(
-                        consumer,
-                        pose,
-                        display,
-                        polygon,
-                        0.034F + alertPolygonLayer(polygon) * 0.002F,
-                        alertPolygonFillColor(polygon)
-                ));
-    }
-
-    private static int alertPolygonLayer(ForecastPolygonSnapshot polygon) {
-        if (isEmergencyPolygon(polygon)) {
-            return 2;
-        }
-        if (polygon.warning()) {
-            return 1;
-        }
-        return 0;
-    }
-
-    private static int alertPolygonFillColor(ForecastPolygonSnapshot polygon) {
-        if (isEmergencyPolygon(polygon)) {
-            return 0xB8D823FF;
-        }
-        if (polygon.watch()) {
-            return 0x96F6C945;
-        }
-        String label = normalized(polygon.label());
-        String product = normalized(polygon.productCode());
-        if (label.contains("severe thunderstorm") || product.contains("svr")) {
-            return 0x9AFFD23F;
-        }
-        return 0xA8FF3030;
-    }
-
-    private static boolean isEmergencyPolygon(ForecastPolygonSnapshot polygon) {
-        String label = normalized(polygon.label());
-        String product = normalized(polygon.productCode());
-        return label.contains("emergency") || product.contains("tor-e") || product.contains("emergency");
-    }
-
     private static String normalized(String text) {
         return text == null ? "" : text.toLowerCase(Locale.ROOT);
-    }
-
-    private static void renderRiskPolygons(PoseStack stack, MultiBufferSource.BufferSource buffer, ClientForecastStore.Display display, List<ForecastPolygonSnapshot> polygons) {
-        if (polygons.isEmpty()) {
-            return;
-        }
-        VertexConsumer consumer = buffer.getBuffer(FORECAST_PLATE);
-        PoseStack.Pose pose = stack.last();
-        for (ForecastPolygonSnapshot polygon : polygons) {
-            if (polygon.risk()) {
-                renderPolygonFill(consumer, pose, display, polygon, 0.031F);
-                renderPolygonOutline(consumer, pose, display, polygon, false, 0.010F, 0.039F);
-            }
-        }
-        for (ForecastPolygonSnapshot polygon : polygons) {
-            if (polygon.significantHazard()) {
-                renderPolygonOutline(consumer, pose, display, polygon, true, 0.013F, 0.047F);
-            }
-        }
-    }
-
-    private static void renderPolygonFill(VertexConsumer consumer, PoseStack.Pose pose, ClientForecastStore.Display display, ForecastPolygonSnapshot polygon, float y) {
-        renderPolygonFill(consumer, pose, display, polygon, y, withAlpha(polygon.color(), Math.min(84, polygon.color() >>> 24 & 255)));
-    }
-
-    private static void renderPolygonFill(VertexConsumer consumer, PoseStack.Pose pose, ClientForecastStore.Display display, ForecastPolygonSnapshot polygon, float y, int fillColor) {
-        List<ForecastPolygonSnapshot.Point> points = polygon.points();
-        if (points.size() < 3) {
-            return;
-        }
-        float centerX = 0.0F;
-        float centerZ = 0.0F;
-        for (ForecastPolygonSnapshot.Point point : points) {
-            centerX += localOffset(point.x() - (display.origin().getX() + 0.5D), display.range());
-            centerZ += localOffset(point.z() - (display.origin().getZ() + 0.5D), display.range());
-        }
-        centerX /= points.size();
-        centerZ /= points.size();
-        for (int index = 0; index < points.size(); index++) {
-            ForecastPolygonSnapshot.Point first = points.get(index);
-            ForecastPolygonSnapshot.Point second = points.get((index + 1) % points.size());
-            float x1 = localOffset(first.x() - (display.origin().getX() + 0.5D), display.range());
-            float z1 = localOffset(first.z() - (display.origin().getZ() + 0.5D), display.range());
-            float x2 = localOffset(second.x() - (display.origin().getX() + 0.5D), display.range());
-            float z2 = localOffset(second.z() - (display.origin().getZ() + 0.5D), display.range());
-            RenderQuads.topPolyQuad(consumer, pose, centerX, centerZ, x1, z1, x2, z2, centerX, centerZ, y, fillColor);
-        }
-    }
-
-    private static void renderPolygonOutline(VertexConsumer consumer, PoseStack.Pose pose, ClientForecastStore.Display display, ForecastPolygonSnapshot polygon, boolean dashed, float halfWidth, float y) {
-        renderPolygonOutline(consumer, pose, display, polygon, dashed, halfWidth, y, polygon.color());
-    }
-
-    private static void renderPolygonOutline(VertexConsumer consumer, PoseStack.Pose pose, ClientForecastStore.Display display, ForecastPolygonSnapshot polygon, boolean dashed, float halfWidth, float y, int color) {
-        List<ForecastPolygonSnapshot.Point> points = polygon.points();
-        if (points.size() < 2) {
-            return;
-        }
-        for (int index = 0; index < points.size(); index++) {
-            ForecastPolygonSnapshot.Point first = points.get(index);
-            ForecastPolygonSnapshot.Point second = points.get((index + 1) % points.size());
-            float x1 = localOffset(first.x() - (display.origin().getX() + 0.5D), display.range());
-            float z1 = localOffset(first.z() - (display.origin().getZ() + 0.5D), display.range());
-            float x2 = localOffset(second.x() - (display.origin().getX() + 0.5D), display.range());
-            float z2 = localOffset(second.z() - (display.origin().getZ() + 0.5D), display.range());
-            if (dashed) {
-                renderDashedLine(consumer, pose, x1, z1, x2, z2, halfWidth, y, color);
-            } else {
-                RenderQuads.topLine(consumer, pose, x1, z1, x2, z2, halfWidth, y, color);
-            }
-        }
-    }
-
-    private static void renderDashedLine(VertexConsumer consumer, PoseStack.Pose pose, float x1, float z1, float x2, float z2, float halfWidth, float y, int color) {
-        float dx = x2 - x1;
-        float dz = z2 - z1;
-        float length = (float) Math.sqrt(dx * dx + dz * dz);
-        if (length < 0.05F) {
-            return;
-        }
-        float dash = 0.052F;
-        float gap = 0.034F;
-        for (float start = 0.0F; start < length; start += dash + gap) {
-            float end = Math.min(length, start + dash);
-            float t1 = start / length;
-            float t2 = end / length;
-            RenderQuads.topLine(
-                    consumer,
-                    pose,
-                    Mth.lerp(t1, x1, x2),
-                    Mth.lerp(t1, z1, z2),
-                    Mth.lerp(t2, x1, x2),
-                    Mth.lerp(t2, z1, z2),
-                    halfWidth,
-                    y,
-                    color
-            );
-        }
     }
 
     private static void renderLowPressureMarkers(Minecraft minecraft, PoseStack stack, MultiBufferSource.BufferSource buffer, ClientForecastStore.Display display) {
@@ -444,15 +331,33 @@ public final class ForecastIconRenderer {
             if (distance > Math.min(display.range(), com.imbet.Config.LOW_PRESSURE_MAX_DISPLAY_RANGE_BLOCKS.get())) {
                 continue;
             }
-            float x = localOffset(dx, display.range());
-            float z = localOffset(dz, display.range());
+            // Unclamped, so a low whose centre is off the sheet draws the piece of its circulation
+            // that actually crosses the plate. Clamped, it would be pinned to the border and smear
+            // its fronts inward along the edge, which is a picture of nothing.
+            float x = plateOffset(dx, display.range());
+            float z = plateOffset(dz, display.range());
             VertexConsumer consumer = buffer.getBuffer(FORECAST_PLATE);
-            renderSynopticLow(consumer, pose, system, x, z);
-            renderFlatText(minecraft, stack, buffer, "L", x - 0.034F, z - 0.034F, 0.052F, 0.0064F, 0xFFFF3636);
+            renderSynopticLow(consumer, pose, system, x, z, display.range());
+            // The label belongs on the centre itself, so it can only be drawn when the centre is on
+            // the sheet; the fronts and isobars above are clipped instead.
+            if (Math.abs(x) < RADAR_EXTENT - 0.06F && Math.abs(z) < RADAR_EXTENT - 0.06F) {
+                renderFlatText(minecraft, stack, buffer, "L", x - 0.034F, z - 0.034F, 0.052F, 0.0064F, 0xFFFF3636);
+            }
         }
     }
 
-    private static void renderSynopticLow(VertexConsumer consumer, PoseStack.Pose pose, LowPressureSyncPayload.LowPressureSnapshot system, float x, float z) {
+    /**
+     * One low, drawn the way a synoptic chart draws it: its two fronts trail out of the centre with
+     * their pips on the side the system is advancing into - the cold front's triangles into the warm
+     * sector it is eating, the warm front's semicircles into the cold air it is shouldering aside -
+     * and both bowed the same cyclonic way around the centre.
+     *
+     * <p>The side comes from the geometry, never from a constant. With a constant the warm front's
+     * pips landed on the warm-sector side (measured, the component along the system's own motion was
+     * -0.47), so they met the cold front's triangles in the middle of the plate and the two fronts
+     * read as one solid red wedge instead of a warm sector with air on either side of it.
+     */
+    private static void renderSynopticLow(VertexConsumer consumer, PoseStack.Pose pose, LowPressureSyncPayload.LowPressureSnapshot system, float x, float z, int range) {
         double mx = system.motionX();
         double mz = system.motionZ();
         double motionLength = Math.sqrt(mx * mx + mz * mz);
@@ -465,12 +370,42 @@ public final class ForecastIconRenderer {
         float fz = (float) (mz / motionLength);
         renderLowPressureIsobars(consumer, pose, x, z, fx, fz, system.intensity(), 0.037F);
 
-        float warmX = rotateX(fx, fz, 28.0F);
-        float warmZ = rotateZ(fx, fz, 28.0F);
-        float coldX = rotateX(fx, fz, 145.0F);
-        float coldZ = rotateZ(fx, fz, 145.0F);
-        renderCurvedFrontArm(consumer, pose, x, z, warmX, warmZ, 0.48F + system.intensity() * 0.34F, 0xE0B13A2D, true, 0.043F, 1.0F);
-        renderCurvedFrontArm(consumer, pose, x, z, coldX, coldZ, 0.54F + system.intensity() * 0.40F, 0xE03648B8, false, 0.044F, -1.0F);
+        float warmX = rotateX(fx, fz, system.warmFrontAngleDegrees());
+        float warmZ = rotateZ(fx, fz, system.warmFrontAngleDegrees());
+        float coldX = rotateX(fx, fz, system.coldFrontAngleDegrees());
+        float coldZ = rotateZ(fx, fz, system.coldFrontAngleDegrees());
+        float warmLength = frontArmLength(system.warmFrontLength(), system.radius(), range, 0.48F + system.intensity() * 0.34F);
+        float coldLength = frontArmLength(system.coldFrontLength(), system.radius(), range, 0.54F + system.intensity() * 0.40F);
+        renderCurvedFrontArm(consumer, pose, x, z, warmX, warmZ, warmLength, 0xE0B13A2D, true, 0.043F,
+                advanceSide(warmX, warmZ, fx, fz), system.occluded());
+        renderCurvedFrontArm(consumer, pose, x, z, coldX, coldZ, coldLength, 0xE03648B8, false, 0.044F,
+                advanceSide(coldX, coldZ, fx, fz), false);
+    }
+
+    /**
+     * Front arms are drawn in proportion to the low's own circulation rather than to the map. A
+     * 1900-block front on a 2048-block-range plate would otherwise run off the sheet and read as a
+     * line across the whole plate instead of as one arm of a system; scaling by the circulation keeps
+     * the warm sector the same shape at every range, and clamps the circulation itself so even a huge
+     * low still fits.
+     */
+    private static float frontArmLength(double blocks, float circulationBlocks, int range, float fallback) {
+        if (!(blocks > 1.0D) || !(circulationBlocks > 1.0F)) {
+            return fallback;
+        }
+        float circulation = Mth.clamp(plateOffset(circulationBlocks, range), 0.25F, 0.90F);
+        return Mth.clamp(circulation * (float) (blocks / circulationBlocks), 0.20F, RADAR_EXTENT);
+    }
+
+    /**
+     * +1 or -1: the side of an arm the system's own motion is carrying that front toward, which is
+     * the side a chart puts its pips on. Rotation invariant, so it holds for any heading.
+     */
+    private static float advanceSide(float dirX, float dirZ, float motionX, float motionZ) {
+        float normalX = -dirZ;
+        float normalZ = dirX;
+        float along = normalX * motionX + normalZ * motionZ;
+        return along < 0.0F ? -1.0F : 1.0F;
     }
 
     private static void renderLowPressureIsobars(VertexConsumer consumer, PoseStack.Pose pose, float x, float z, float motionX, float motionZ, float intensity, float y) {
@@ -496,7 +431,10 @@ public final class ForecastIconRenderer {
             float sin = (float) Math.sin(angle);
             float x = centerX + localX * cos - localZ * sin;
             float z = centerZ + localX * sin + localZ * cos;
-            RenderQuads.topLine(consumer, pose, previousX, previousZ, x, z, 0.0026F, y, color);
+            float[] clipped = clipToPlate(previousX, previousZ, x, z);
+            if (clipped != null) {
+                RenderQuads.topLine(consumer, pose, clipped[0], clipped[1], clipped[2], clipped[3], 0.0026F, y, color);
+            }
             previousX = x;
             previousZ = z;
         }
@@ -525,7 +463,7 @@ public final class ForecastIconRenderer {
         }
     }
 
-    private static void renderCurvedFrontArm(VertexConsumer consumer, PoseStack.Pose pose, float x, float z, float dirX, float dirZ, float length, int color, boolean warm, float y, float curveSide) {
+    private static void renderCurvedFrontArm(VertexConsumer consumer, PoseStack.Pose pose, float x, float z, float dirX, float dirZ, float length, int color, boolean warm, float y, float side, boolean occluded) {
         float dirLength = (float) Math.sqrt(dirX * dirX + dirZ * dirZ);
         if (dirLength < 1.0E-4F) {
             return;
@@ -534,7 +472,9 @@ public final class ForecastIconRenderer {
         dirZ /= dirLength;
         float normalX = -dirZ;
         float normalZ = dirX;
-        float curve = length * (warm ? 0.34F : 0.42F) * curveSide;
+        // One side drives both the bow and the pips: a front curves toward the air it is moving into,
+        // so the warm front bulges ahead of itself and the cold front hooks around into the warm sector.
+        float curve = length * (warm ? 0.34F : 0.42F) * side;
         float controlX = x + dirX * length * 0.46F + normalX * curve;
         float controlZ = z + dirZ * length * 0.46F + normalZ * curve;
         float endX = x + dirX * length;
@@ -547,18 +487,11 @@ public final class ForecastIconRenderer {
             float t = index / (float) segments;
             float px = bezier(x, controlX, endX, t);
             float pz = bezier(z, controlZ, endZ, t);
-            if (insideRadar(previousX, previousZ) || insideRadar(px, pz)) {
-                RenderQuads.topLine(
-                        consumer,
-                        pose,
-                        Mth.clamp(previousX, -RADAR_EXTENT, RADAR_EXTENT),
-                        Mth.clamp(previousZ, -RADAR_EXTENT, RADAR_EXTENT),
-                        Mth.clamp(px, -RADAR_EXTENT, RADAR_EXTENT),
-                        Mth.clamp(pz, -RADAR_EXTENT, RADAR_EXTENT),
-                        warm ? 0.0075F : 0.0085F,
-                        y,
-                        color
-                );
+            // Clip the segment to the plate rather than clamping its ends: clamping dragged an arm that
+            // ran off the sheet along the border, which drew a straight line that was never there.
+            float[] clipped = clipToPlate(previousX, previousZ, px, pz);
+            if (clipped != null) {
+                RenderQuads.topLine(consumer, pose, clipped[0], clipped[1], clipped[2], clipped[3], warm ? 0.0075F : 0.0085F, y, color);
             }
             previousX = px;
             previousZ = pz;
@@ -567,7 +500,8 @@ public final class ForecastIconRenderer {
         float spacing = warm ? 0.135F : 0.125F;
         float markerSize = warm ? 0.046F : 0.052F;
         float startDistance = warm ? 0.13F : 0.12F;
-        for (float distance = startDistance; distance < length - 0.04F; distance += spacing) {
+        int marker = 0;
+        for (float distance = startDistance; distance < length - 0.04F; distance += spacing, marker++) {
             float t = Mth.clamp(distance / Math.max(0.001F, length), 0.0F, 1.0F);
             float px = bezier(x, controlX, endX, t);
             float pz = bezier(z, controlZ, endZ, t);
@@ -584,11 +518,13 @@ public final class ForecastIconRenderer {
                 tx /= tangentLength;
                 tz /= tangentLength;
             }
-            float markerSide = curveSide >= 0.0F ? 1.0F : -1.0F;
-            if (warm) {
-                renderWarmFrontSemicircle(consumer, pose, px, pz, tx, tz, markerSide, markerSize, y + 0.003F, color);
+            // An occluded front is the warm front lifted off the ground, and a chart shows both of its
+            // symbols on the one line: alternating semicircles and triangles, all on the advancing side.
+            boolean triangle = !warm || (occluded && (marker & 1) == 1);
+            if (triangle) {
+                renderColdFrontTriangle(consumer, pose, px, pz, tx, tz, side, warm ? markerSize * 0.86F : markerSize, y + 0.003F, color);
             } else {
-                renderColdFrontTriangle(consumer, pose, px, pz, tx, tz, markerSide, markerSize, y + 0.003F, color);
+                renderWarmFrontSemicircle(consumer, pose, px, pz, tx, tz, side, markerSize, y + 0.003F, color);
             }
         }
     }
@@ -604,6 +540,38 @@ public final class ForecastIconRenderer {
 
     private static boolean insideRadar(float x, float z) {
         return Math.abs(x) <= RADAR_EXTENT && Math.abs(z) <= RADAR_EXTENT;
+    }
+
+    /**
+     * Liang-Barsky clip of a plate-space segment against the plate square, or null when the whole
+     * segment lies outside it. Front arms and isobars of a low near the sheet's edge need this:
+     * clamping their endpoints instead both stretches them to the border and bends them along it.
+     */
+    private static float[] clipToPlate(float x1, float z1, float x2, float z2) {
+        float dx = x2 - x1;
+        float dz = z2 - z1;
+        float enter = 0.0F;
+        float exit = 1.0F;
+        float[] direction = {-dx, dx, -dz, dz};
+        float[] distance = {x1 + RADAR_EXTENT, RADAR_EXTENT - x1, z1 + RADAR_EXTENT, RADAR_EXTENT - z1};
+        for (int edge = 0; edge < 4; edge++) {
+            if (Math.abs(direction[edge]) < 1.0E-6F) {
+                if (distance[edge] < 0.0F) {
+                    return null;
+                }
+                continue;
+            }
+            float t = distance[edge] / direction[edge];
+            if (direction[edge] < 0.0F) {
+                enter = Math.max(enter, t);
+            } else {
+                exit = Math.min(exit, t);
+            }
+        }
+        if (enter > exit) {
+            return null;
+        }
+        return new float[]{x1 + dx * enter, z1 + dz * enter, x1 + dx * exit, z1 + dz * exit};
     }
 
     private static void renderWarmFrontSemicircle(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float tangentX, float tangentZ, float side, float radius, float y, int color) {
@@ -654,6 +622,120 @@ public final class ForecastIconRenderer {
         return (float) (x * Math.sin(radians) + z * Math.cos(radians));
     }
 
+    /**
+     * The outlook's own category colour for the band across the top of the readout, or the plate's accent
+     * when the display is showing something other than an outlook - a track list, a live scan - or an
+     * outlook with no category colour to give.
+     */
+    private static int bandColor(ClientForecastStore.Display display) {
+        ForecastRiskSnapshot risk = display.risk();
+        int colour = risk == null ? 0 : risk.categoricalColor();
+        return colour >>> 24 == 0 ? PLATE_ACCENT : colour;
+    }
+
+    /**
+     * The readout itself: the display's lines, standing on a panel that turns to face the player.
+     *
+     * <p>The geometry and the placement are all in {@link ForecastPanel} - the panel's size from the
+     * widest line, its scale from the distance, its facing from the camera's offset - and all this does is
+     * measure the font, lay the lines out in the panel's own pixels, and put the vertices where those
+     * numbers say.
+     *
+     * <p>The panel's frame is the camera-facing one with the camera's pitch dropped: yaw onto the player,
+     * a fixed lean away, then the font's own y-down flip. That keeps the panel upright no matter how high
+     * the player is standing, which a name tag's orientation does not - a name tag lies down as you look at
+     * it from above.
+     *
+     * <p>The quads are all drawn before the first text call, because asking the buffer source for a font's
+     * render type ends the batch the panel's vertices came from - the note at the top of {@link RenderQuads}
+     * is about exactly this.
+     */
+    private static void renderReadout(Minecraft minecraft, PoseStack stack, MultiBufferSource.BufferSource buffer,
+                                      Vec3 plateCentre, Vec3 camera, String[] lines, int bandColor) {
+        // The rows are decided before anything is measured or placed, and the panel is then sized for them:
+        // a readout too long for the panel gets a row that counts what was left out rather than a silent cut.
+        String[] shown = ForecastPanel.rows(lines);
+        if (shown.length == 0) {
+            return;
+        }
+        if (!Config.FORECAST_READOUT_PANEL.get()) {
+            renderPanelText(minecraft, stack, buffer, shown);
+            return;
+        }
+        Font font = minecraft.font;
+        int count = shown.length;
+        String[] fitted = new String[count];
+        int widest = 0;
+        for (int index = 0; index < count; index++) {
+            fitted[index] = fitLine(font, shown[index], ForecastPanel.fitWidthPx());
+            widest = Math.max(widest, font.width(fitted[index]));
+        }
+        double dx = camera.x - plateCentre.x;
+        double dz = camera.z - plateCentre.z;
+        float scale = ForecastPanel.scaleFor(plateCentre.distanceTo(camera), Config.FORECAST_READOUT_SCALE.get());
+        double yaw = ForecastPanel.faceYaw(dx, dz);
+        int widthPx = ForecastPanel.panelWidthPx(widest);
+        int heightPx = ForecastPanel.panelHeightPx(count);
+        float half = widthPx * 0.5F;
+        float textX = -half + ForecastPanel.PAD_PX;
+
+        stack.pushPose();
+        stack.translate(ForecastPanel.backOffsetX(yaw, ForecastPanel.FAR_SIDE_BLOCKS),
+                ForecastPanel.topLiftBlocks(count, scale),
+                ForecastPanel.backOffsetZ(yaw, ForecastPanel.FAR_SIDE_BLOCKS));
+        stack.mulPose(Axis.YP.rotationDegrees((float) yaw));
+        stack.mulPose(Axis.XP.rotationDegrees(-(float) ForecastPanel.LEAN_DEGREES));
+        stack.scale(scale, -scale, scale);
+
+        VertexConsumer consumer = buffer.getBuffer(FORECAST_PLATE);
+        PoseStack.Pose pose = stack.last();
+        // Every quad goes down before the first text call: asking the buffer source for a font's render type
+        // ends the batch the panel's vertices came from, and the rows' shading is part of the panel.
+        RenderQuads.faceQuadUv(consumer, pose, -half, 0.0F, half, heightPx, PANEL_BACKING_Z, PANEL_BACKING);
+        for (int row = 0; row < ForecastPanel.bodyLines(count); row++) {
+            if (!ForecastPanel.stripedRow(row)) {
+                continue;
+            }
+            int rowTop = ForecastPanel.bodyRowY(row);
+            RenderQuads.faceQuadUv(consumer, pose, -half, rowTop, half, rowTop + ForecastPanel.rowSpanPx(),
+                    PANEL_STRIPE_Z, PANEL_ROW_STRIPE);
+        }
+        RenderQuads.faceQuadUv(consumer, pose, -half, 0.0F, half, ForecastPanel.HEADER_BAND_PX, PANEL_BAND_Z,
+                withAlpha(bandColor, 0xE4));
+        RenderQuads.faceQuadUv(consumer, pose, -half, ForecastPanel.HEADER_BAND_PX, half,
+                ForecastPanel.HEADER_BAND_PX + ForecastPanel.HEADER_RULE_PX, PANEL_RULE_Z, PANEL_RULE);
+        RenderQuads.faceQuadUv(consumer, pose, -half, 0.0F, half, PANEL_BORDER_PX, PANEL_BORDER_Z, PLATE_ACCENT);
+        RenderQuads.faceQuadUv(consumer, pose, -half, heightPx - PANEL_BORDER_PX, half, heightPx, PANEL_BORDER_Z, PLATE_ACCENT);
+        RenderQuads.faceQuadUv(consumer, pose, -half, 0.0F, -half + PANEL_BORDER_PX, heightPx, PANEL_BORDER_Z, PLATE_ACCENT);
+        RenderQuads.faceQuadUv(consumer, pose, half - PANEL_BORDER_PX, 0.0F, half, heightPx, PANEL_BORDER_Z, PLATE_ACCENT);
+
+        drawPanelText(minecraft, stack, buffer, fitted[0], textX, ForecastPanel.HEADER_TEXT_Y_PX,
+                ForecastPanel.headerInk(bandColor));
+        for (int index = 1; index < count; index++) {
+            drawPanelText(minecraft, stack, buffer, fitted[index], textX,
+                    ForecastPanel.bodyRowY(index - 1), PANEL_BODY_INK);
+        }
+        stack.popPose();
+    }
+
+    /**
+     * One line on the readout panel, in the panel's own pixels: x to the right from the panel's left edge,
+     * y downward from its top. The pose it is given is already the panel's, so the offsets are pixels and
+     * not blocks.
+     */
+    private static void drawPanelText(Minecraft minecraft, PoseStack stack, MultiBufferSource.BufferSource buffer,
+                                      String text, float x, int y, int color) {
+        stack.pushPose();
+        stack.translate(x, y, 0.0F);
+        Matrix4f matrix = stack.last().pose();
+        // The shadow and the strip behind the glyphs are what make the same line read over a lit cloud and a
+        // dark forest; without them the panel's own backing is the only contrast there is, and the panel is
+        // deliberately dark enough to sit on a map rather than to carry text on its own.
+        minecraft.font.drawInBatch(text, 0.0F, 0.0F, color, true, matrix, buffer,
+                Font.DisplayMode.POLYGON_OFFSET, PANEL_INK_BACKING, LightTexture.FULL_BRIGHT);
+        stack.popPose();
+    }
+
     private static void renderPanelText(Minecraft minecraft, PoseStack stack, MultiBufferSource.BufferSource buffer, String[] lines) {
         Font font = minecraft.font;
         stack.pushPose();
@@ -661,10 +743,10 @@ public final class ForecastIconRenderer {
         stack.mulPose(Axis.XP.rotationDegrees(90.0F));
         stack.scale(0.0050F, 0.0050F, 0.0050F);
         Matrix4f matrix = stack.last().pose();
-        int count = Math.min(lines.length, 7);
-        for (int index = 0; index < count; index++) {
+        for (int index = 0; index < lines.length; index++) {
             String line = fitLine(font, lines[index], 176);
-            font.drawInBatch(line, 0.0F, index * 10.0F, 0xE8FFFFFF, false, matrix, buffer, Font.DisplayMode.POLYGON_OFFSET, 0x66000000, LightTexture.FULL_BRIGHT);
+            font.drawInBatch(line, 0.0F, index * ForecastPanel.LINE_LEADING_PX, 0xE8FFFFFF, true, matrix, buffer,
+                    Font.DisplayMode.POLYGON_OFFSET, PANEL_INK_BACKING, LightTexture.FULL_BRIGHT);
         }
         stack.popPose();
     }
@@ -870,6 +952,11 @@ public final class ForecastIconRenderer {
 
     private static float localOffset(double distance, int range) {
         return (float) Mth.clamp(distance / Math.max(128.0D, range) * 3.0D, -RADAR_EXTENT, RADAR_EXTENT);
+    }
+
+    /** The same mapping without the clamp: for geometry that clips itself instead. */
+    private static float plateOffset(double distance, int range) {
+        return (float) (distance / Math.max(128.0D, range) * 3.0D);
     }
 
     private static double displayX(RadarStormSnapshot storm) {

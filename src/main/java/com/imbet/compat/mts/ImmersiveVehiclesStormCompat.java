@@ -125,7 +125,9 @@ public final class ImmersiveVehiclesStormCompat {
         double mass = Math.max(120.0D, resolved.mass(vehicle));
         double massFactor = clamp(1200.0D / mass, 0.15D, 2.35D);
         double exposure = clamp(sideExposure * Math.sqrt(crossSection / 3.0D), 0.20D, 1.75D);
-        double severity = clamp(windMph / Math.max(1.0D, Config.WINDFIELD_STAGE5_MPH.get()), 0.0D, 1.2D);
+        // Dialed reference: the force below is proportional to the wind and scales with severity squared, so a raw
+        // reference would apply the strength setting three times over to the same gust.
+        double severity = clamp(windMph / Math.max(1.0D, Config.windMph(Config.WINDFIELD_STAGE5_MPH.get())), 0.0D, 1.2D);
         double maxDelta = Math.max(0.0D, Config.IMMERSIVE_VEHICLES_MAX_MOTION_DELTA_PER_TICK.get());
         double forceScale = Config.IMMERSIVE_VEHICLES_WIND_FORCE_SCALE.get() * severity * severity * exposure * massFactor * 0.09D;
         Vec3 force = capVector(relativeAir.scale(forceScale), maxDelta);

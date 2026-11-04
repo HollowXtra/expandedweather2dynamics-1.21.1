@@ -1,6 +1,7 @@
 package com.imbet.weather;
 
 import com.imbet.Config;
+import com.imbet.defence.Fortification;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -294,7 +295,12 @@ public final class BlockGrabSafety {
         try {
             air = state.isAir();
             fluid = !state.getFluidState().isEmpty();
-            protectedBlock = isProtected(state) || CompatHooks.isValkyrienBlockInteractionUnsafe(level, immutable, state);
+            // Fortification is folded in here rather than checked by each hazard, so a player's reinforced glass
+            // and their anchored walls are refused by every pass at once - the wind, the hail, the derecho's roof
+            // stripping, the lava - instead of by whichever pass happened to be tested. See Fortification.
+            protectedBlock = isProtected(state)
+                    || CompatHooks.isValkyrienBlockInteractionUnsafe(level, immutable, state)
+                    || Fortification.fortified(level, immutable, state);
             destroySpeed = state.getDestroySpeed(level, immutable);
         } catch (RuntimeException ignored) {
             return BlockSample.invalid(immutable);

@@ -12,37 +12,28 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
 import weather2.weathersystem.storm.StormObject;
 
-import java.util.Map;
-
+/**
+ * What a tornado does to the trees it passes: debarks the logs it has the wind for, and thins the crown of one it
+ * has much more than that for.
+ *
+ * <p>Every wood, not the game's own. The stripped form of a log used to be a table of the game's eight woods
+ * written into this class, which meant the mod's own trees were the only ones a tornado could debark: install a
+ * biome mod and the woods a player actually came for were the ones left standing dressed while the vanilla ones
+ * around them were stripped of their bark. The table is gone - {@link WoodForms} asks the game, and the wood's own
+ * name, what a log strips to - so a fir is debarked like an oak, whichever mod the fir came from.
+ *
+ * <p>The rest of the shape is unchanged and deliberately so: it is the leaves tag that decides what a crown is, so
+ * a mod's leaves thin exactly as the game's do, and the height window, the wind floor and the change budget are
+ * the config's.
+ */
 public final class TreeDamage {
-    private static final Map<Block, Block> STRIPPED = Map.ofEntries(
-            Map.entry(Blocks.OAK_LOG, Blocks.STRIPPED_OAK_LOG),
-            Map.entry(Blocks.SPRUCE_LOG, Blocks.STRIPPED_SPRUCE_LOG),
-            Map.entry(Blocks.BIRCH_LOG, Blocks.STRIPPED_BIRCH_LOG),
-            Map.entry(Blocks.JUNGLE_LOG, Blocks.STRIPPED_JUNGLE_LOG),
-            Map.entry(Blocks.ACACIA_LOG, Blocks.STRIPPED_ACACIA_LOG),
-            Map.entry(Blocks.DARK_OAK_LOG, Blocks.STRIPPED_DARK_OAK_LOG),
-            Map.entry(Blocks.MANGROVE_LOG, Blocks.STRIPPED_MANGROVE_LOG),
-            Map.entry(Blocks.CHERRY_LOG, Blocks.STRIPPED_CHERRY_LOG),
-            Map.entry(Blocks.OAK_WOOD, Blocks.STRIPPED_OAK_WOOD),
-            Map.entry(Blocks.SPRUCE_WOOD, Blocks.STRIPPED_SPRUCE_WOOD),
-            Map.entry(Blocks.BIRCH_WOOD, Blocks.STRIPPED_BIRCH_WOOD),
-            Map.entry(Blocks.JUNGLE_WOOD, Blocks.STRIPPED_JUNGLE_WOOD),
-            Map.entry(Blocks.ACACIA_WOOD, Blocks.STRIPPED_ACACIA_WOOD),
-            Map.entry(Blocks.DARK_OAK_WOOD, Blocks.STRIPPED_DARK_OAK_WOOD),
-            Map.entry(Blocks.MANGROVE_WOOD, Blocks.STRIPPED_MANGROVE_WOOD),
-            Map.entry(Blocks.CHERRY_WOOD, Blocks.STRIPPED_CHERRY_WOOD),
-            Map.entry(Blocks.CRIMSON_STEM, Blocks.STRIPPED_CRIMSON_STEM),
-            Map.entry(Blocks.WARPED_STEM, Blocks.STRIPPED_WARPED_STEM),
-            Map.entry(Blocks.CRIMSON_HYPHAE, Blocks.STRIPPED_CRIMSON_HYPHAE),
-            Map.entry(Blocks.WARPED_HYPHAE, Blocks.STRIPPED_WARPED_HYPHAE)
-    );
 
     private TreeDamage() {
     }
 
     public static void tick(ServerLevel level, StormObject storm, DynamicStormState state) {
-        if (!Config.DAMAGE_TREE_DEBARKING.get() || storm == null || storm.pos == null || level.getGameTime() % 10L != 0L) {
+        if (!Config.damageEnabled() || !Config.DAMAGE_TREE_DEBARKING.get()
+                || storm == null || storm.pos == null || level.getGameTime() % 10L != 0L) {
             return;
         }
         damageNear(level, storm, storm.pos, Math.max(8.0D, DynamicStormController.baseRadiusForWind(storm) * 0.9D), TornadoWindField.maxWindMph(storm), 18);
@@ -95,7 +86,7 @@ public final class TreeDamage {
         if (localMph < Config.DAMAGE_TREE_DEBARK_MPH.get()) {
             return false;
         }
-        Block stripped = STRIPPED.get(state.getBlock());
+        Block stripped = WoodForms.stripped(state.getBlock());
         if (stripped == null) {
             return false;
         }

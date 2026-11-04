@@ -18,6 +18,21 @@
         { "name": "FoliageWindStrength", "type": "float", "count": 1, "values": [ 0.0 ] },
         { "name": "FoliageWindTime", "type": "float", "count": 1, "values": [ 0.0 ] },
         { "name": "FoliageWindMaxOffset", "type": "float", "count": 1, "values": [ 0.18 ] },
-        { "name": "FoliageWindGust", "type": "float", "count": 1, "values": [ 0.0 ] }
+        { "name": "FoliageWindGust", "type": "float", "count": 1, "values": [ 0.0 ] },
+        { "name": "FoliageGustWavelength", "type": "float", "count": 1, "values": [ 26.0 ] },
+        { "name": "FoliageGustSpeed", "type": "float", "count": 1, "values": [ 0.0 ] },
+        { "name": "FoliageRestLean", "type": "float", "count": 1, "values": [ 0.35 ] },
+        { "name": "FoliageSkyFloor", "type": "float", "count": 1, "values": [ 0.2 ] },
+        { "name": "FoliageTrailStrength", "type": "float", "count": 1, "values": [ 0.0 ] },
+        { "name": "FoliageWaveLag", "type": "float", "count": 1, "values": [ 70.0 ] },
+        { "name": "FoliageWorldAnchor", "type": "float", "count": 3, "values": [ 0.0, 0.0, 0.0 ] },
+        { "name": "FoliageTrailP0", "type": "float", "count": 4, "values": [ 0.0, 0.0, 0.0, 0.0 ] },
+        { "name": "FoliageTrailP1", "type": "float", "count": 4, "values": [ 0.0, 0.0, 0.0, 0.0 ] },
+        { "name": "FoliageTrailP2", "type": "float", "count": 4, "values": [ 0.0, 0.0, 0.0, 0.0 ] },
+        { "name": "FoliageTrailP3", "type": "float", "count": 4, "values": [ 0.0, 0.0, 0.0, 0.0 ] },
+        { "name": "FoliageTrailD0", "type": "float", "count": 2, "values": [ 0.0, 0.0 ] },
+        { "name": "FoliageTrailD1", "type": "float", "count": 2, "values": [ 0.0, 0.0 ] },
+        { "name": "FoliageTrailD2", "type": "float", "count": 2, "values": [ 0.0, 0.0 ] },
+        { "name": "FoliageTrailD3", "type": "float", "count": 2, "values": [ 0.0, 0.0 ] }
     ]
 }

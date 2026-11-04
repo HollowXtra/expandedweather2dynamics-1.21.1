@@ -7,6 +7,7 @@ import com.imbet.weather.DynamicStormState;
 import com.imbet.weather.SpcIntensity;
 import com.imbet.weather.SpcRisk;
 import com.imbet.weather.StormClassifier;
+import com.imbet.weather.StormStageLabel;
 import com.imbet.weather.StormSubtype;
 import com.imbet.weather.SupercellStructureService;
 import com.imbet.weather.TornadoWindField;
@@ -45,12 +46,18 @@ public final class RadarService {
                 if (snapshot == null || !snapshot.active() || snapshot.circulationPosition().distanceTo(radarPos) > range) {
                     continue;
                 }
+                if (!drawsEcho(snapshot)) {
+                    continue;
+                }
                 snapshots.add(fromPhysicalSnapshot(radarPos, snapshot));
             }
             snapshots.sort(Comparator.comparingInt(RadarStormSnapshot::severity).reversed());
             return snapshots;
         }
 
+        // Read once for the whole pass rather than per storm: neither knob can change while the loop runs.
+        boolean structureRadar = Config.SUPERCELL_STRUCTURE_RADAR.get();
+        int minWallCloudPersistence = Config.SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_PERSISTENCE_TICKS.get();
         for (WeatherObject object : manager.getStormObjects()) {
             if (object == null || object.isDead || object.pos == null || object.pos.distanceTo(radarPos) > range) {
                 continue;
@@ -58,6 +65,13 @@ public final class RadarService {
             if (object instanceof StormObject storm) {
                 DynamicStormState state = DynamicStormController.stateFor(storm);
                 if (state.isAbsorbedOrDecaying()) {
+                    continue;
+                }
+                // A storm that has built a tower but is not raining yet has no echo. See drawsEcho.
+                boolean bareStorm = !storm.isPrecipitating()
+                        && storm.levelCurIntensityStage < StormObject.STATE_THUNDER
+                        && state.supercellStructureStrength() <= 0.05F;
+                if (bareStorm && !DynamicStormController.isDynamicVortex(storm)) {
                     continue;
                 }
                 SupercellStructureService.tick(level, storm, state);
@@ -84,13 +98,19 @@ public final class RadarService {
                 double rotationMps = dynamicVortex
                         ? TornadoWindField.maxWindMph(storm) * 0.44704D * (0.46D + Math.min(0.18D, state.subVortices().size() * 0.03D))
                         : Math.max(state.mesocycloneStrength() * 28.0D, wind.speedMph() * 0.44704D * 0.25D);
-                if (!dynamicVortex && !tropicalSystem && Config.SUPERCELL_STRUCTURE_RADAR.get() && state.wallCloudPersistenceTicks() >= Config.SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_PERSISTENCE_TICKS.get()) {
+                // A persisting rotating wall cloud reads as stronger rotation on the velocity product.
+                // This is a nowcast signal, so it lives on the radar and no longer on the outlook: the
+                // outlook is a forecast of the environment and observed storm structure must not move
+                // its numbers. That is the whole of what wallCloudRiskBoost now gates.
+                if (!dynamicVortex && !tropicalSystem && structureRadar
+                        && Config.SUPERCELL_STRUCTURE_WALL_CLOUD_RISK_BOOST.get()
+                        && state.wallCloudPersistenceTicks() >= minWallCloudPersistence) {
                     rotationMps = Math.max(rotationMps, state.wallCloudRotationStrength() * 34.0D);
                 }
                 rotationMps *= DynamicStormController.visualRotationSign(storm);
                 SupercellStructureService.StructureSample structure = SupercellStructureService.sample(storm, state);
-                boolean persistentWallCloud = state.wallCloudStrength() > 0.05F && state.wallCloudPersistenceTicks() >= Config.SUPERCELL_STRUCTURE_WALL_CLOUD_MIN_PERSISTENCE_TICKS.get();
-                boolean hookEcho = tornadoLike || (!tropicalSystem && Config.SUPERCELL_STRUCTURE_RADAR.get() && (state.mesocycloneStrength() >= 0.55F || persistentWallCloud));
+                boolean persistentWallCloud = state.wallCloudStrength() > 0.05F && state.wallCloudPersistenceTicks() >= minWallCloudPersistence;
+                boolean hookEcho = tornadoLike || (!tropicalSystem && structureRadar && (state.mesocycloneStrength() >= 0.55F || persistentWallCloud));
                 Vec3 circulation = dynamicVortex ? DynamicStormController.tornadoCirculationCenter(storm) : persistentWallCloud ? structure.wallCloudCenter() : structure.mesocyclone();
                 Vec3 hook = hookEcho ? circulation : storm.pos;
                 boolean confirmedCirculation = tornadoLike;
@@ -118,7 +138,15 @@ public final class RadarService {
                         hook.z,
                         confirmedCirculation,
                         storm.levelCurIntensityStage,
-                        stageLabelFor(storm.levelCurIntensityStage, storm.levelStormIntensityMax)
+                        StormStageLabel.label(storm, state, snapshotWindMph, level.getGameTime()),
+                        (float) structure.radius(),
+                        state.supercellStructureStrength(),
+                        state.mesocycloneStrength(),
+                        state.ffdStrength(),
+                        state.hailCoreStrength(),
+                        SupercellStructureService.modeFor(storm, state).ordinal(),
+                        structure.mesocyclone().x,
+                        structure.mesocyclone().z
                 ));
                 if (dynamicVortex) {
                     for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
@@ -149,13 +177,25 @@ public final class RadarService {
                                 center.z,
                                 true,
                                 storm.levelCurIntensityStage,
-                                stageLabelFor(storm.levelCurIntensityStage, storm.levelStormIntensityMax)
+                                // A satellite rides no ladder of its own - the parent's rung said nothing
+                                // about the smaller circulation, so it carries its own wind's EF instead.
+                                StormStageLabel.satelliteLabel(satelliteWind),
+                                // A satellite is a circulation inside the parent's echo, so it carries no
+                                // precipitation extent and no structure of its own.
+                                0.0F,
+                                0.0F,
+                                0.0F,
+                                0.0F,
+                                0.0F,
+                                SupercellStructureService.SupercellMode.CLASSIC.ordinal(),
+                                center.x,
+                                center.z
                         ));
                     }
                 }
             } else if (object instanceof WeatherObjectParticleStorm particleStorm) {
                 StormSubtype subtype = StormClassifier.classify(particleStorm);
-                if (subtype == StormSubtype.NONE) {
+                if (subtype == StormSubtype.NONE || subtype == StormSubtype.FLAMMAGENITUS) {
                     continue;
                 }
                 SpcRisk risk = StormClassifier.riskFor(particleStorm);
@@ -184,7 +224,15 @@ public final class RadarService {
                         particleStorm.pos.z,
                         false,
                         0,
-                        ""
+                        "",
+                        Math.max(24.0F, particleStorm.getSize()),
+                        0.0F,
+                        0.0F,
+                        0.0F,
+                        0.0F,
+                        SupercellStructureService.SupercellMode.CLASSIC.ordinal(),
+                        particleStorm.pos.x,
+                        particleStorm.pos.z
                 ));
             }
         }
@@ -194,15 +242,35 @@ public final class RadarService {
         return snapshots;
     }
 
+    /**
+     * Whether an object belongs on a weather radar at all.
+     *
+     * <p>A radar returns precipitation and the debris a circulation lifts, not cloud - which is why a storm
+     * that has only built a tower, with nothing falling out of it, is invisible on the scope until its first
+     * echo appears. Circulations are kept whatever the sky is doing, because a tornado's debris ball and a
+     * dust devil's dust are exactly what the radar is seeing, and the storm above them may be rain-free.
+     */
+    private static boolean drawsEcho(WeatherPhysicalSnapshot snapshot) {
+        return snapshot.precipitating() || snapshot.confirmedCirculation();
+    }
+
     private static RadarStormSnapshot fromPhysicalSnapshot(Vec3 radarPos, WeatherPhysicalSnapshot snapshot) {
         SpcRisk risk = riskForSnapshot(snapshot);
         boolean confirmed = snapshot.confirmedCirculation();
         boolean vortex = snapshot.trackableVortex();
-        boolean hook = confirmed || vortex;
+        // A strongly rotating supercell deserves a hook on the reflectivity product even before it produces
+        // a tornado - that is what the hook echo is for. The threshold matches the one the other data path
+        // uses, so both agree about which storms have one.
+        boolean structureHook = snapshot.hasStructure() && Config.SUPERCELL_STRUCTURE_RADAR.get()
+                && snapshot.mesocycloneStrength() >= 0.55F;
+        boolean hook = confirmed || vortex || structureHook;
         double reflectivity = reflectivityDbzFor(snapshot);
         Vec3 storm = snapshot.stormPosition();
         Vec3 circulation = snapshot.circulationPosition();
         Vec3 motion = snapshot.motion() == null ? Vec3.ZERO : snapshot.motion();
+        // Where the hook actually is: the storm's own hook-echo notch when it has a resolved structure,
+        // otherwise the circulation (a tornado's hook wraps it) or the storm centre as before.
+        Vec3 hookPoint = snapshot.hasStructure() ? snapshot.structureHook() : circulation;
         double rotationMps = vortex
                 ? snapshot.maxWindMph() * 0.44704D * rotationFactor(snapshot.subtype())
                 : snapshot.windVectorMph().length() * 0.44704D * 0.22D;
@@ -226,11 +294,19 @@ public final class RadarService {
                 vortex,
                 circulation.x,
                 circulation.z,
-                hook ? circulation.x : storm.x,
-                hook ? circulation.z : storm.z,
+                hook ? hookPoint.x : storm.x,
+                hook ? hookPoint.z : storm.z,
                 confirmed,
                 snapshot.stage(),
-                snapshot.stageLabel()
+                snapshot.stageLabel(),
+                snapshot.stormRadius(),
+                snapshot.structureStrength(),
+                snapshot.mesocycloneStrength(),
+                snapshot.ffdStrength(),
+                snapshot.hailStrength(),
+                snapshot.structureMode(),
+                snapshot.structureMesocyclone().x,
+                snapshot.structureMesocyclone().z
         );
     }
 
@@ -308,7 +384,7 @@ public final class RadarService {
         if (type == StormSubtype.SQUALL_LINE) {
             return wind >= 90.0D ? SpcRisk.MODERATE : wind >= 75.0D ? SpcRisk.ENHANCED : wind >= 58.0D ? SpcRisk.SLIGHT : SpcRisk.MARGINAL;
         }
-        if (type == StormSubtype.WATERSPOUT || type == StormSubtype.LANDSPOUT || type == StormSubtype.GUSTNADO) {
+        if (type == StormSubtype.WATERSPOUT || type == StormSubtype.LANDSPOUT || type == StormSubtype.GUSTNADO || type == StormSubtype.FUNNEL_CLOUD) {
             return SpcRisk.MARGINAL;
         }
         if (type == StormSubtype.FIRE_WHIRL) {
@@ -343,7 +419,7 @@ public final class RadarService {
             dbz = Math.max(dbz, 42.0D + Math.min(22.0D, wind / 7.0D));
         } else if (type == StormSubtype.SQUALL_LINE) {
             dbz = Math.max(dbz, 36.0D + Math.min(20.0D, wind / 5.5D));
-        } else if (type == StormSubtype.TORNADO || type == StormSubtype.SATELLITE_TORNADO || type == StormSubtype.WATERSPOUT || type == StormSubtype.LANDSPOUT || type == StormSubtype.GUSTNADO || type == StormSubtype.FIRE_WHIRL || type == StormSubtype.FLOATER_TORNADO) {
+        } else if (type == StormSubtype.TORNADO || type == StormSubtype.SATELLITE_TORNADO || type == StormSubtype.WATERSPOUT || type == StormSubtype.LANDSPOUT || type == StormSubtype.GUSTNADO || type == StormSubtype.FIRE_WHIRL || type == StormSubtype.FLOATER_TORNADO || type == StormSubtype.FUNNEL_CLOUD) {
             dbz = Math.max(dbz, 34.0D + Math.min(30.0D, wind / 7.0D));
             if (snapshot.damagePathWidth() >= 80.0F) {
                 dbz += 3.0D;
@@ -379,10 +455,4 @@ public final class RadarService {
         return 0.42D;
     }
 
-    private static String stageLabelFor(int stage, int maxStage) {
-        if (stage <= 0) {
-            return "";
-        }
-        return maxStage > 0 ? "Stage " + stage + "/" + maxStage : "Stage " + stage;
-    }
 }

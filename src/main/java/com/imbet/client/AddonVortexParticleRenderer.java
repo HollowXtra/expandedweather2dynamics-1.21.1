@@ -3,8 +3,15 @@ package com.imbet.client;
 import com.imbet.Config;
 import com.imbet.weather.BlockGrabSafety;
 import com.imbet.weather.DustDevilEntity;
+import com.imbet.weather.FunnelCloudEntity;
 import com.imbet.weather.GustnadoEntity;
 import com.imbet.weather.LandspoutEntity;
+import com.imbet.weather.LavaWhirlEntity;
+import com.imbet.weather.LavaWhirlVisual;
+import com.imbet.weather.SnowDevilEntity;
+import com.imbet.weather.SteamDevilEntity;
+import com.imbet.weather.SteamDevilVisual;
+import com.imbet.weather.SnowDevilVisual;
 import com.imbet.weather.WaterspoutEntity;
 import extendedrenderer.particle.ParticleRegistry;
 import extendedrenderer.particle.entity.PivotingParticle;
@@ -30,7 +37,7 @@ public final class AddonVortexParticleRenderer {
     }
 
     public static void tick(DustDevilEntity entity, float partialTick) {
-        if (!Config.VISUALS_ENABLED.get() || !Config.EXTENDED_RENDERING_ENABLED.get() || entity == null || entity.isRemoved() || ParticleRegistry.cloud256 == null) {
+        if (!Config.VISUALS_ENABLED.get() || !Config.EXTENDED_RENDERING_ENABLED.get() || entity == null || entity.isRemoved() || ParticleArt.cloud256() == null) {
             return;
         }
         if (Minecraft.getInstance().isPaused()) {
@@ -64,11 +71,32 @@ public final class AddonVortexParticleRenderer {
 
     private enum VortexKind {
         DUST_DEVIL,
+        SNOW_DEVIL,
         GUSTNADO,
         LANDSPOUT,
-        WATERSPOUT;
+        WATERSPOUT,
+        FUNNEL_CLOUD,
+        LAVA_WHIRL,
+        STEAM_DEVIL;
 
         private static VortexKind forEntity(DustDevilEntity entity) {
+            if (entity instanceof FunnelCloudEntity) {
+                return FUNNEL_CLOUD;
+            }
+            // The volcanic pair before the dust devil fallback, and before the snow devil, because all four
+            // of them are DustDevilEntity instances: without their own kinds they would all be drawn in the
+            // colour of the earth, which for a whirl of fire is not a near miss.
+            if (entity instanceof LavaWhirlEntity) {
+                return LAVA_WHIRL;
+            }
+            if (entity instanceof SteamDevilEntity) {
+                return STEAM_DEVIL;
+            }
+            // Before the dust devil check, because a snow devil is a DustDevilEntity too: without this it
+            // fell through to the dust devil's own kind and was drawn in the colour of the earth.
+            if (entity instanceof SnowDevilEntity) {
+                return SNOW_DEVIL;
+            }
             if (entity instanceof WaterspoutEntity) {
                 return WATERSPOUT;
             }
@@ -81,8 +109,13 @@ public final class AddonVortexParticleRenderer {
             return DUST_DEVIL;
         }
 
+        /**
+         * Funnels share one set of behaviours: a smooth taper, slow spin damping, an upward alpha
+         * ramp and the flattened funnel pitch. The funnel cloud is the only member whose base is
+         * not on the ground, which is the entity's business, not the shape's.
+         */
         private boolean funnelLike() {
-            return this == LANDSPOUT || this == WATERSPOUT;
+            return this == LANDSPOUT || this == WATERSPOUT || this == FUNNEL_CLOUD || this == STEAM_DEVIL;
         }
     }
 
@@ -145,7 +178,7 @@ public final class AddonVortexParticleRenderer {
                 int targetClouds = targetClouds(kind, layerRadius, fraction, particleRate);
                 cleanup(layer.clouds, targetClouds);
                 while (layer.clouds.size() < targetClouds) {
-                    PivotingParticle particle = createCloud(level, layer.pos, renderCull, surfaceTone, false);
+                    PivotingParticle particle = createCloud(level, layer.pos, renderCull, surfaceTone, false, kind);
                     particle.spawnAsWeatherEffect();
                     layer.clouds.add(particle);
                 }
@@ -153,7 +186,7 @@ public final class AddonVortexParticleRenderer {
                 int targetCore = targetCore(kind, fraction, particleRate, surfaceTone);
                 cleanup(layer.core, targetCore);
                 while (layer.core.size() < targetCore) {
-                    PivotingParticle particle = createCloud(level, layer.pos, renderCull, surfaceTone, true);
+                    PivotingParticle particle = createCloud(level, layer.pos, renderCull, surfaceTone, true, kind);
                     particle.spawnAsWeatherEffect();
                     layer.core.add(particle);
                 }
@@ -181,7 +214,12 @@ public final class AddonVortexParticleRenderer {
             Vec3 drift = lastMotion.horizontalDistanceSqr() > 1.0E-6D
                     ? new Vec3(lastMotion.x, 0.0D, lastMotion.z).normalize().scale(lastKind == VortexKind.GUSTNADO ? 0.075D : 0.032D)
                     : Vec3.ZERO;
-            float spin = lastKind == VortexKind.GUSTNADO ? 4.4F : lastKind == VortexKind.DUST_DEVIL ? 3.1F : 2.2F;
+            float spin = lastKind == VortexKind.GUSTNADO ? 4.4F
+                    : lastKind == VortexKind.DUST_DEVIL ? 3.1F
+                    : lastKind == VortexKind.SNOW_DEVIL ? 2.6F
+                    : lastKind == VortexKind.LAVA_WHIRL ? LavaWhirlVisual.FADE_SPIN_PER_TICK
+                    : lastKind == VortexKind.STEAM_DEVIL ? SteamDevilVisual.FADE_SPIN_PER_TICK
+                    : 2.2F;
             for (VisualLayer layer : layers) {
                 if (layer.pos != null) {
                     layer.pos = layer.pos.add(drift.x, lastKind == VortexKind.GUSTNADO ? 0.010D : 0.025D, drift.z);
@@ -200,8 +238,12 @@ public final class AddonVortexParticleRenderer {
                 }
                 Vec3 previousRot = particle.getPivotRot();
                 float rot = previousRot == null ? layer.rotation : (float) previousRot.y + spin;
-                particle.setPivotRotPrev(previousRot == null ? new Vec3(0.0D, rot, 0.0D) : previousRot);
-                particle.setPivotRot(new Vec3(0.0D, rot, 0.0D));
+                // One rotation vector for this particle rather than one per setter. A Vec3 is immutable, so a
+                // particle holding the same one as its previous reading and its current one cannot be told
+                // apart from one holding two equal copies of it - and it is a vector a frame not allocated.
+                Vec3 rotNow = new Vec3(0.0D, rot, 0.0D);
+                particle.setPivotRotPrev(previousRot == null ? rotNow : previousRot);
+                particle.setPivotRot(rotNow);
                 particle.setPrevPosX(particle.getPosX());
                 particle.setPrevPosY(particle.getPosY());
                 particle.setPrevPosZ(particle.getPosZ());
@@ -218,8 +260,15 @@ public final class AddonVortexParticleRenderer {
         private static long fadeDuration(VortexKind kind) {
             return switch (kind) {
                 case DUST_DEVIL -> 95L;
+                // Snow hangs in the air a little longer than dust does once the whirl is gone.
+                case SNOW_DEVIL -> SnowDevilVisual.FADE_TICKS;
                 case GUSTNADO -> 116L;
+                // A funnel cloud rots away slowly: it unravels upward from the tip rather than
+                // winking out, which is what a decaying cold-air funnel actually looks like.
+                case FUNNEL_CLOUD -> 82L;
                 case LANDSPOUT, WATERSPOUT -> 45L;
+                case LAVA_WHIRL -> LavaWhirlVisual.FADE_TICKS;
+                case STEAM_DEVIL -> SteamDevilVisual.FADE_TICKS;
             };
         }
 
@@ -227,8 +276,13 @@ public final class AddonVortexParticleRenderer {
             return switch (kind) {
                 case WATERSPOUT -> (float) (42.0D + wind * 0.38D);
                 case LANDSPOUT -> (float) (36.0D + wind * 0.30D);
+                case FUNNEL_CLOUD -> (float) (18.0D + wind * 0.20D);
                 case GUSTNADO -> (float) (22.0D + wind * 0.24D);
                 case DUST_DEVIL -> (float) (24.0D + wind * 0.28D);
+                // Slower than any other whirl: a snow devil is a shallow, lazy circulation.
+                case SNOW_DEVIL -> SnowDevilVisual.spinBaseFor(wind);
+                case LAVA_WHIRL -> LavaWhirlVisual.spinBaseFor(wind);
+                case STEAM_DEVIL -> SteamDevilVisual.spinBaseFor(wind);
             };
         }
 
@@ -236,6 +290,9 @@ public final class AddonVortexParticleRenderer {
             return switch (kind) {
                 case WATERSPOUT -> Math.max(1.15F, radius * 0.72F + 0.45F);
                 case LANDSPOUT -> Math.max(1.05F, radius * 0.78F + 0.45F);
+                case SNOW_DEVIL -> Math.max(0.75F, radius * SnowDevilVisual.SPIN_RADIUS_DAMPING + 0.35F);
+                case LAVA_WHIRL -> Math.max(0.70F, radius * LavaWhirlVisual.SPIN_RADIUS_DAMPING + 0.35F);
+                case STEAM_DEVIL -> Math.max(0.55F, radius * SteamDevilVisual.SPIN_RADIUS_DAMPING + 0.25F);
                 default -> Math.max(0.65F, radius + 0.35F);
             };
         }
@@ -249,8 +306,12 @@ public final class AddonVortexParticleRenderer {
             return switch (kind) {
                 case WATERSPOUT -> 8.5F;
                 case LANDSPOUT -> 7.2F;
+                case FUNNEL_CLOUD -> 5.2F;
                 case GUSTNADO -> 5.8F;
                 case DUST_DEVIL -> 7.0F;
+                case SNOW_DEVIL -> SnowDevilVisual.MAX_SPIN_STEP;
+                case LAVA_WHIRL -> LavaWhirlVisual.MAX_SPIN_STEP;
+                case STEAM_DEVIL -> SteamDevilVisual.MAX_SPIN_STEP;
             };
         }
 
@@ -263,8 +324,15 @@ public final class AddonVortexParticleRenderer {
             double offset = switch (kind) {
                 case LANDSPOUT -> Math.max(5.5D, entity.radius() * 0.72D);
                 case WATERSPOUT -> 0.45D + waterspoutLiftOffset(entity);
+                // Nothing at all: the vortex hangs at the entity's own altitude and the ground below
+                // it is a spectator. This is the only kind that never touches the surface.
+                case FUNNEL_CLOUD -> 0.0D;
                 case GUSTNADO -> 0.30D;
                 case DUST_DEVIL -> 0.22D;
+                // Hugging the drift it is standing in, which is a little lower than a dust devil's base.
+                case SNOW_DEVIL -> 0.18D;
+                case LAVA_WHIRL -> LavaWhirlVisual.BASE_OFFSET_BLOCKS;
+                case STEAM_DEVIL -> SteamDevilVisual.BASE_OFFSET_BLOCKS;
             };
             return new Vec3(x, Math.max(y, groundY + offset), z);
         }
@@ -282,8 +350,14 @@ public final class AddonVortexParticleRenderer {
             return switch (kind) {
                 case WATERSPOUT -> Mth.clamp(28.0D + wind * 0.26D + radius * 0.95D, 34.0D, 66.0D);
                 case LANDSPOUT -> Mth.clamp(30.0D + wind * 0.36D + radius * 1.3D, 36.0D, 82.0D);
+                // Tall: the tip hangs at the configured altitude and the column has to reach the
+                // shower base it is condensing out of, or it reads as a floating blob instead.
+                case FUNNEL_CLOUD -> Mth.clamp(58.0D + wind * 0.30D + radius * 1.1D, 62.0D, 130.0D);
                 case GUSTNADO -> Mth.clamp(11.0D + wind * 0.17D + radius * 1.75D, 15.0D, 38.0D);
                 case DUST_DEVIL -> Mth.clamp(24.0D + wind * 0.42D + radius * 2.0D, 34.0D, 86.0D);
+                case SNOW_DEVIL -> SnowDevilVisual.heightFor(radius, wind);
+                case LAVA_WHIRL -> LavaWhirlVisual.heightFor(radius, wind);
+                case STEAM_DEVIL -> SteamDevilVisual.heightFor(radius, wind);
             };
         }
 
@@ -291,8 +365,12 @@ public final class AddonVortexParticleRenderer {
             return switch (kind) {
                 case WATERSPOUT -> Mth.clamp((int) (height / 1.35D), 24, 48);
                 case LANDSPOUT -> Mth.clamp((int) (height / 1.55D), 22, 54);
+                case FUNNEL_CLOUD -> Mth.clamp((int) (height / 1.70D), 30, 72);
                 case GUSTNADO -> Mth.clamp((int) (height / 1.15D), 14, 34);
                 case DUST_DEVIL -> Mth.clamp((int) (height / 1.75D), 20, 48);
+                case SNOW_DEVIL -> SnowDevilVisual.layerCountFor(height);
+                case LAVA_WHIRL -> LavaWhirlVisual.layerCountFor(height);
+                case STEAM_DEVIL -> SteamDevilVisual.layerCountFor(height);
             };
         }
 
@@ -301,8 +379,14 @@ public final class AddonVortexParticleRenderer {
             return switch (kind) {
                 case WATERSPOUT -> Mth.lerp(eased, Math.max(0.35D, baseRadius * 0.16D), Mth.clamp(baseRadius * 0.72D + wind * 0.010D, 2.2D, 6.8D));
                 case LANDSPOUT -> Mth.lerp(eased, Math.max(0.30D, baseRadius * 0.18D), Mth.clamp(baseRadius * 1.45D + wind * 0.016D, 3.6D, 12.0D));
+                // The tip is the thinnest part of any funnel, and a funnel cloud's tip is a tuft of
+                // ragged condensation rather than a wall on the ground.
+                case FUNNEL_CLOUD -> Mth.lerp(eased, Math.max(0.20D, baseRadius * 0.09D), Mth.clamp(baseRadius * 0.98D + wind * 0.013D, 2.6D, 9.4D));
                 case GUSTNADO -> gustnadoRadius(baseRadius, wind, fraction);
                 case DUST_DEVIL -> dustDevilRadius(baseRadius, wind, fraction);
+                case SNOW_DEVIL -> SnowDevilVisual.radiusFor(baseRadius, wind, fraction);
+                case LAVA_WHIRL -> LavaWhirlVisual.radiusFor(baseRadius, wind, fraction);
+                case STEAM_DEVIL -> SteamDevilVisual.radiusFor(baseRadius, wind, fraction);
             };
         }
 
@@ -347,13 +431,40 @@ public final class AddonVortexParticleRenderer {
                 double lean = Math.sin(fraction * Math.PI) * Mth.clamp(height * 0.045D, 0.25D, 2.2D);
                 return forward.scale(lean);
             }
+            if (kind == VortexKind.SNOW_DEVIL) {
+                // Leans less than a dust devil: a shallow whirl has less of itself above the shear.
+                return forward.scale(SnowDevilVisual.leanFor(height, fraction));
+            }
+            if (kind == VortexKind.LAVA_WHIRL) {
+                return forward.scale(LavaWhirlVisual.leanFor(height, fraction));
+            }
+            if (kind == VortexKind.STEAM_DEVIL) {
+                return forward.scale(SteamDevilVisual.leanFor(height, fraction));
+            }
+            if (kind == VortexKind.FUNNEL_CLOUD) {
+                // The tip hangs almost still while the shower base it is rooted in streams away, so
+                // the column leans further the higher it gets: the funnel leans back over its tip.
+                double lean = Math.pow(fraction, 1.35D) * Mth.clamp(height * 0.055D, 0.6D, 4.5D);
+                return forward.scale(lean);
+            }
             return Vec3.ZERO;
         }
 
         private static int targetClouds(VortexKind kind, double radius, double fraction, float particleRate) {
+            if (kind == VortexKind.LAVA_WHIRL) {
+                return LavaWhirlVisual.targetRing(radius, fraction, particleRate);
+            }
+            if (kind == VortexKind.STEAM_DEVIL) {
+                return SteamDevilVisual.targetRing(radius, fraction, particleRate);
+            }
+            if (kind == VortexKind.SNOW_DEVIL) {
+                // Thinner than a dust devil of the same width, which is what makes it read as snow rather
+                // than as the ground it is standing on.
+                return SnowDevilVisual.targetRing(radius, fraction, particleRate);
+            }
             double circumference = Math.max(1.0D, radius * Math.PI * 2.0D);
-            double spacing = kind == VortexKind.WATERSPOUT ? 2.15D : kind.funnelLike() ? 2.75D : 2.25D;
-            int max = kind == VortexKind.WATERSPOUT ? 12 : kind == VortexKind.LANDSPOUT ? 14 : kind == VortexKind.GUSTNADO ? 26 : kind == VortexKind.DUST_DEVIL ? 16 : 12;
+            double spacing = kind == VortexKind.WATERSPOUT ? 2.15D : kind == VortexKind.FUNNEL_CLOUD ? 3.10D : kind.funnelLike() ? 2.75D : 2.25D;
+            int max = kind == VortexKind.WATERSPOUT ? 12 : kind == VortexKind.LANDSPOUT ? 14 : kind == VortexKind.FUNNEL_CLOUD ? 18 : kind == VortexKind.GUSTNADO ? 26 : kind == VortexKind.DUST_DEVIL ? 16 : 12;
             int min = kind.funnelLike() ? 2 : kind == VortexKind.GUSTNADO ? 2 : 1;
             if (kind == VortexKind.DUST_DEVIL) {
                 min = fraction < 0.82D ? 2 : 1;
@@ -370,6 +481,20 @@ public final class AddonVortexParticleRenderer {
         private static int targetCore(VortexKind kind, double fraction, float particleRate, SurfaceTone tone) {
             if (kind == VortexKind.WATERSPOUT || kind == VortexKind.LANDSPOUT) {
                 return 0;
+            }
+            if (kind == VortexKind.SNOW_DEVIL) {
+                // No dark heart: the middle of a snow devil is its brightest part, so it has no core sheet.
+                return 0;
+            }
+            if (kind == VortexKind.STEAM_DEVIL) {
+                // The same, and for a stronger reason than a snow devil's: there is nothing in a plume of
+                // water vapour to darken a core with in the first place.
+                return 0;
+            }
+            if (kind == VortexKind.FUNNEL_CLOUD) {
+                // Condensation, not dust: the lower half is a thin ragged veil and only the upper
+                // column carries any solid-looking core.
+                return fraction < 0.55D ? 0 : Math.max(1, (int) (2.0F * particleRate));
             }
             if (kind == VortexKind.DUST_DEVIL && !tone.hasDarkCore) {
                 return 0;
@@ -410,11 +535,15 @@ public final class AddonVortexParticleRenderer {
                 float targetRot = layer.rotation + helicalTwist(kind, fraction) + spacing * index + (core ? 18.0F : 0.0F);
                 Vec3 previousRot = particle.getPivotRot();
                 float rot = previousRot == null ? targetRot : continuousAngle((float) previousRot.y, targetRot);
-                particle.setPivotRotPrev(previousRot == null ? new Vec3(0.0D, rot, 0.0D) : previousRot);
-                particle.setPivotRot(new Vec3(0.0D, rot, 0.0D));
+                // As in fadeParticles: the rotation and the pivot are one vector each, shared between the
+                // previous and the current reading rather than built twice.
+                Vec3 rotNow = new Vec3(0.0D, rot, 0.0D);
+                particle.setPivotRotPrev(previousRot == null ? rotNow : previousRot);
+                particle.setPivotRot(rotNow);
                 Vec3 previousPivot = particle.getPivot();
-                particle.setPivotPrev(previousPivot == null ? new Vec3(0.0D, radius, 0.0D) : previousPivot);
-                particle.setPivot(new Vec3(0.0D, radius, 0.0D));
+                Vec3 pivotNow = new Vec3(0.0D, radius, 0.0D);
+                particle.setPivotPrev(previousPivot == null ? pivotNow : previousPivot);
+                particle.setPivot(pivotNow);
 
                 Vec3 pivotedPosition = particle.getPivotedPosition(0);
                 double vecX = -pivotedPosition.x;
@@ -451,8 +580,14 @@ public final class AddonVortexParticleRenderer {
             return switch (kind) {
                 case WATERSPOUT -> (float) (fraction * 132.0D + Math.sin(fraction * Math.PI * 3.0D) * 5.0D);
                 case LANDSPOUT -> (float) (fraction * 155.0D + Math.sin(fraction * Math.PI * 3.5D) * 7.0D);
+                case FUNNEL_CLOUD -> (float) (fraction * 118.0D + Math.sin(fraction * Math.PI * 2.6D) * 9.0D);
                 case GUSTNADO -> (float) (fraction * 96.0D + Math.sin(fraction * Math.PI * 2.5D) * 22.0D);
                 case DUST_DEVIL -> (float) (fraction * 230.0D + Math.sin(fraction * Math.PI * 4.0D) * 14.0D);
+                case SNOW_DEVIL -> (float) (fraction * 205.0D + Math.sin(fraction * Math.PI * 3.6D) * 11.0D);
+                // A fire whirl's flame is twisted hard and almost evenly, and a steam plume is the smoothest
+                // of the lot: vapour climbing a column does not corkscrew the way dust does.
+                case LAVA_WHIRL -> (float) (fraction * 260.0D + Math.sin(fraction * Math.PI * 4.4D) * 16.0D);
+                case STEAM_DEVIL -> (float) (fraction * 150.0D + Math.sin(fraction * Math.PI * 2.2D) * 6.0D);
             };
         }
 
@@ -464,10 +599,18 @@ public final class AddonVortexParticleRenderer {
             float base = switch (kind) {
                 case WATERSPOUT -> 1.35F + (float) fraction * 2.55F + radius * 0.12F;
                 case LANDSPOUT -> 1.8F + (float) fraction * 3.9F + radius * 0.16F;
+                case FUNNEL_CLOUD -> 2.2F + (float) fraction * 4.4F + radius * 0.18F;
                 case GUSTNADO -> 5.4F + radius * 0.82F + (float) (1.0D - fraction) * 3.6F + (float) fraction * 1.5F;
                 case DUST_DEVIL -> 3.1F + radius * 0.68F + (float) (1.0D - fraction) * 2.25F + (float) fraction * 0.85F;
+                case SNOW_DEVIL -> SnowDevilVisual.scaleFor(radius, fraction);
+                case LAVA_WHIRL -> LavaWhirlVisual.scaleFor(radius, fraction);
+                case STEAM_DEVIL -> SteamDevilVisual.scaleFor(radius, fraction);
             };
-            float maxScale = kind == VortexKind.WATERSPOUT ? 4.8F : kind == VortexKind.GUSTNADO ? 18.0F : kind == VortexKind.DUST_DEVIL ? 11.0F : 9.5F;
+            float maxScale = kind == VortexKind.WATERSPOUT ? 4.8F
+                    : kind == VortexKind.GUSTNADO ? 18.0F
+                    : kind == VortexKind.DUST_DEVIL ? 11.0F
+                    : kind == VortexKind.LAVA_WHIRL ? LavaWhirlVisual.MAX_SCALE
+                    : kind == VortexKind.STEAM_DEVIL ? SteamDevilVisual.MAX_SCALE : 9.5F;
             return Mth.clamp(core ? base * 0.82F : base, 0.85F, maxScale);
         }
 
@@ -475,22 +618,43 @@ public final class AddonVortexParticleRenderer {
             float base = switch (kind) {
                 case WATERSPOUT -> 0.56F;
                 case LANDSPOUT -> 0.53F;
+                // A condensation funnel is denser than a dust whirl: this one is made of cloud.
+                case FUNNEL_CLOUD -> 0.62F;
                 case GUSTNADO -> 0.82F;
                 case DUST_DEVIL -> 0.70F;
+                case SNOW_DEVIL -> SnowDevilVisual.alphaFor(fraction);
+                case LAVA_WHIRL -> LavaWhirlVisual.alphaFor(fraction);
+                case STEAM_DEVIL -> SteamDevilVisual.alphaFor(fraction);
             };
             if (kind.funnelLike()) {
                 base *= (float) Mth.clamp(0.50D + fraction * 0.72D, 0.45D, 1.0D);
+            } else if (kind == VortexKind.LAVA_WHIRL) {
+                // Already densest at the base from its own model, so it is not scaled a second time here.
             } else if (kind == VortexKind.DUST_DEVIL) {
                 base *= (float) Mth.clamp(1.10D - fraction * 0.46D, 0.52D, 1.0D);
             } else if (kind == VortexKind.GUSTNADO) {
                 base *= (float) Mth.clamp(1.18D - fraction * 0.34D, 0.58D, 1.0D);
             }
-            float maxAlpha = kind == VortexKind.GUSTNADO ? 0.94F : kind.funnelLike() ? 0.90F : 0.86F;
-            return Mth.clamp(core ? base + 0.16F : base, 0.28F, maxAlpha);
+            float maxAlpha = kind == VortexKind.GUSTNADO ? 0.94F
+                    : kind == VortexKind.LAVA_WHIRL ? LavaWhirlVisual.MAX_ALPHA
+                    : kind == VortexKind.STEAM_DEVIL ? SteamDevilVisual.MAX_ALPHA
+                    : kind.funnelLike() ? 0.90F : 0.86F;
+            // These vortices are built from the same cloud256 billboards and share the parent funnel's
+            // sprite, so they take the same allowance for the sheet's denser regenerated body.
+            float alpha = Mth.clamp(core ? base + 0.16F : base, 0.28F, maxAlpha);
+            return alpha * ClientWeatherEffects.FUNNEL_SPRITE_DENSITY_ALLOWANCE;
         }
 
-        private static PivotingParticle createCloud(ClientLevel level, Vec3 pos, float renderCull, SurfaceTone tone, boolean core) {
-            PivotingParticle particle = new PivotingParticle(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D, ParticleRegistry.cloud256);
+        /**
+         * One billboard of a vortex. The sprite is chosen by what the vortex is made of rather than by the art
+         * switch: a funnel, a landspout, a waterspout and a steam devil are condensation or steam and draw the
+         * dense funnel sheet, which is the only sheet opaque enough to make a column read as a column, while a
+         * dust devil, a gustnado and a snow devil are loose ground material and draw the puff sheet their alphas
+         * were tuned against. See {@link ParticleArt#funnelSprite()} for why the switch does not govern a funnel.
+         */
+        private static PivotingParticle createCloud(ClientLevel level, Vec3 pos, float renderCull, SurfaceTone tone, boolean core, VortexKind kind) {
+            PivotingParticle particle = new PivotingParticle(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D,
+                    kind.funnelLike() ? ParticleArt.funnelSprite() : ParticleArt.cloud256());
             particle.setMaxAge(25000);
             particle.setTicksFadeInMax(core ? 8 : 14);
             particle.setParticleSpeed(0.0D, 0.0D, 0.0D);
@@ -571,8 +735,33 @@ public final class AddonVortexParticleRenderer {
             if (kind == VortexKind.LANDSPOUT) {
                 return new SurfaceTone(0.56F, 0.55F, 0.52F, 0.34F, 0.31F, 0.27F, false);
             }
+            if (kind == VortexKind.FUNNEL_CLOUD) {
+                // It is built of condensed water, not of whatever it is hanging over, so it keeps
+                // its own pale grey instead of taking a tint from the block below it.
+                return new SurfaceTone(0.80F, 0.82F, 0.86F, 0.63F, 0.65F, 0.71F, false);
+            }
             if (kind == VortexKind.GUSTNADO) {
                 return new SurfaceTone(0.43F, 0.41F, 0.36F, 0.17F, 0.18F, 0.18F, true);
+            }
+            if (kind == VortexKind.SNOW_DEVIL) {
+                // It is made of what is lying on the ground, and what is lying there is snow: cold and
+                // pale, and never the brown the dust devil's own fallback would have painted it.
+                return new SurfaceTone(SnowDevilVisual.TONE_RED, SnowDevilVisual.TONE_GREEN, SnowDevilVisual.TONE_BLUE,
+                        SnowDevilVisual.CORE_RED, SnowDevilVisual.CORE_GREEN, SnowDevilVisual.CORE_BLUE,
+                        SnowDevilVisual.DARK_CORE);
+            }
+            if (kind == VortexKind.LAVA_WHIRL) {
+                // It is drawn in its own light: a whirl of fire is not the colour of the rock under it, and
+                // taking a tint from the block below would paint it as whatever it happens to be crossing.
+                return new SurfaceTone(LavaWhirlVisual.TONE_RED, LavaWhirlVisual.TONE_GREEN, LavaWhirlVisual.TONE_BLUE,
+                        LavaWhirlVisual.CORE_RED, LavaWhirlVisual.CORE_GREEN, LavaWhirlVisual.CORE_BLUE,
+                        LavaWhirlVisual.DARK_CORE);
+            }
+            if (kind == VortexKind.STEAM_DEVIL) {
+                // White, and its heart is white too: a plume of vapour has nothing darker inside it.
+                return new SurfaceTone(SteamDevilVisual.TONE_RED, SteamDevilVisual.TONE_GREEN, SteamDevilVisual.TONE_BLUE,
+                        SteamDevilVisual.TONE_RED, SteamDevilVisual.TONE_GREEN, SteamDevilVisual.TONE_BLUE,
+                        SteamDevilVisual.DARK_CORE);
             }
             BlockState state = level.getBlockState(pos);
             if (isSandy(state)) {

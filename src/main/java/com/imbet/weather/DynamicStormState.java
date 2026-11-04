@@ -5,22 +5,30 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
+import weather2.weathersystem.WeatherManagerServer;
 import weather2.weathersystem.storm.StormObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 
 public final class DynamicStormState {
     private static final float WEDGE_ENTER_WIDTH_BLOCKS = 1609.344F * 0.5F;
     private static final float WEDGE_EXIT_WIDTH_BLOCKS = 1609.344F * 0.38F;
-    private static final float WEDGE_FORCED_VISIBLE_CAP_BLOCKS = 1609.344F;
+    /** A wedge may render up to three miles wide, matching the raised config ceilings. */
+    private static final float WEDGE_FORCED_VISIBLE_CAP_BLOCKS = 1609.344F * 3.0F;
     /** How long a storm must have no funnel before its birth tick is forgotten (see
      * {@link #updateFunnelLifecycle}). */
     private static final long FUNNEL_ABSENT_RESET_TICKS = 100L;
+    /** Three seconds between wind-driven rung steps: fast enough to watch, slow enough not to flap. */
+    private static final long WIND_DRIVEN_STAGE_INTERVAL_TICKS = 60L;
+    /** Ten seconds between air-mass readings: the air a tornado is standing in is not a per-tick value. */
+    private static final long ENVIRONMENT_POTENTIAL_INTERVAL_TICKS = 200L;
 
     private final long stormId;
     private final Random random;
@@ -35,6 +43,10 @@ public final class DynamicStormState {
     private float targetVisibleFunnelWidth = 12.0F;
     private float coreRadius = 4.0F;
     private float radiusOfMaxWind = 5.0F;
+    /** Current gust-train multiplier: 1 = sustained wind, higher in a gust, lower in a lull. */
+    private float gustMultiplier = 1.0F;
+    /** Slowly-tracked sustained wind, i.e. the live value with the gust train averaged out. */
+    private float sustainedMaxWindMph;
     private float mergeWidthBoost;
     private long nextWidthRetargetTick;
     private float bendAngle;
@@ -50,17 +62,72 @@ public final class DynamicStormState {
     private FunnelMorphology funnelMorphology = FunnelMorphology.DEFAULT;
     private FunnelMorphology targetFunnelMorphology = FunnelMorphology.DEFAULT;
     private boolean funnelMorphologyLocked;
+    /**
+     * The wedge decision for the current wide episode: rolled once when the storm crosses into the wedge
+     * width, then held until it shrinks back below the exit width. Rolling on every retarget instead would
+     * strobe the funnel, because the tag also sets the trunk profile - the storm would re-shape itself
+     * every few hundred ticks.
+     */
+    private boolean wedgeEpisodeRolled;
+    private boolean wedgeEpisodeIsWedge;
     private float funnelMorphologyBlend;
     private float trunkNeckFraction = 0.50F;
     private float targetTrunkNeckFraction = 0.50F;
     private float trunkCurvePhase;
+    /**
+     * How much of the gap to Weather2's real funnel layer count closes per tick. Weather2 derives the
+     * count from the tornado's height and appends a layer as it grows, and every shape profile is read
+     * against that count - so it is a moving denominator that re-shapes every ring at once. Gliding it
+     * turns that step into the shape moving through the growth. 0.22 closes a one-layer step in about a
+     * second, which is slow enough to read as the funnel widening and fast enough that the profile is
+     * never visibly lagging the geometry it is drawn on.
+     */
+    private static final float LAYER_COUNT_GLIDE_RATE = 0.22F;
+    /**
+     * A count that moves by more than this in one tick is not growth - the funnel was replaced (the storm
+     * re-formed, or another tornado took the storm object). There is no shape continuity to preserve
+     * across that, so the glide snaps.
+     */
+    private static final float LAYER_COUNT_GLIDE_SNAP = 2.5F;
+    /** Display smoothing only: never persisted or synced, and re-seeded from the real count. */
+    private float glidedLayerCount;
+    private long glidedLayerCountTick = Long.MIN_VALUE;
     private float trunkCurveStrength = 1.0F;
+    /**
+     * Where the trunk curve strength is heading. It eases toward it in {@code smooth()} like every other
+     * trunk value, because setting it directly on a shape change snapped the funnel's own bend in one tick
+     * when a shape ended - the same class of step the blend is eased to avoid.
+     */
+    private float targetTrunkCurveStrength = 1.0F;
+    /**
+     * True while one shape is easing OUT before another eases in. A shape change cannot be a straight
+     * swap - the profile reads whichever shape is in force, so moving from one to the other in one tick
+     * steps the funnel - so the outgoing shape keeps the profile while its blend falls to plain, and the
+     * new shape takes over at zero and eases up from there.
+     */
+    private boolean morphologyHandoff;
     private long nextMorphologyRetargetTick;
     private float visualSpinSpeed = 0.055F;
     private float targetVisualSpinSpeed = 0.055F;
     private float liveMaxWindMph;
+    /** The mph floor in force because this storm's condensation is sitting on the ground; 0 when none. */
+    private float groundWindFloorMph;
     private float targetLiveMaxWindMph;
     private long nextLiveWindRetargetTick;
+    /**
+     * The air mass reading behind the dynamic wind, held for ten seconds at a time. The profile samples the
+     * biome and the season at a position, which does not change between two wind retargets, and there can be
+     * several tornadoes alive at once - so it is sampled on its own clock. Held per storm rather than in a
+     * shared map, so two storms in two dimensions can never read each other's air.
+     */
+    private float environmentPotentialMph;
+    private long nextEnvironmentPotentialTick;
+    /**
+     * Game tick the wind-driven stage check may run again. The rung follows the wind at human pace - one
+     * step every few seconds - rather than on every wind retarget, because a rung is a classification and
+     * everything that reads it reads it as one: the radar signature, the rainfall rate, the fear.
+     */
+    private long nextWindDrivenStageTick;
     /**
      * Game tick this storm's funnel last began forming. The birth and rope-out animation runs on the
      * storm's own timeline because of it: anchoring the animation on the client instead meant every
@@ -99,6 +166,12 @@ public final class DynamicStormState {
     private static final float MIN_TENTACLE_HEIGHT_FRACTION = 0.26F;
     private static final float MAX_TENTACLE_HEIGHT_FRACTION = 0.96F;
     private final List<TornadoCirculationState> satelliteTornadoes = new ArrayList<>();
+    /**
+     * When the parent first became too weak for the satellites it already has, or 0 while it can keep them.
+     * The count has to stay short for a grace period before anything is retired, because the wind that
+     * decides it is dynamic and dips for seconds at a time.
+     */
+    private long satelliteWeakSinceTick;
     private long nextSubVortexRetargetTick;
     private long nextSubVortexId = 1L;
     /** Game tick this multi-vortex episode began, so the episode can develop, peak and decay. */
@@ -113,17 +186,33 @@ public final class DynamicStormState {
     private float multiVortexOrbitSpeed = 5.6F;
     private long nextHorizontalVortexRetargetTick;
     private long nextHorizontalVortexId = 1L;
+    /**
+     * Whether THIS storm carries horizontal vortices, and whether that has been decided yet. Real
+     * tornadoes are not uniform about them - only a minority of funnels throw off the low-level
+     * horizontal vortices that read as tentacles - so the trait is rolled once, the first time the
+     * storm is strong enough to have them, and then held for the storm's whole life the way its
+     * multi-vortex flavour and funnel morphology are. A tornado that grew tentacles and then lost
+     * them would read as two different storms, which is exactly what rolling it every tick did.
+     */
+    private boolean horizontalVortexCapable;
+    private boolean horizontalVortexRolled;
     private boolean multiVortexEpisodeActive;
     /**
-     * How this episode wears its sub-vortices - lifted out of the way, working under a parent that
-     * stops short of the ground, or turning inside a planted parent's base. Rolled once when the
-     * episode starts and held for its whole length, so the tornado does not change type halfway
-     * through: the parent's funnel visibly switching between planted and lifted mid-episode would
-     * read as two different tornadoes.
+     * How this episode wears its sub-vortices - the parent's base pulled up off the surface, working
+     * under a parent that stops short of the ground, or turning inside a planted parent's base. Rolled
+     * once when the episode starts and held for its whole length, so the tornado does not change type
+     * halfway through: the parent's funnel visibly switching between planted and lifted mid-episode
+     * would read as two different tornadoes.
      */
     private MultiVortexFlavour multiVortexFlavour = MultiVortexFlavour.LIFTED;
     /** How far above the ground this ground swarm's parent condensation gives up, as a layer fraction. */
     private float multiVortexTipFraction = 0.16F;
+    /**
+     * How far up a lifted episode's parent condensation retracts, as a layer fraction, before the
+     * episode's own ramp is applied. Rolled and held with the flavour; the live retraction is
+     * {@link #parentLiftFraction(long)}, which also brings it in and back out over the episode.
+     */
+    private float multiVortexLiftFraction = 0.28F;
     private boolean multiVortexTagLocked;
     private long nextMultiVortexEpisodeAttemptTick;
     private long multiVortexEpisodeEndTick;
@@ -137,6 +226,14 @@ public final class DynamicStormState {
     private long absorbedByStormId = Long.MIN_VALUE;
     private boolean absorbedBySupercell;
     private boolean recentlyReintensified;
+    /**
+     * Rungs this storm has earned past the maximum it rolled at birth.
+     *
+     * <p>Persisted, not merely remembered, and deliberately so: it is the only thing bounding how far a
+     * monster can grow, so a reload in the middle of a strengthening tornado must not hand it a fresh
+     * allowance to climb another two rungs.
+     */
+    private int strengtheningRungs;
     private boolean cycloidalMarksRecorded;
     private float supercellStructureStrength;
     private float mesocycloneStrength;
@@ -243,6 +340,94 @@ public final class DynamicStormState {
         return TornadoGenesis.windRamp(genesisProgress(gameTime));
     }
 
+    /**
+     * The effective wind gate: the genesis timeline unified with Weather2's stage ladder. The two
+     * clocks advance independently - the ladder is Weather2's and races up within a couple of
+     * minutes, while our timeline paces the formation over real minutes - and nothing tied them
+     * together, so a storm whose gauge already read 7/8 could still be wind-gated at 50% of its
+     * stage base by a young timeline. The compromise: the timeline fully owns the early rungs
+     * (FORMING through STAGE1), but once the ladder shows the storm has climbed, the gate can only
+     * deepen the wind, never hold it far below what the label promises.
+     *
+     * <p>Rung semantics matter here: Weather2's STAGE1 is rung <b>5</b>, not rung 1, so "rung 5" is
+     * the moment a tornado touches down rather than a mature storm. One thing is therefore never
+     * negotiable at any rung: a funnel the player can watch sitting on the ground is not dead air.
+     * Once the condensation has docked with the surface whirl, the timeline may still deepen the
+     * wind but it cannot park a visibly grounded tornado at its organizing-phase fraction - which
+     * is what produced the "20 mph" reading on a funnel that was already down.
+     */
+    public float effectiveWindRamp(StormObject storm, long gameTime) {
+        // The genesis timeline is now the sole authority on how much of its stage wind a tornado may
+        // produce. This used to be lifted by the storm's rung (0.45 at STAGE2, 0.72 at STAGE3 and
+        // above) and by the funnel merely being on the ground (0.70), and because Weather2's ladder
+        // races up within a couple of minutes those floors carried a young storm straight past 150
+        // mph the moment its label said so. A storm no longer gets to blow near its class just for
+        // wearing it: the wind climbs with the funnel the player is watching.
+        //
+        // What replaces the grounded floor is absolute, not a fraction, and lives in
+        // groundContactWindFloorMph: 65 mph (the bottom of the EF scale), clamped to the storm's own
+        // stage so a world that configures weak tornadoes keeps them weak. That keeps a funnel visibly
+        // on the ground off dead air without scaling with a 321 mph rung.
+        return genesisWindRamp(gameTime);
+    }
+
+    /**
+     * The absolute wind floor for a tornado whose condensation is on the ground, or 0 when none is due.
+     *
+     * <p>The genesis gate is a <em>fraction</em> of the storm's estimated wind and the estimate itself
+     * can be low - a young storm still on Weather2's FORMING rung estimates near its stage floor - so the
+     * two multiplied together let a grounded funnel read in the twenties. A fraction cannot fix that:
+     * 70% of a weak estimate is still weak. Once the condensation has docked with the surface the vortex
+     * <em>is</em> a tornado, and the bottom of the published EF scale is where a tornado begins, so the
+     * guarantee has to be an absolute number of miles per hour rather than another fraction.
+     *
+     * <p>The floor is the bottom of the published EF scale and nothing more. It used to be raised to the
+     * storm's own rung's floor - the rung below's ceiling, and so exactly the value the wind-driven stage
+     * promotes at. Floor and promotion threshold were the same number, and because the ladder read the
+     * floored value back, each held the other in place: a grounded TOR1 sat on 70 for its whole life while
+     * the funnel the player was watching grew, and the forecast display never moved. A floor is a promise
+     * that a funnel visibly on the ground is not dead air, and the EF0 bottom keeps that promise on its
+     * own; the ladder is judged from the storm's own estimate - never from the floor - which is what
+     * <em>lets</em> a grounded tornado's number climb with the tornado. Nothing is capped by this: the air
+     * mass still carries a tornado past its band, and this only ever lifts the bottom.
+     *
+     * <p>Three exemptions, all deliberate. A storm that is already decaying is allowed to die quietly; a
+     * ground swarm's parent is calm on purpose, since everything doing work down there is a sub-vortex
+     * and flooring the parent would erase the whole arrangement; and a storm past its peak keeps the old
+     * flat floor, because a tornado roping out is walked down the ladder by Weather2 and holding it at
+     * its own class would leave a dying vortex reading its full rank. The floor also never exceeds the
+     * storm's own stage ceiling, so a player who configures weak tornadoes keeps them weak.
+     */
+    private float groundContactWindFloorMph(StormObject storm, long gameTime) {
+        // A wind, so it carries the strength dial like every other one the mod reads off a storm: the floor is
+        // compared against the rung's ceiling a few lines down and then against the live wind, and a raw floor
+        // under a dialed ceiling would mean a world at half strength keeps its full-strength lull floor while a
+        // world at double strength keeps half of the one it asked for.
+        double floor = Config.windMph(Config.WINDFIELD_GROUND_CONTACT_FLOOR_MPH.get());
+        if (floor <= 0.0D || storm == null || funnelBirthTick == Long.MIN_VALUE) {
+            return 0.0F;
+        }
+        if (groundSwarmActive() || isAbsorbedOrDecaying() || !genesisVisuallyOnTheGround(gameTime)) {
+            return 0.0F;
+        }
+        double ceiling = TornadoWindField.stageMaxWindMph(storm);
+        if (ceiling <= 0.0D) {
+            return 0.0F;
+        }
+        // The configured EF0 bottom alone, clamped to the storm's own rung so a player who configures weak
+        // tornadoes keeps them weak. It deliberately no longer climbs to the rung's own floor: that value
+        // is the rung below's ceiling, which is exactly where the wind-driven stage promotes, so a floor
+        // there held the reading on the promotion threshold and the rung it granted held the floor right
+        // back - the forecast number never moved. The estimate carries the class; this floor only keeps a
+        // funnel visibly on the ground off the dead-air bottom of the scale.
+        return (float) Math.max(0.0D, Math.min(floor, ceiling));
+    }
+
+    /** The mph floor currently in force because the funnel is on the ground, or 0 when none is. */
+    public float groundWindFloorMph() {
+        return groundWindFloorMph;
+    }
+
     /** Fraction of its mature funnel width the storm may currently show. */
     public float genesisWidthRamp(long gameTime) {
         return TornadoGenesis.widthRamp(genesisProgress(gameTime));
@@ -271,11 +456,43 @@ public final class DynamicStormState {
     }
 
     /**
+     * Whether the funnel the player can see is on the ground. This is the renderer's own threshold, not
+     * the timeline's touchdown phase, so the wind gate and the pixels agree about the single most
+     * important question a tornado asks: is it down yet?
+     */
+    public boolean genesisVisuallyOnTheGround(long gameTime) {
+        return TornadoGenesis.visuallyOnTheGround(genesisProgress(gameTime));
+    }
+
+    /**
      * The small ground vortices alive before this storm's funnel touches down. Emptied by the model
      * whenever there is no timeline to read or the funnel is already on the ground.
      */
     public void collectGenesisWhirls(long gameTime, double motherRadius, List<GenesisWhirls.Whirl> out) {
         GenesisWhirls.collect(stormId, funnelBirthTick, gameTime, genesisDurationTicks, motherRadius, out);
+    }
+
+    /**
+     * The layer count the funnel's shape profiles should be read against right now, glided toward the
+     * real one so a layer appearing or disappearing re-shapes the column over a few ticks instead of
+     * snapping every ring in a single tick. Advanced at most once per tick no matter how many layers ask.
+     */
+    float glideLayerCount(int realCount, long gameTime) {
+        float target = Math.max(1, realCount);
+        if (glidedLayerCount <= 0.0F || gameTime == Long.MIN_VALUE
+                || Math.abs(target - glidedLayerCount) > LAYER_COUNT_GLIDE_SNAP) {
+            glidedLayerCount = target;
+            glidedLayerCountTick = gameTime;
+            return glidedLayerCount;
+        }
+        if (glidedLayerCountTick != gameTime) {
+            glidedLayerCountTick = gameTime;
+            glidedLayerCount += (target - glidedLayerCount) * LAYER_COUNT_GLIDE_RATE;
+            if (Math.abs(target - glidedLayerCount) < 0.02F) {
+                glidedLayerCount = target;
+            }
+        }
+        return glidedLayerCount;
     }
 
     void tickVisual(long gameTime) {
@@ -319,6 +536,49 @@ public final class DynamicStormState {
         satelliteTornadoes.removeIf(satellite -> satellite.isExpired(gameTime) || satellite.absorbed());
     }
 
+    /** How many satellites the parent is actually keeping, not counting the ones already retiring. */
+    private int liveSatellites() {
+        int live = 0;
+        for (TornadoCirculationState satellite : satelliteTornadoes) {
+            if (!satellite.retiring()) {
+                live++;
+            }
+        }
+        return live;
+    }
+
+    /**
+     * Takes back the satellites the parent can no longer keep, by ending their own lives rather than
+     * deleting them.
+     *
+     * <p>This used to be a clear: every satellite the parent had was dropped the instant the allowed count
+     * fell, which made a satellite's life a function of its parent's wind on one particular tick instead of
+     * the life it was born with. The wind that decides the count is the storm's dynamic wind, so it dips
+     * below a rung for seconds at a time as a matter of course, and each dip emptied the sky. A parent now
+     * has to stay too weak for {@link VortexLife#CULL_GRACE_TICKS} before anything is retired, and the ones
+     * that go past the limit are the ones closest to their own end, given
+     * {@link VortexLife#RETIRE_FADE_TICKS} to thin out and spiral in - the death they were going to have,
+     * just sooner.
+     */
+    private void retireUnwantedSatellites(long gameTime, int activeLimit, boolean parentGone) {
+        List<TornadoCirculationState> keepable = new ArrayList<>();
+        for (TornadoCirculationState satellite : satelliteTornadoes) {
+            if (!satellite.retiring()) {
+                keepable.add(satellite);
+            }
+        }
+        VortexLife.Cull cull = VortexLife.cull(keepable.size(), activeLimit, parentGone, satelliteWeakSinceTick,
+                gameTime, VortexLife.CULL_GRACE_TICKS);
+        satelliteWeakSinceTick = cull.weakSinceTick();
+        if (cull.retireCount() <= 0) {
+            return;
+        }
+        keepable.sort(Comparator.comparingLong(satellite -> satellite.expireTick() - gameTime));
+        for (int i = 0; i < cull.retireCount() && i < keepable.size(); i++) {
+            keepable.get(i).retire(gameTime, VortexLife.RETIRE_FADE_TICKS);
+        }
+    }
+
     void steerSatelliteTornadoes(Vec3 parentPos, Vec3 parentMotion) {
         for (TornadoCirculationState satellite : satelliteTornadoes) {
             satellite.steerAroundParent(parentPos, parentMotion);
@@ -345,7 +605,7 @@ public final class DynamicStormState {
             targetWidthMultiplier = legacyMin + random.nextFloat() * (legacyMax - legacyMin);
             targetVisibleFunnelWidth = Math.min((float) Config.effectiveMaxVisibleFunnelWidthBlocks(), Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm) * targetWidthMultiplier));
             targetDamagePathWidth = Mth.clamp(targetVisibleFunnelWidth / 0.55F, minDamageWidth, maxDamageWidth);
-            preserveWedgeWidthTargets(storm);
+            preserveWideWidthTargets(storm);
             nextWidthRetargetTick = gameTime + nextIntInclusive(minTicks, maxTicks);
             return;
         }
@@ -354,22 +614,66 @@ public final class DynamicStormState {
         BlockPos pos = BlockPos.containing(storm.pos);
         float temperature = level.getBiome(pos).value().getBaseTemperature();
         float warmth = Mth.clamp((temperature + 0.15F) / 1.45F, 0.0F, 1.0F);
-        float moisture = DynamicStormController.isOverWaterOrOcean(level, storm.pos.x, storm.pos.z) || storm.isPrecipitating() ? 1.0F : 0.45F;
+        boolean overWater = DynamicStormController.isOverWaterOrOcean(level, storm.pos.x, storm.pos.z);
+        boolean raining = storm.isPrecipitating();
+        float moisture = overWater || raining ? 1.0F : 0.45F;
         float terrainPenalty = terrainRoughnessPenalty(level, pos);
         float environment = Mth.clamp(0.55F + warmth * 0.17F + moisture * 0.18F - terrainPenalty, 0.35F, 1.15F);
-        float stageCeiling = Mth.lerp((float) Math.pow(stage, 1.2D), minDamageWidth * 2.0F, maxDamageWidth);
-        float stageFloor = Mth.lerp(stage, minDamageWidth, Math.min(maxDamageWidth * 0.42F, minDamageWidth + 90.0F));
-        float draw = (float) Math.pow(random.nextFloat(), 1.65D);
-        float boostedTarget = Mth.lerp(draw, stageFloor, stageCeiling) * environment + mergeWidthBoost;
-        targetDamagePathWidth = Mth.clamp(boostedTarget, minDamageWidth, maxDamageWidth);
+        // The width itself. With the size lifecycle on this is a position on a geometric ladder that the
+        // storm's own temperament, life arc and environment decide (see TornadoSizeModel) - a property of
+        // the storm rather than a fresh roll of the dice - and the small spread here only keeps two
+        // retargets of a storm holding still from being the same number twice.
+        //
+        // With it off this is the old memoryless draw: a fresh width every retarget from the stage ladder
+        // alone, biased small by the power curve, which is why a storm could be a rope at one update and a
+        // wedge at the next.
+        float damageTarget;
+        if (Config.TORNADO_SIZE_LIFECYCLE.get()) {
+            double bone = Config.TORNADO_SIZE_TEMPERAMENT.get()
+                    ? TornadoSizeModel.bone(stormId)
+                    : random.nextDouble();
+            double temperament = TornadoSizeModel.temperament(bone, Config.TORNADO_SIZE_TEMPERAMENT_SKEW.get());
+            double arc = TornadoSizeModel.lifeArc(stage, Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F),
+                    sizeContracting(storm), Config.TORNADO_SIZE_ROPE_OUT.get());
+            double reach = TornadoSizeModel.reach(stage, temperament, arc, environment);
+            float spread = 0.92F + random.nextFloat() * 0.16F;
+            damageTarget = (float) TornadoSizeModel.ladder(reach, minDamageWidth, maxDamageWidth) * spread;
+        } else {
+            float stageCeiling = Mth.lerp((float) Math.pow(stage, 1.2D), minDamageWidth * 2.0F, maxDamageWidth);
+            float stageFloor = Mth.lerp(stage, minDamageWidth, Math.min(maxDamageWidth * 0.42F, minDamageWidth + 90.0F));
+            float draw = (float) Math.pow(random.nextFloat(), 1.65D);
+            damageTarget = Mth.lerp(draw, stageFloor, stageCeiling) * environment;
+        }
+        targetDamagePathWidth = Mth.clamp(damageTarget + mergeWidthBoost, minDamageWidth, maxDamageWidth);
 
+        // How much of that swath the condensation funnel itself covers. From the air when the setting is
+        // on - a dryline tornado and a rain-wrapped one can scour the same ground, and only the moisture
+        // separates the thin funnel from the wall of cloud - and a flat random roll when it is off.
         float visibleMin = Config.TORNADO_VISIBLE_FUNNEL_FRACTION_MIN.get().floatValue();
         float visibleMax = Config.TORNADO_VISIBLE_FUNNEL_FRACTION_MAX.get().floatValue();
-        float visibleFraction = visibleMin + random.nextFloat() * Math.max(0.0F, visibleMax - visibleMin);
+        float visibleFraction = Config.TORNADO_VISIBLE_FRACTION_FROM_MOISTURE.get()
+                ? (float) TornadoSizeModel.visibleShare(
+                        TornadoSizeModel.hydration(temperature, raining, overWater), visibleMin, visibleMax)
+                : visibleMin + random.nextFloat() * Math.max(0.0F, visibleMax - visibleMin);
         targetVisibleFunnelWidth = Mth.clamp(targetDamagePathWidth * visibleFraction, 3.0F, (float) Config.effectiveMaxVisibleFunnelWidthBlocks());
+        targetVisibleFunnelWidth = Math.max(3.0F, targetVisibleFunnelWidth);
         targetWidthMultiplier = targetVisibleFunnelWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
-        preserveWedgeWidthTargets(storm);
+        preserveWideWidthTargets(storm);
         nextWidthRetargetTick = gameTime + nextIntInclusive(minTicks, maxTicks);
+    }
+
+    /**
+     * Whether the funnel is past its peak and giving width back, which is the one moment a wide tornado is
+     * allowed to contract. Every width floor below exists to stop a storm shrinking at random when nothing
+     * about it changed; holding one through a rope-out would pin a dying wedge at half a mile until it
+     * vanished instead of letting it visibly come apart.
+     */
+    private boolean sizeContracting(StormObject storm) {
+        if (storm == null || !Config.TORNADO_SIZE_LIFECYCLE.get()) {
+            return false;
+        }
+        float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
+        return stage >= 0.35F && (isAbsorbedOrDecaying() || (storm.hasStormPeaked && !storm.isGrowing));
     }
 
     void smooth(StormObject storm, long gameTime) {
@@ -395,19 +699,90 @@ public final class DynamicStormState {
         float genesisWidth = genesisWidthRamp(gameTime);
         float targetWidth = Math.max(1.5F, targetVisibleFunnelWidth * genesisWidth);
         float targetDamageWidth = Math.max(3.0F, targetDamagePathWidth * genesisWidth);
+        // Width surges on the visible funnel, folded into the easing TARGET so they run through the
+        // exponential smoothly instead of fighting it. It is a pure function of world time and storm id,
+        // so the server and every client compute the identical surge with no extra syncing, and it cannot
+        // reset on a reload. The damage path, and so the wind field and scouring, keeps its calm target
+        // and does not move with the surge at all.
+        //
+        // A train of HELD levels rather than a wave: the funnel arrives at a width, keeps it for the
+        // better part of a minute, and later moves to another one (see TornadoWidthSurge). The version
+        // this replaced was three summed sines folded through a sine, and no fold could stop that being
+        // periodic - the width swelled and shrank on a beat, on every storm at once, which is the pulsing
+        // this removes. Every level is hashed from the storm's own id, so no two funnels surge together,
+        // and because the levels never repeat there is no rhythm for the eye to lock onto. The rendered
+        // size the funnel's own layers are scaled by is this same width, so the top ring - the widest ring
+        // of a flared shape, and so the one that showed the pulse most - holds with it.
+        double turbulence = Config.TORNADO_WIDTH_TURBULENCE.get().doubleValue();
+        double turb = TornadoWidthSurge.value(stormId, gameTime) * turbulence;
+        // Weak rope funnels churn hardest; a violent wedge stays stately.
+        double turbScale = 0.75D + 0.75D * widthWeakness;
+        // The surge ceiling has to allow for a wide tornado. One is deliberately permitted a visible funnel
+        // wider than the ordinary configured maximum, up to three miles, and its target already carries
+        // that widening - clamping to the plain config cap here squashed it flat. This keys off the WIDTH
+        // and not the wedge tag, because the tag is now only one of the shapes a wide tornado can take: a
+        // wide cone, barrel or multiple-vortex needs exactly the same headroom, and leaving them out meant a
+        // mile-wide damage path with a needle standing over it.
+        float ceiling = wideTornado()
+                ? Math.max((float) Config.effectiveMaxVisibleFunnelWidthBlocks(), WEDGE_FORCED_VISIBLE_CAP_BLOCKS)
+                : (float) Config.effectiveMaxVisibleFunnelWidthBlocks();
+        float boundTarget = Mth.clamp((float) (targetWidth * (1.0D + turb * turbScale)), 1.5F, ceiling);
         float widthSmoothing = Config.TORNADO_WIDTH_SMOOTHING.get().floatValue();
         widthMultiplier += (targetWidthMultiplier * genesisWidth - widthMultiplier) * widthSmoothing;
         damagePathWidth += (targetDamageWidth - damagePathWidth) * widthSmoothing;
-        visibleFunnelWidth += (targetWidth - visibleFunnelWidth) * widthSmoothing;
         coreRadius = Math.max(2.0F, damagePathWidth * 0.16F);
-        radiusOfMaxWind = Math.max(3.0F, damagePathWidth * 0.28F);
-        smoothLiveWind(gameTime);
+        visibleFunnelWidth += (boundTarget - visibleFunnelWidth) * widthSmoothing;
+        // The eased value is deliberately NOT clamped to its target envelope: it has to stay free to
+        // travel down from a wide target, and clamping it would snap it instantly on a downward retarget
+        // - exactly the reset the easing exists to avoid. The renderer clamps what it actually draws.
+        visibleFunnelWidth = Math.max(1.5F, visibleFunnelWidth);
+        // The radius of maximum wind used to hang off the damage-path width, not the funnel the
+        // player actually sees. Damage path covers several times the visible funnel on big storms, so
+        // tying the RMW to it pushed the wind peak far outside the visible wall - at the wall the        // Rankine ramp was still climbing, and the storm read as a stage 7/8 tornado with no wind.
+        // The RMW is now the funnel's own wall radius: half the visible width, so the peak wind ring
+        // sits exactly where the condensation meets the inflow and everything the player can reach
+        // rides the decaying outer branch. The damage width only sanity-caps the anchor.
+        float rmwAnchor = Mth.clamp(visibleFunnelWidth * 0.5F, 3.0F, Math.max(3.0F, damagePathWidth * 0.9F));
+        radiusOfMaxWind = rmwAnchor;
+        groundWindFloorMph = groundContactWindFloorMph(storm, gameTime);
+        smoothLiveWind(storm, gameTime);
+        // Gust state advance: retargetLiveWind eases the SUSTAINED value; the gust multiplier is a
+        // deterministic read of the event train, advanced here once per tick on both server and
+        // client (smooth runs on both sides), so every consumer sees the same gust without any
+        // extra syncing. A ground swarm's deliberately calm parent reads no gusts.
+        if (Config.WINDFIELD_DYNAMIC_GUST_FRONTS.get() && !groundSwarmActive() && liveMaxWindMph > 0.05F) {
+            float rawSustained = (float) TornadoGustModel.sustainedMph(liveMaxWindMph, stormId, gameTime);
+            if (sustainedMaxWindMph <= 0.05F) {
+                sustainedMaxWindMph = rawSustained;
+            } else {
+                sustainedMaxWindMph += (rawSustained - sustainedMaxWindMph) * 0.10F;
+            }
+            gustMultiplier = (float) TornadoGustModel.multiplier(stormId, gameTime);
+        } else {
+            if (liveMaxWindMph <= 0.05F) {
+                sustainedMaxWindMph = 0.0F;
+            }
+            gustMultiplier = 1.0F;
+        }
         float bendSmoothing = Math.max(0.085F, Config.TORNADO_FUNNEL_BEND_SMOOTHING.get().floatValue());
         float bendDelta = wrapDegreesSigned(targetBendAngle - bendAngle);
         bendAngle = wrapDegrees(bendAngle + bendDelta * bendSmoothing);
         bendStrength += (targetBendStrength - bendStrength) * bendSmoothing;
         sidewindingBendBlend += (targetSidewindingBendBlend - sidewindingBendBlend) * 0.040F;
-        float targetMorphBlend = targetFunnelMorphology.shaped() ? 1.0F : 0.0F;
+        // Shape transition, all of it in one place.
+        //
+        // The shape in force is latched as soon as its blend is non-zero and released only once the blend
+        // is back to zero, so a shape is always eased out over the same transition it eased in over. A tag
+        // used to drop it on the spot instead, and since the profile reads whichever shape is in force,
+        // that snapped the whole column back to plain between two ticks - worst at the top of a flared
+        // shape, because the flare is the largest scale the profile has: the ring at the cloud base swelled
+        // past every layer under it and then reset.
+        //
+        // A change from one shape to another is a handoff through plain rather than a swap, because there
+        // is only one blend and it fades a shape against plain: the outgoing shape holds the profile while
+        // its blend falls, then the new one takes over at zero. Without that, a bowl that became a wedge
+        // stepped from one profile to the other in a single tick.
+        float targetMorphBlend = targetFunnelMorphology.shaped() && !morphologyHandoff ? 1.0F : 0.0F;
         float transitionStep = 1.0F / Math.max(1, Math.min(Config.TORNADO_ELEPHANT_TRUNK_TRANSITION_TICKS.get(), 55));
         if (funnelMorphologyBlend < targetMorphBlend) {
             funnelMorphologyBlend = Math.min(targetMorphBlend, funnelMorphologyBlend + transitionStep);
@@ -415,10 +790,19 @@ public final class DynamicStormState {
             funnelMorphologyBlend = Math.max(targetMorphBlend, funnelMorphologyBlend - transitionStep);
         }
         trunkNeckFraction += (targetTrunkNeckFraction - trunkNeckFraction) * 0.045F;
-        if (funnelMorphologyBlend <= 0.001F && !funnelMorphologyLocked) {
-            funnelMorphology = FunnelMorphology.DEFAULT;
-        } else if (funnelMorphologyBlend >= 0.999F) {
+        trunkCurveStrength += (targetTrunkCurveStrength - trunkCurveStrength) * 0.045F;
+        if (morphologyHandoff) {
+            if (funnelMorphologyBlend <= 0.001F) {
+                morphologyHandoff = false;
+                funnelMorphology = targetFunnelMorphology;
+            }
+        } else if (targetFunnelMorphology.shaped() && funnelMorphology.shaped()
+                && targetFunnelMorphology != funnelMorphology && funnelMorphologyBlend > 0.001F) {
+            morphologyHandoff = true;
+        } else if (funnelMorphologyBlend > 0.001F && targetFunnelMorphology.shaped()) {
             funnelMorphology = targetFunnelMorphology;
+        } else if (funnelMorphologyBlend <= 0.001F && !funnelMorphologyLocked) {
+            funnelMorphology = FunnelMorphology.DEFAULT;
         }
     }
 
@@ -428,8 +812,12 @@ public final class DynamicStormState {
         }
         float min = Math.min(Config.TORNADO_WIND_SPEED_SPIN_MIN.get().floatValue(), Config.TORNADO_WIND_SPEED_SPIN_MAX.get().floatValue());
         float max = Math.max(Config.TORNADO_WIND_SPEED_SPIN_MIN.get().floatValue(), Config.TORNADO_WIND_SPEED_SPIN_MAX.get().floatValue());
-        float refMin = Math.min(Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MIN_MPH.get().floatValue(), Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MAX_MPH.get().floatValue());
-        float refMax = Math.max(Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MIN_MPH.get().floatValue(), Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MAX_MPH.get().floatValue());
+        // The reference winds are the storm's own winds and go through the same dial, so the spin stays a
+        // function of what the storm IS rather than of the setting: unscaled references against a dialed wind
+        // would make every tornado in a half-strength world turn like its weakest third, and every tornado in a
+        // doubled one turn like a wedge.
+        float refMin = (float) Config.windMph(Math.min(Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MIN_MPH.get(), Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MAX_MPH.get()));
+        float refMax = (float) Config.windMph(Math.max(Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MIN_MPH.get(), Config.TORNADO_WIND_SPEED_SPIN_REFERENCE_MAX_MPH.get()));
         float windNorm = refMax <= refMin ? 1.0F : Mth.clamp((float) ((maxWindMph - refMin) / (refMax - refMin)), 0.0F, 1.0F);
         float windCurve = windNorm * windNorm * (3.0F - 2.0F * windNorm);
         targetVisualSpinSpeed = Mth.lerp(windCurve, min, max);
@@ -447,13 +835,14 @@ public final class DynamicStormState {
         // forming storm may produce only a fraction of its stage wind, so suction, scouring, block
         // pick-up, the damage swath, the radar signature and the alerts all build with the funnel.
         if (liveMaxWindMph <= 0.0F) {
-            liveMaxWindMph = (float) (stageWind * genesisWindRamp(gameTime));
+            liveMaxWindMph = (float) (stageWind * effectiveWindRamp(storm, gameTime));
         }
         if (!Config.WINDFIELD_DYNAMIC_WIND_SPEEDS.get()) {
             targetLiveMaxWindMph = (float) stageWind;
-            liveMaxWindMph = (float) (stageWind * genesisWindRamp(gameTime));
+            liveMaxWindMph = (float) (stageWind * effectiveWindRamp(storm, gameTime));
             return;
         }
+        updateWindDrivenStage(storm, gameTime);
         if (gameTime < nextLiveWindRetargetTick) {
             return;
         }
@@ -462,13 +851,100 @@ public final class DynamicStormState {
     }
 
     /**
+     * The fastest wind this storm's air can support, cached per storm for ten seconds.
+     *
+     * <p>Only the server can read a profile - it needs a real level - so the client gets 0 and the wind
+     * estimate falls back to the band alone there. That is not a problem: the wind target is computed and
+     * smoothed on the server and synced, so a client never has to work this out for itself.
+     */
+    float environmentPotentialMph(StormObject storm, Level level, long gameTime) {
+        if (!Config.WINDFIELD_ENVIRONMENT_WIND.get()) {
+            return 0.0F;
+        }
+        if (gameTime < nextEnvironmentPotentialTick) {
+            return environmentPotentialMph;
+        }
+        nextEnvironmentPotentialTick = gameTime + ENVIRONMENT_POTENTIAL_INTERVAL_TICKS;
+        environmentPotentialMph = (float) TornadoWindField.environmentPotentialMph(storm, level);
+        return environmentPotentialMph;
+    }
+
+    /**
+     * Lets the storm's own rung follow the wind it is actually making.
+     *
+     * <p>The rung and the wind used to be one decision made twice: the outlook rolled a maximum stage, and
+     * the wind was then bracketed inside that stage's band, so the label was always right by construction
+     * and never learned anything from what the tornado did. With the wind free of the band that is no
+     * longer true - the air mass can carry a stage-1 storm past the top of the ladder's first band - and a
+     * storm wearing a rung its own wind has left behind is the exact contradiction players report. So the
+     * stage is raised to the one the wind has earned, and its ceilings with it so the ladder does not fight
+     * the promotion on the next tick.
+     *
+     * <p>Four rules keep it honest. It only ever promotes: Weather2 drains intensity after the peak and
+     * steps the stage back down itself, so demotion here would be two systems arguing. It skips anything
+     * whose stage is not an estimate of the wind - a commanded stage from the command, a pet, a weather
+     * machine. It skips the rungs that have their own published ceilings (landspouts, gustnadoes, devils,
+     * funnel clouds) and the water ladders. And it reads the SUSTAINED wind, not the gust train, so a
+     * single two-second gust cannot rewrite the storm's class.
+     */
+    private void updateWindDrivenStage(StormObject storm, long gameTime) {
+        if (!Config.WINDFIELD_WIND_DRIVEN_STAGE.get()) {
+            return;
+        }
+        // The storm's own estimate, deliberately NOT the live value the grounded floor is applied to. The
+        // floor exists so a lull under a funnel on the ground does not read as calm; letting the ladder
+        // read through it meant the floor could grant its own rung back, which is how a grounded tornado
+        // stayed on the bottom of its class for its whole life while its number sat still. The estimate is
+        // the sustained wind - the gusts ride on top of it at read time - so a single gust still cannot
+        // rewrite the storm's class.
+        double reading = Math.max(0.0D, targetLiveMaxWindMph * effectiveWindRamp(storm, gameTime));
+        if (reading <= 0.05D) {
+            return;
+        }
+        if (storm.weatherMachineControlled || storm.isPlayerControlled() || storm.isPet()) {
+            return;
+        }
+        if (storm.attrib_waterSpout || storm.stormType == StormObject.TYPE_WATER
+                || isAbsorbedOrDecaying() || !DynamicStormController.isDynamicVortex(storm)) {
+            return;
+        }
+        if (subtype == StormSubtype.LANDSPOUT || subtype == StormSubtype.GUSTNADO
+                || subtype == StormSubtype.DUST_DEVIL || subtype == StormSubtype.SNOW_DEVIL
+                || subtype == StormSubtype.FUNNEL_CLOUD) {
+            return;
+        }
+        if (gameTime < nextWindDrivenStageTick) {
+            return;
+        }
+        nextWindDrivenStageTick = gameTime + WIND_DRIVEN_STAGE_INTERVAL_TICKS;
+        int earned = TornadoWindField.earnedTornadoStage(reading);
+        if (earned <= storm.levelCurIntensityStage) {
+            return;
+        }
+        storm.levelCurIntensityStage = earned;
+        storm.maxIntensityStage = Math.max(storm.maxIntensityStage, earned);
+        storm.levelStormIntensityMax = Math.max(storm.levelStormIntensityMax, earned);
+        if (storm.manager instanceof WeatherManagerServer manager) {
+            manager.syncStormUpdate(storm);
+        }
+    }
+
+    /**
      * Smooths the live maximum wind toward its target, gated by the genesis timeline. The gate lives
      * here as well as on the target because it is the last step before every consumer reads the value,
      * and because both sides run this with the same synced birth tick and timeline length, so a client
      * and the server always agree on how strong a forming tornado currently is.
      */
-    private void smoothLiveWind(long gameTime) {
-        float target = Math.max(0.0F, targetLiveMaxWindMph * genesisWindRamp(gameTime));
+    private void smoothLiveWind(StormObject storm, long gameTime) {
+        float target = Math.max(0.0F, targetLiveMaxWindMph * effectiveWindRamp(storm, gameTime));
+        // A funnel the player can watch sitting on the ground is a tornado, and a tornado does not
+        // read like a stiff breeze. The floor rides on the eased TARGET - not on the value after
+        // the ease - so a touchdown still spins up smoothly over a second or two, and because this
+        // is the last step before every consumer reads liveMaxWindMph, the label, the HUD, the
+        // radar, the probe, the sirens and the damage gates all see the same floored number.
+        if (groundWindFloorMph > 0.0F) {
+            target = Math.max(target, groundWindFloorMph);
+        }
         if (target <= 0.0F && liveMaxWindMph <= 0.0F) {
             return;
         }
@@ -482,6 +958,13 @@ public final class DynamicStormState {
             liveMaxWindMph = target;
         }
         liveMaxWindMph = Math.max(0.0F, liveMaxWindMph);
+        // Coming up to the on-ground floor is bounded rather than left to the exponential ease, which
+        // would leave the reading under EF0 for a couple of seconds after touchdown. A twentieth of the
+        // floor per tick reaches it in at most one second: a spin-up the player can watch, never a pop,
+        // and never a grounded tornado parked below the bottom of the scale once that second is up.
+        if (groundWindFloorMph > 0.0F && liveMaxWindMph < groundWindFloorMph) {
+            liveMaxWindMph = Math.min(groundWindFloorMph, liveMaxWindMph + groundWindFloorMph / 20.0F);
+        }
     }
 
     public float wanderAngle() {
@@ -508,6 +991,16 @@ public final class DynamicStormState {
         return radiusOfMaxWind;
     }
 
+    /** Gust-train multiplier advanced in smooth(): 1 = sustained, higher in a gust, lower in a lull. */
+    public float gustMultiplier() {
+        return gustMultiplier;
+    }
+
+    /** Sustained (gust-averaged) maximum wind, as eased in smooth(); 0 while no live wind. */
+    public float sustainedMaxWindMph() {
+        return sustainedMaxWindMph;
+    }
+
     public float bendAngle() {
         return bendAngle;
     }
@@ -526,6 +1019,20 @@ public final class DynamicStormState {
 
     public FunnelMorphology funnelMorphology() {
         return funnelMorphology;
+    }
+
+    /**
+     * The shape the funnel profile is actually drawn from right now: the target while it is shaped, unless
+     * a handoff is running - then it is the outgoing shape, which holds the profile while its blend eases
+     * back to plain before the new shape takes over. Every consumer of the profile reads this instead of
+     * picking between the two fields itself, so nothing can be drawing a different shape from the rest of
+     * the funnel during a transition.
+     */
+    public FunnelMorphology funnelMorphologyInForce() {
+        if (morphologyHandoff) {
+            return funnelMorphology;
+        }
+        return targetFunnelMorphology.shaped() ? targetFunnelMorphology : funnelMorphology;
     }
 
     public FunnelMorphology targetFunnelMorphology() {
@@ -573,6 +1080,13 @@ public final class DynamicStormState {
      * match Weather2's own attempt budget (its block loop grows 300 -> 750 per
      * tick from EF1 to EF5), so violent tornadoes rip far more than weak ones
      * instead of sharing the same flat cap.
+     *
+     * <p>With {@code widthScaledBudget} on, the cap ALSO scales with the damage path's width:
+     * a monster wedge's footprint is a town, and a budget tuned for a 24-block rope would take
+     * real time to clear it block by block even at full violence. The width term is the square
+     * root of the width ratio (area growth, sub-linear so a 3-mile storm tops out near 6x, not
+     * the naive 200x), so the ladder reads: rope 1x, ~350-block stovepipe ~2.4x, mile-wide ~5x,
+     * 3-mile capped at 6x - multiplied with the stage factor.</p>
      */
     public boolean tryConsumeBlockDamage(long gameTime, StormObject storm) {
         if (blockDamageTick != gameTime) {
@@ -592,6 +1106,10 @@ public final class DynamicStormState {
                 factor = 1.2D;
             } else {
                 factor = 1.0D;
+            }
+            if (Config.DAMAGE_WIDTH_SCALED_BUDGET.get()) {
+                // 24 blocks is the default starting damage path: a rope.
+                factor *= Mth.clamp(Math.sqrt(Math.max(1.0D, damagePathWidth) / 24.0D), 1.0D, 6.0D);
             }
             cap = (int) Math.round(cap * factor);
         }
@@ -649,9 +1167,21 @@ public final class DynamicStormState {
         return Collections.unmodifiableList(satelliteTornadoes);
     }
 
-    void updateSubVortices(long gameTime, int desiredCount, float parentRadius, int parentStage, float parentStageIntensity) {
+    void updateSubVortices(long gameTime, int desiredCount, float parentRadius, int parentStage, float parentStageIntensity, boolean holdEpisode) {
         subVortices.removeIf(vortex -> vortex.isExpired(gameTime));
         if (desiredCount <= 0) {
+            if (holdEpisode && multiVortexEpisodeActive && gameTime < multiVortexEpisodeEndTick) {
+                // The parent's stage breathed below the episode floor mid-episode. Weather2's ladder
+                // oscillates with intensity, and clearing here used to kill the whole arrangement -
+                // vortices gone and, during a ground swarm whose parent is deliberately a faint
+                // culled rope, the tornado visually gone - until a fresh roll passed minutes later.
+                // Episodes are held for their whole length by design, so a live one now holds at a
+                // single survivor vortex until the stage recovers or the episode ends on schedule.
+                if (subVortices.isEmpty()) {
+                    subVortices.add(createSubVortex(gameTime, parentRadius, parentStage, parentStageIntensity, 0, 1));
+                }
+                return;
+            }
             clearSubVortexEpisode();
             return;
         }
@@ -659,9 +1189,20 @@ public final class DynamicStormState {
             subVortices.clear();
             multiVortexEpisodeActive = false;
             multiVortexEpisodeEndTick = 0L;
-            if (!multiVortexTagLocked && (sidewinderTagLocked || (funnelMorphologyLocked && !wedgeMorphologyActive()))) {
+            // A hold call exists only to keep an already-running episode alive through a stage dip;
+            // it must never START one, or a stage-dipped tornado could roll an episode that the
+            // stage gate exists to prevent.
+            if (holdEpisode) {
                 return;
             }
+            // A locked funnel shape or a live sidewinder is deliberately NOT a veto on starting an episode,
+            // even though the shape pack and the multi-vortex episode are exclusive looks. The exclusion is
+            // settled by the episode itself: starting one clears both tags a few lines below, and the shape
+            // eases back out through plain rather than being cut. Gating on them here instead dead-ended the
+            // whole feature - a non-wedge shape is held for the storm's life and nothing ever releases it, so
+            // any tornado that had rolled a cone, a rope or a barrel could never start an episode at all, and
+            // the clearing below could never run for the one case it exists for. A wedge is not special-cased
+            // either way: it was never vetoed before, and it still is not.
             if (!multiVortexTagLocked && gameTime < nextMultiVortexEpisodeAttemptTick) {
                 return;
             }
@@ -671,7 +1212,12 @@ public final class DynamicStormState {
             int effectiveMinStage = Math.max(Config.MULTIVORTEX_MIN_STAGE.get(), StormObject.STATE_STAGE2);
             float stageBlend = Mth.clamp((parentStage - effectiveMinStage) / (float) Math.max(1, StormObject.STATE_STAGE5 - effectiveMinStage), 0.0F, 1.0F);
             float intensityBlend = Mth.clamp(parentStageIntensity, 0.0F, 1.0F);
-            double chance = Mth.clamp(Config.MULTIVORTEX_EPISODE_CHANCE.get() + stageBlend * 0.10D + Math.max(0.0F, intensityBlend - 0.55F) * 0.10D, 0.0D, 0.42D);
+            // The 0.42 ceiling exists to keep the DEFAULT base chance rare - stage and intensity
+            // bonuses should never turn 0.07 into something common. A user who raises the base
+            // above the ceiling wants that frequency, so the ceiling never limits the base itself:
+            // only the automatic bonuses are capped.
+            double base = Config.MULTIVORTEX_EPISODE_CHANCE.get();
+            double chance = Mth.clamp(base + stageBlend * 0.10D + Math.max(0.0F, intensityBlend - 0.55F) * 0.10D, 0.0D, Math.max(0.42D, base));
             if (!multiVortexTagLocked && random.nextDouble() >= chance) {
                 return;
             }
@@ -698,6 +1244,13 @@ public final class DynamicStormState {
                     random.nextDouble(), groundSwarmChance, Config.MULTIVORTEX_PLANTED_SUCTION_CHANCE.get());
             float tip = (float) Mth.clamp(Config.MULTIVORTEX_GROUND_SWARM_TIP_HEIGHT.get(), 0.02D, 0.45D);
             multiVortexTipFraction = Mth.clamp(tip + (random.nextFloat() - 0.5F) * 0.10F, 0.02F, 0.45F);
+            // How far a lifted base pulls up, rolled per episode the same way. It is rolled for every
+            // episode rather than only the lifted ones so a save that resumes mid-episode restores the
+            // same retraction whichever way the episode came out.
+            float lift = (float) Mth.clamp(Config.MULTIVORTEX_LIFTED_TIP_HEIGHT.get(), 0.0D,
+                    MultiVortexParentProfile.MAX_LIFTED_TIP);
+            multiVortexLiftFraction = Mth.clamp(lift + (random.nextFloat() - 0.5F) * 0.12F, 0.0F,
+                    MultiVortexParentProfile.MAX_LIFTED_TIP);
             nextSubVortexRetargetTick = gameTime;
             clearSidewinderTag();
             clearNonWedgeFunnelMorphologyTag();
@@ -718,9 +1271,11 @@ public final class DynamicStormState {
             subVortices.add(createSubVortex(gameTime, parentRadius, parentStage, parentStageIntensity, slot, desiredCount));
             slot++;
         }
-        while (subVortices.size() > desiredCount) {
-            // Retire whichever vortex is closest to its OWN expiry rather than the last in the list,
-            // so a shrinking episode lets each vortex finish its life instead of cutting one off.
+        if (subVortices.size() > desiredCount) {
+            // One per retarget rather than the whole excess at once: a shrinking episode thins out over the
+            // seconds a player is watching it instead of losing four vortices between two frames. Retiring
+            // picks whichever vortex is closest to its OWN expiry rather than the last in the list, so each
+            // one finishes the life it was born with.
             retireClosestToExpiry(gameTime);
         }
         for (SubVortex vortex : subVortices) {
@@ -761,11 +1316,51 @@ public final class DynamicStormState {
         }
     }
 
+    /**
+     * Whether this tornado is one of the ones that carries horizontal vortices. The trait is rolled
+     * the first time the storm is strong enough to grow them and then held, so a funnel either has
+     * tentacles for its whole life or never has them. The odds rise with how violent the storm is at
+     * the moment it rolls, which for a storm climbing the stage ladder is its bottom rung - so the
+     * config value reads as the share of tornadoes, and only storms that arrive already violent
+     * actually use the higher end of the scale.
+     *
+     * <p>The config is still re-read each tick, so the two extreme settings keep working as live
+     * switches the way the ground swarm's does: 0 takes horizontal vortices off every storm
+     * immediately, 1 gives them to every storm.</p>
+     *
+     * <p>Only ever called from the server tick - the tubes reach clients through the synced state - so
+     * the roll cannot be drawn twice from one storm.</p>
+     */
+    public boolean horizontalVorticesAllowed(int stage, float stageIntensity) {
+        double configured = Config.HORIZONTAL_VORTICES_STORM_CHANCE.get();
+        if (configured <= 0.0D) {
+            return false;
+        }
+        if (!horizontalVortexRolled) {
+            horizontalVortexRolled = true;
+            int minStage = Math.max(Config.HORIZONTAL_VORTICES_MIN_STAGE.get(), StormObject.STATE_STAGE1);
+            float stageBlend = Mth.clamp((stage - minStage) / (float) Math.max(1, StormObject.STATE_STAGE5 - minStage), 0.0F, 1.0F);
+            float intensityBlend = Mth.clamp(stageIntensity, 0.0F, 1.0F);
+            double chance = Mth.clamp(configured + stageBlend * 0.20D + Math.max(0.0F, intensityBlend - 0.60F) * 0.20D, 0.0D, 1.0D);
+            horizontalVortexCapable = random.nextDouble() < chance;
+        }
+        return configured >= 1.0D || horizontalVortexCapable;
+    }
+
+    /**
+     * True once this storm has been decided to be a carrier of horizontal vortices. Read-only; the
+     * roll itself is {@link #horizontalVorticesAllowed(int, float)}.
+     */
+    public boolean horizontalVortexCapable() {
+        return horizontalVortexCapable;
+    }
+
     private void clearSubVortexEpisode() {
         subVortices.clear();
         multiVortexEpisodeActive = false;
         multiVortexTagLocked = false;
         multiVortexFlavour = MultiVortexFlavour.LIFTED;
+        multiVortexLiftFraction = 0.28F;
         multiVortexEpisodeStartTick = 0L;
         multiVortexEpisodeEndTick = 0L;
         nextSubVortexRetargetTick = 0L;
@@ -784,13 +1379,55 @@ public final class DynamicStormState {
         if (multiVortexEpisodeStartTick <= 0L || multiVortexEpisodeEndTick <= multiVortexEpisodeStartTick) {
             return desiredCount;
         }
+        float envelope = episodeEnvelope(gameTime);
+        // Never collapse to nothing mid-episode: at least one vortex circulates while it lasts.
+        return Math.max(1, Math.round(desiredCount * (0.45F + 0.55F * envelope)));
+    }
+
+    /**
+     * How firmly the episode is currently set up: 0 outside it, 1 through its middle, built in over its
+     * first quarter and released over its last third.
+     *
+     * <p>Deliberately not gated on {@code SUBVORTEX_EPISODE_RAMP}: that switch is about how many
+     * vortices the episode carries, while this envelope also drives the lifted base's retraction. A
+     * tornado whose whole foot is deleted the instant an episode starts and snapped back on the instant
+     * it ends would pop on screen regardless of how many vortices it is wearing, so the geometry always
+     * ramps. An episode restored from a save that predates the start tick has no timeline to ramp on and
+     * counts as fully set up.
+     */
+    private float episodeEnvelope(long gameTime) {
+        if (!multiVortexEpisodeActive || multiVortexEpisodeStartTick <= 0L
+                || multiVortexEpisodeEndTick <= multiVortexEpisodeStartTick) {
+            return 1.0F;
+        }
         long length = multiVortexEpisodeEndTick - multiVortexEpisodeStartTick;
         float progress = Mth.clamp((gameTime - multiVortexEpisodeStartTick) / (float) length, 0.0F, 1.0F);
         float build = rampSmoothstep(progress / 0.25F);
         float decay = 1.0F - rampSmoothstep((progress - 0.62F) / 0.38F);
-        float envelope = build * decay;
-        // Never collapse to nothing mid-episode: at least one vortex circulates while it lasts.
-        return Math.max(1, Math.round(desiredCount * (0.45F + 0.55F * envelope)));
+        return build * decay;
+    }
+
+    /**
+     * The lifted base's own ramp, and deliberately a slower one than the episode envelope above.
+     *
+     * <p>That envelope also sets how many vortices the episode carries, so it is built over the
+     * episode's first quarter - fast enough that the vortices show up when the episode starts. The
+     * retraction is a whole funnel's foot moving: lifting it over that same quarter would slide the
+     * column's base a couple of blocks a tick on even a modest tornado. It therefore builds over the
+     * first two fifths of the episode and settles back over the last three tenths, which keeps the
+     * base's movement far below one layer of the funnel per tick - the step that would read as the
+     * bottom of the funnel hopping rather than rising.
+     */
+    private float liftEnvelope(long gameTime) {
+        if (!multiVortexEpisodeActive || multiVortexEpisodeStartTick <= 0L
+                || multiVortexEpisodeEndTick <= multiVortexEpisodeStartTick) {
+            return 1.0F;
+        }
+        long length = multiVortexEpisodeEndTick - multiVortexEpisodeStartTick;
+        float progress = Mth.clamp((gameTime - multiVortexEpisodeStartTick) / (float) length, 0.0F, 1.0F);
+        float build = rampSmoothstep(progress / 0.40F);
+        float decay = 1.0F - rampSmoothstep((progress - 0.70F) / 0.30F);
+        return build * decay;
     }
 
     private void retireClosestToExpiry(long gameTime) {
@@ -868,8 +1505,40 @@ public final class DynamicStormState {
         return multiVortexTipFraction;
     }
 
+    /**
+     * How far up a lifted parent's condensation has retracted <em>right now</em>, as a fraction of the
+     * funnel's height: 0 means the column still reaches the ground, which is where it sits before an
+     * episode, at the very start of one, and again by the time it decays away.
+     *
+     * <p>The retraction rides the episode envelope, so the foot of the funnel lifts off the surface over
+     * the episode's first seconds and settles back down onto it at the end. Nothing is ever deleted
+     * outright: the column above the retraction is drawn at the parent's own width and opacity
+     * throughout, so a multi-vortex episode adds vortices to a tornado instead of replacing it.
+     */
+    public float parentLiftFraction(long gameTime) {
+        if (multiVortexFlavour != MultiVortexFlavour.LIFTED) {
+            return 0.0F;
+        }
+        float envelope = gameTime == Long.MIN_VALUE ? 1.0F : liftEnvelope(gameTime);
+        return Mth.clamp(multiVortexLiftFraction * envelope, 0.0F, MultiVortexParentProfile.MAX_LIFTED_TIP);
+    }
+
     private boolean funnelMorphologyVisualActive() {
         return targetFunnelMorphology.shaped() || funnelMorphology.shaped() || funnelMorphologyBlend > 0.03F;
+    }
+
+    /**
+     * Whether this tornado is wide enough to need the wide-funnel allowances: a visible funnel past the
+     * ordinary cap, a stage that reads as a big storm, extra tentacles.
+     *
+     * <p>It is deliberately about the WIDTH and not about the wedge. The wedge is one of the shapes a wide
+     * tornado can roll, and none of those allowances should depend on which shape came up - otherwise two
+     * identical storms differ in how big they are drawn and how severe they read, on the strength of a coin
+     * flip. The test is the same exit width the wedge episodes use, so every one of these paths behaves
+     * exactly as it did for a wedge.
+     */
+    public boolean wideTornado() {
+        return Math.max(damagePathWidth, targetDamagePathWidth) >= WEDGE_EXIT_WIDTH_BLOCKS;
     }
 
     public boolean wedgeMorphologyActive() {
@@ -891,11 +1560,13 @@ public final class DynamicStormState {
     private void clearFunnelMorphologyTag() {
         funnelMorphologyLocked = false;
         targetFunnelMorphology = FunnelMorphology.DEFAULT;
-        funnelMorphology = FunnelMorphology.DEFAULT;
-        funnelMorphologyBlend = 0.0F;
+        // Only the TARGET clears here. The shape itself stays in force, and `smooth()` eases its blend
+        // back to plain and releases it once the blend reaches zero. Dropping the shape and zeroing the
+        // blend on the spot snapped the funnel out of its shape in a single tick, and the step was worst
+        // at the top of a flared shape, where the profile's own scale is largest - the bowl's flare is the
+        // cloud base, so the ring there swelled past every layer under it and then reset.
         targetTrunkNeckFraction = 0.50F;
-        trunkNeckFraction = 0.50F;
-        trunkCurveStrength = 1.0F;
+        targetTrunkCurveStrength = 1.0F;
     }
 
     private void clearNonWedgeFunnelMorphologyTag() {
@@ -903,13 +1574,13 @@ public final class DynamicStormState {
             clearFunnelMorphologyTag();
             return;
         }
+        // A shape giving way to the wedge: the wedge becomes the target and `smooth()` hands over through
+        // plain - the shape in force keeps the profile while its blend falls, then the wedge takes over at
+        // zero. No shape is dropped here.
         targetFunnelMorphology = FunnelMorphology.WEDGE;
-        if (funnelMorphology != FunnelMorphology.WEDGE) {
-            funnelMorphology = FunnelMorphology.DEFAULT;
-        }
         funnelMorphologyLocked = true;
         targetTrunkNeckFraction = 0.78F;
-        trunkCurveStrength = 0.35F;
+        targetTrunkCurveStrength = 0.35F;
     }
 
     private void clearWedgeMorphologyTag() {
@@ -917,12 +1588,12 @@ public final class DynamicStormState {
         if (targetFunnelMorphology == FunnelMorphology.WEDGE) {
             targetFunnelMorphology = FunnelMorphology.DEFAULT;
         }
-        if (funnelMorphology == FunnelMorphology.WEDGE) {
-            funnelMorphology = FunnelMorphology.DEFAULT;
-        }
-        if (targetFunnelMorphology == FunnelMorphology.DEFAULT && funnelMorphology == FunnelMorphology.DEFAULT) {
-            funnelMorphologyBlend = 0.0F;
-        }
+        // The wedge stays in force at whatever blend it has and eases back to plain in `smooth()`. It is
+        // the largest profile in the mod - its ground scale reaches over five times the funnel's own radius
+        // and its flared top is the top layer this whole change is about - so zeroing it here snapped a
+        // half-mile-wide base back to an ordinary column between two ticks. A wedge pseudo-shape ends
+        // whenever the storm drops under the exit width, which a storm sitting near that threshold does
+        // repeatedly, so the snap repeated with it.
     }
 
     private void activateWedgeMorphology() {
@@ -930,13 +1601,12 @@ public final class DynamicStormState {
         if (targetFunnelMorphology != FunnelMorphology.WEDGE) {
             targetFunnelMorphology = FunnelMorphology.WEDGE;
         }
-        if (funnelMorphology != FunnelMorphology.DEFAULT && funnelMorphology != FunnelMorphology.WEDGE) {
-            funnelMorphology = FunnelMorphology.DEFAULT;
-            funnelMorphologyBlend = 0.0F;
-        }
+        // Whatever shape was in force is deliberately left alone: the handoff in `smooth()` eases it out
+        // before the wedge eases in. Dropping it and zeroing the blend here stepped the funnel straight
+        // from the outgoing profile to the wedge profile in one tick.
         funnelMorphologyLocked = true;
         targetTrunkNeckFraction = 0.78F;
-        trunkCurveStrength = 0.35F;
+        targetTrunkCurveStrength = 0.35F;
     }
 
     private SubVortex createSubVortex(long gameTime, float parentRadius, int parentStage, float parentStageIntensity, int slot, int slotCount) {
@@ -954,6 +1624,12 @@ public final class DynamicStormState {
             orbitSpeed = Mth.lerp(random.nextFloat(), rails.minOrbitSpeed(), rails.maxOrbitSpeed());
         }
         int life = nextIntInclusive(rails.minLife(), rails.maxLife());
+        if (type.orbits()) {
+            // The life and the rate were drawn independently, so the worst combinations came out at barely
+            // one turn of the parent - a flicker rather than a vortex. The life is raised to cover a few
+            // turns at the rate this one is actually going to circle at, and its own band caps the raise.
+            life = VortexLife.lifeFor(life, orbitSpeed, Math.max(rails.minLife(), rails.maxLife()) * 2);
+        }
         float size = Mth.lerp(random.nextFloat(), rails.minSize(), rails.maxSize());
         float intensity = Mth.lerp(random.nextFloat(), rails.minIntensity(), rails.maxIntensity());
         float spawnHeight = 0.0F;
@@ -1144,17 +1820,17 @@ public final class DynamicStormState {
         }
         steerSatelliteTornadoes(parentPos, parentMotion);
         int activeLimit = Mth.clamp(desiredMax, 0, 4);
-        while (satelliteTornadoes.size() > activeLimit) {
-            satelliteTornadoes.remove(satelliteTornadoes.size() - 1);
-        }
+        retireUnwantedSatellites(gameTime, activeLimit, parentPos == null);
         if (activeLimit <= 0 || parentPos == null) {
-            satelliteTornadoes.clear();
             return;
         }
         if (parentStage < minParentStage) {
             return;
         }
-        if (gameTime < nextSatelliteAttemptTick || satelliteTornadoes.size() >= activeLimit) {
+        // The limit is about how many the parent can KEEP, so a satellite that is already on its way out is
+        // not counted against it: otherwise a retirement would block the next birth for as long as its fade
+        // lasts, which is a limit quietly become a cooldown.
+        if (gameTime < nextSatelliteAttemptTick || liveSatellites() >= activeLimit) {
             return;
         }
         nextSatelliteAttemptTick = gameTime + nextIntInclusive(900, 2400);
@@ -1163,7 +1839,13 @@ public final class DynamicStormState {
             return;
         }
         long id = allocateSatelliteId();
-        long lifetime = nextIntInclusive(400, 1200);
+        float orbitSpeed = 1.45F + random.nextFloat() * 2.75F;
+        // Same rule as the sub-vortices: a satellite is born with enough life to go round its parent a few
+        // times at its own rate, because the shortest lives in its band used to cover 1.6 turns. The rate
+        // handed in is the SLOWEST this one will ever circle at - its own speed wobbles down by up to 12%
+        // every tick - so the turns counted here are turns it really gets, not turns it gets at its best.
+        long lifetime = VortexLife.lifeFor(nextIntInclusive(400, 1200),
+                orbitSpeed * TornadoCirculationState.ORBIT_WOBBLE_FLOOR, 2400);
         float orbit = Math.max(12.0F, parentRadius * (1.08F + random.nextFloat() * 0.56F) + 8.0F + random.nextFloat() * 12.0F);
         float orbitDegrees = nextSatelliteOrbitDegrees();
         float windFraction = 0.32F + random.nextFloat() * (float) Math.max(0.05D, maxWindFraction - 0.32D);
@@ -1180,7 +1862,7 @@ public final class DynamicStormState {
                 parentMotion == null ? 0.0D : parentMotion.y,
                 parentMotion == null ? 0.0D : parentMotion.z,
                 orbitDegrees,
-                1.45F + random.nextFloat() * 2.75F,
+                orbitSpeed,
                 orbit,
                 damageWidth,
                 visibleWidth,
@@ -1206,6 +1888,15 @@ public final class DynamicStormState {
     void markIntensityChanged(long gameTime, boolean reintensified) {
         lastIntensityChangeTick = gameTime;
         recentlyReintensified = reintensified;
+    }
+
+    /** Rungs this storm has climbed past the ceiling it was born with. */
+    public int strengtheningRungs() {
+        return strengtheningRungs;
+    }
+
+    void noteStrengtheningRung() {
+        strengtheningRungs++;
     }
 
     public boolean recentlyReintensified() {
@@ -1403,6 +2094,7 @@ public final class DynamicStormState {
         tag.putFloat("TargetDamagePathWidth", targetDamagePathWidth);
         tag.putFloat("VisibleFunnelWidth", visibleFunnelWidth);
         tag.putFloat("TargetVisibleFunnelWidth", targetVisibleFunnelWidth);
+        tag.putInt("StrengtheningRungs", strengtheningRungs);
         tag.putFloat("CoreRadius", coreRadius);
         tag.putFloat("RadiusOfMaxWind", radiusOfMaxWind);
         tag.putFloat("MergeWidthBoost", mergeWidthBoost);
@@ -1420,9 +2112,12 @@ public final class DynamicStormState {
         tag.putLong("NextSubVortexId", nextSubVortexId);
         tag.putLong("NextHorizontalVortexId", nextHorizontalVortexId);
         tag.putLong("NextHorizontalVortexRetargetTick", nextHorizontalVortexRetargetTick);
+        tag.putBoolean("HorizontalVortexRolled", horizontalVortexRolled);
+        tag.putBoolean("HorizontalVortexCapable", horizontalVortexCapable);
         tag.putBoolean("MultiVortexEpisodeActive", multiVortexEpisodeActive);
         tag.putString("MultiVortexFlavour", multiVortexFlavour.name());
         tag.putFloat("MultiVortexTipFraction", multiVortexTipFraction);
+        tag.putFloat("MultiVortexLiftFraction", multiVortexLiftFraction);
         tag.putBoolean("MultiVortexTagLocked", multiVortexTagLocked);
         tag.putLong("NextMultiVortexEpisodeAttemptTick", nextMultiVortexEpisodeAttemptTick);
         tag.putLong("MultiVortexEpisodeEndTick", multiVortexEpisodeEndTick);
@@ -1440,11 +2135,15 @@ public final class DynamicStormState {
         tag.putString("FunnelMorphology", funnelMorphology.name());
         tag.putString("TargetFunnelMorphology", targetFunnelMorphology.name());
         tag.putBoolean("FunnelMorphologyLocked", funnelMorphologyLocked);
+        tag.putBoolean("WedgeEpisodeRolled", wedgeEpisodeRolled);
+        tag.putBoolean("WedgeEpisodeIsWedge", wedgeEpisodeIsWedge);
         tag.putFloat("FunnelMorphologyBlend", funnelMorphologyBlend);
         tag.putFloat("TrunkNeckFraction", trunkNeckFraction);
         tag.putFloat("TargetTrunkNeckFraction", targetTrunkNeckFraction);
         tag.putFloat("TrunkCurvePhase", trunkCurvePhase);
         tag.putFloat("TrunkCurveStrength", trunkCurveStrength);
+        tag.putFloat("TargetTrunkCurveStrength", targetTrunkCurveStrength);
+        tag.putBoolean("MorphologyHandoff", morphologyHandoff);
         tag.putLong("NextMorphologyRetargetTick", nextMorphologyRetargetTick);
         tag.putFloat("VisualSpinSpeed", visualSpinSpeed);
         tag.putFloat("TargetVisualSpinSpeed", targetVisualSpinSpeed);
@@ -1509,6 +2208,7 @@ public final class DynamicStormState {
         targetDamagePathWidth = tag.contains("TargetDamagePathWidth") ? tag.getFloat("TargetDamagePathWidth") : damagePathWidth;
         visibleFunnelWidth = tag.contains("VisibleFunnelWidth") ? tag.getFloat("VisibleFunnelWidth") : Math.max(3.0F, damagePathWidth * 0.55F);
         targetVisibleFunnelWidth = tag.contains("TargetVisibleFunnelWidth") ? tag.getFloat("TargetVisibleFunnelWidth") : visibleFunnelWidth;
+        strengtheningRungs = tag.contains("StrengtheningRungs") ? Math.max(0, tag.getInt("StrengtheningRungs")) : 0;
         coreRadius = tag.contains("CoreRadius") ? tag.getFloat("CoreRadius") : Math.max(2.0F, damagePathWidth * 0.16F);
         radiusOfMaxWind = tag.contains("RadiusOfMaxWind") ? tag.getFloat("RadiusOfMaxWind") : Math.max(3.0F, damagePathWidth * 0.28F);
         mergeWidthBoost = tag.contains("MergeWidthBoost") ? tag.getFloat("MergeWidthBoost") : 0.0F;
@@ -1526,6 +2226,12 @@ public final class DynamicStormState {
         nextSubVortexId = tag.contains("NextSubVortexId") ? Math.max(1L, tag.getLong("NextSubVortexId")) : nextSubVortexId;
         nextHorizontalVortexId = tag.contains("NextHorizontalVortexId") ? Math.max(1L, tag.getLong("NextHorizontalVortexId")) : nextHorizontalVortexId;
         nextHorizontalVortexRetargetTick = tag.contains("NextHorizontalVortexRetargetTick") ? tag.getLong("NextHorizontalVortexRetargetTick") : nextHorizontalVortexRetargetTick;
+        // A save written before this trait existed has no roll recorded; a storm already carrying
+        // tubes was plainly one of the carriers, so that is what it reads back as. A storm that had
+        // none simply rolls on its next eligible tick.
+        boolean legacyHorizontalCarrier = tag.getInt("HorizontalVortexCount") > 0;
+        horizontalVortexRolled = tag.contains("HorizontalVortexRolled") ? tag.getBoolean("HorizontalVortexRolled") : legacyHorizontalCarrier;
+        horizontalVortexCapable = tag.contains("HorizontalVortexCapable") ? tag.getBoolean("HorizontalVortexCapable") : legacyHorizontalCarrier;
         multiVortexEpisodeActive = tag.getBoolean("MultiVortexEpisodeActive");
         // Older saves carried the ground swarm as a flag rather than a flavour; translate it so an
         // episode that is in flight across the update keeps the arrangement it was already showing.
@@ -1533,6 +2239,7 @@ public final class DynamicStormState {
                 ? MultiVortexFlavour.byName(tag.getString("MultiVortexFlavour"))
                 : tag.getBoolean("MultiVortexGroundSwarm") ? MultiVortexFlavour.GROUND_SWARM : MultiVortexFlavour.LIFTED;
         multiVortexTipFraction = tag.contains("MultiVortexTipFraction") ? tag.getFloat("MultiVortexTipFraction") : multiVortexTipFraction;
+        multiVortexLiftFraction = tag.contains("MultiVortexLiftFraction") ? tag.getFloat("MultiVortexLiftFraction") : multiVortexLiftFraction;
         multiVortexTagLocked = tag.contains("MultiVortexTagLocked") ? tag.getBoolean("MultiVortexTagLocked") : multiVortexEpisodeActive;
         nextMultiVortexEpisodeAttemptTick = tag.contains("NextMultiVortexEpisodeAttemptTick") ? tag.getLong("NextMultiVortexEpisodeAttemptTick") : nextMultiVortexEpisodeAttemptTick;
         multiVortexEpisodeEndTick = tag.contains("MultiVortexEpisodeEndTick") ? tag.getLong("MultiVortexEpisodeEndTick") : multiVortexEpisodeEndTick;
@@ -1549,7 +2256,15 @@ public final class DynamicStormState {
         targetTrunkNeckFraction = tag.contains("TargetTrunkNeckFraction") ? Mth.clamp(tag.getFloat("TargetTrunkNeckFraction"), 0.22F, 0.78F) : trunkNeckFraction;
         trunkCurvePhase = tag.contains("TrunkCurvePhase") ? tag.getFloat("TrunkCurvePhase") : trunkCurvePhase;
         trunkCurveStrength = tag.contains("TrunkCurveStrength") ? Mth.clamp(tag.getFloat("TrunkCurveStrength"), 0.0F, 3.0F) : trunkCurveStrength;
+        targetTrunkCurveStrength = tag.contains("TargetTrunkCurveStrength")
+                ? Mth.clamp(tag.getFloat("TargetTrunkCurveStrength"), 0.0F, 3.0F)
+                : trunkCurveStrength;
+        morphologyHandoff = tag.contains("MorphologyHandoff") ? tag.getBoolean("MorphologyHandoff") : false;
         nextMorphologyRetargetTick = tag.contains("NextMorphologyRetargetTick") ? tag.getLong("NextMorphologyRetargetTick") : nextMorphologyRetargetTick;
+        // A storm saved before this existed keeps the shape it was drawn with: a loaded wedge tag counts as
+        // an already-rolled wedge, rather than a fresh roll that could take the wedge away mid-episode.
+        wedgeEpisodeIsWedge = tag.contains("WedgeEpisodeIsWedge") ? tag.getBoolean("WedgeEpisodeIsWedge") : wedgeMorphologyActive();
+        wedgeEpisodeRolled = tag.contains("WedgeEpisodeRolled") ? tag.getBoolean("WedgeEpisodeRolled") : wedgeEpisodeIsWedge;
         visualSpinSpeed = tag.contains("VisualSpinSpeed") ? tag.getFloat("VisualSpinSpeed") : visualSpinSpeed;
         targetVisualSpinSpeed = tag.contains("TargetVisualSpinSpeed") ? tag.getFloat("TargetVisualSpinSpeed") : visualSpinSpeed;
         liveMaxWindMph = tag.contains("LiveMaxWindMph") ? Math.max(0.0F, tag.getFloat("LiveMaxWindMph")) : liveMaxWindMph;
@@ -1893,7 +2608,7 @@ public final class DynamicStormState {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.34F + random.nextFloat() * 0.18F;
-            trunkCurveStrength = Mth.clamp(0.56F + random.nextFloat() * 0.28F, 0.0F, 1.05F);
+            targetTrunkCurveStrength = Mth.clamp(0.56F + random.nextFloat() * 0.28F, 0.0F, 1.05F);
             float drillWidth = Math.max(2.75F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.14F + random.nextFloat() * 0.08F)));
             targetVisibleFunnelWidth = drillWidth;
             if (storm != null) {
@@ -1904,13 +2619,13 @@ public final class DynamicStormState {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.38F + random.nextFloat() * 0.24F;
-            trunkCurveStrength = Mth.clamp(1.02F + random.nextFloat() * 0.58F, 0.0F, Math.max(1.55F, Config.TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH.get().floatValue() * 1.55F));
+            targetTrunkCurveStrength = Mth.clamp(1.02F + random.nextFloat() * 0.58F, 0.0F, Math.max(1.55F, Config.TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH.get().floatValue() * 1.55F));
             nextMorphologyRetargetTick = gameTime + nextIntInclusive(460, 1040);
         } else if (targetFunnelMorphology == FunnelMorphology.FLOATER) {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.46F + random.nextFloat() * 0.16F;
-            trunkCurveStrength = Mth.clamp(0.52F + random.nextFloat() * 0.36F, 0.0F, 1.05F);
+            targetTrunkCurveStrength = Mth.clamp(0.52F + random.nextFloat() * 0.36F, 0.0F, 1.05F);
             float floaterWidth = Math.max(3.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.28F + random.nextFloat() * 0.10F)));
             targetVisibleFunnelWidth = floaterWidth;
             if (storm != null) {
@@ -1921,7 +2636,7 @@ public final class DynamicStormState {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.55F + random.nextFloat() * 0.20F;
-            trunkCurveStrength = Mth.clamp(1.10F + random.nextFloat() * 0.50F, 0.0F, 1.60F);
+            targetTrunkCurveStrength = Mth.clamp(1.10F + random.nextFloat() * 0.50F, 0.0F, 1.60F);
             float ropeWidth = Math.max(2.5F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.12F + random.nextFloat() * 0.06F)));
             targetVisibleFunnelWidth = ropeWidth;
             if (storm != null) {
@@ -1932,13 +2647,13 @@ public final class DynamicStormState {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.42F + random.nextFloat() * 0.16F;
-            trunkCurveStrength = Mth.clamp(0.45F + random.nextFloat() * 0.25F, 0.0F, 0.90F);
+            targetTrunkCurveStrength = Mth.clamp(0.45F + random.nextFloat() * 0.25F, 0.0F, 0.90F);
             nextMorphologyRetargetTick = gameTime + nextIntInclusive(700, 1600);
         } else if (targetFunnelMorphology == FunnelMorphology.STOVEPIPE) {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.50F + random.nextFloat() * 0.14F;
-            trunkCurveStrength = Mth.clamp(0.30F + random.nextFloat() * 0.22F, 0.0F, 0.70F);
+            targetTrunkCurveStrength = Mth.clamp(0.30F + random.nextFloat() * 0.22F, 0.0F, 0.70F);
             float pipeWidth = Math.max(6.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.50F + random.nextFloat() * 0.20F)));
             targetVisibleFunnelWidth = pipeWidth;
             if (storm != null) {
@@ -1949,7 +2664,7 @@ public final class DynamicStormState {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.40F + random.nextFloat() * 0.15F;
-            trunkCurveStrength = Mth.clamp(0.85F + random.nextFloat() * 0.35F, 0.0F, 1.25F);
+            targetTrunkCurveStrength = Mth.clamp(0.85F + random.nextFloat() * 0.35F, 0.0F, 1.25F);
             float corkWidth = Math.max(3.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.20F + random.nextFloat() * 0.10F)));
             targetVisibleFunnelWidth = corkWidth;
             if (storm != null) {
@@ -1960,7 +2675,7 @@ public final class DynamicStormState {
             funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.40F + random.nextFloat() * 0.14F;
-            trunkCurveStrength = Mth.clamp(0.40F + random.nextFloat() * 0.25F, 0.0F, 0.85F);
+            targetTrunkCurveStrength = Mth.clamp(0.40F + random.nextFloat() * 0.25F, 0.0F, 0.85F);
             float bowlWidth = Math.max(6.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.48F + random.nextFloat() * 0.20F)));
             targetVisibleFunnelWidth = bowlWidth;
             if (storm != null) {
@@ -1977,6 +2692,7 @@ public final class DynamicStormState {
             if (wedgeMorphologyActive()) {
                 clearWedgeMorphologyTag();
             }
+            resetWedgeEpisode();
             return false;
         }
         float currentWidth = Math.max(damagePathWidth, targetDamagePathWidth);
@@ -1985,22 +2701,77 @@ public final class DynamicStormState {
             if (wedgeMorphologyActive()) {
                 clearWedgeMorphologyTag();
             }
+            resetWedgeEpisode();
+            return false;
+        }
+
+        // Crossing the width threshold makes a tornado WIDE. Whether it also looks like a wedge is a
+        // separate question, and in the record it is a genuinely separate one: a half-mile damage path can
+        // be a wedge, a large cone, a barrel or a massive multiple-vortex, and which one it is does not
+        // follow from the tape measure. So the shape is rolled once per wide episode and then held - the
+        // tag also sets the trunk profile, so re-rolling it on every retarget would visibly re-shape the
+        // funnel over and over instead of leaving a storm as the storm it is.
+        if (!wedgeEpisodeRolled) {
+            wedgeEpisodeRolled = true;
+            float base = Config.TORNADO_WEDGE_CHANCE.get().floatValue();
+            // Size tilts it: a monster is more likely to read as a wedge than one that has only just
+            // crossed the threshold, which is how the real distribution runs.
+            float sizeFactor = Mth.clamp(
+                    (currentWidth - WEDGE_ENTER_WIDTH_BLOCKS) / (WEDGE_ENTER_WIDTH_BLOCKS * 1.6F), 0.0F, 1.0F);
+            wedgeEpisodeIsWedge = random.nextFloat() < Mth.clamp(base * (0.55F + sizeFactor * 0.90F), 0.0F, 1.0F);
+        }
+        if (!wedgeEpisodeIsWedge) {
+            // Wide, but not a wedge: the funnel still has to grow with its damage path, or a mile-wide
+            // path would be drawn with a needle standing over it. Only the shape is withheld.
+            preserveWideWidthTargets(storm);
+            if (wedgeMorphologyActive()) {
+                clearWedgeMorphologyTag();
+            }
             return false;
         }
 
         activateWedgeMorphology();
-        preserveWedgeWidthTargets(storm);
-
-        currentWidth = Math.max(damagePathWidth, targetDamagePathWidth);
-        float forcedCap = Math.max((float) Config.effectiveMaxVisibleFunnelWidthBlocks(), Math.min(currentWidth, WEDGE_FORCED_VISIBLE_CAP_BLOCKS));
-        float desiredVisibleWidth = Mth.clamp(Math.max(currentWidth, WEDGE_ENTER_WIDTH_BLOCKS), 3.0F, forcedCap);
-        targetVisibleFunnelWidth = Math.max(targetVisibleFunnelWidth, desiredVisibleWidth);
+        // A wedge that is roping out keeps the shape's tag but not its floor: the width follows the storm's
+        // own decay instead of being pinned at the width it used to have.
+        if (!sizeContracting(storm)) {
+            preserveWideWidthTargets(storm);
+            currentWidth = Math.max(damagePathWidth, targetDamagePathWidth);
+            float forcedCap = Math.max((float) Config.effectiveMaxVisibleFunnelWidthBlocks(), Math.min(currentWidth, WEDGE_FORCED_VISIBLE_CAP_BLOCKS));
+            float desiredVisibleWidth = Mth.clamp(Math.max(currentWidth, WEDGE_ENTER_WIDTH_BLOCKS), 3.0F, forcedCap);
+            targetVisibleFunnelWidth = Math.max(targetVisibleFunnelWidth, desiredVisibleWidth);
+        }
         targetWidthMultiplier = targetVisibleFunnelWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
         return true;
     }
 
-    private void preserveWedgeWidthTargets(StormObject storm) {
-        if (!wedgeMorphologyActive() || storm == null) {
+    private void resetWedgeEpisode() {
+        wedgeEpisodeRolled = false;
+        wedgeEpisodeIsWedge = false;
+    }
+
+    /**
+     * Keeps a wide tornado's funnel as wide as its damage path, whichever shape it ended up with. This is
+     * the width half of the old wedge activation, split out because a tornado can be wide without being a
+     * wedge: with the two welded together the shape was forced by the width, and a wide cone or barrel
+     * could not exist at all.
+     *
+     * <p>The guard is on width rather than on the shape, which is the only thing that changed. The floor
+     * below is an anchor for a tornado that is ALREADY wide - it raises the damage path to half a mile -
+     * so applying it to an ordinary narrow tornado would drag every tornado in the world up to half a mile
+     * across. It was previously guarded by the wedge tag, which coincided with wide; now it is guarded by
+     * the width itself.
+     */
+    private void preserveWideWidthTargets(StormObject storm) {
+        if (storm == null) {
+            return;
+        }
+        if (!wideTornado()) {
+            return;
+        }
+        // ...but a storm that is past its peak is giving its width back on purpose, and a floor here would
+        // hold it at half a mile while it roped out. The size lifecycle decides that; with it off this
+        // method behaves exactly as it always did.
+        if (sizeContracting(storm)) {
             return;
         }
         float minDamageWidth = (float) Config.effectiveMinDamageWidthBlocks();
@@ -2478,8 +3249,13 @@ public final class DynamicStormState {
         private float lifecycle;
         private boolean touchedDown;
         private boolean absorbed;
+        /**
+         * Whether its parent has taken this circulation back. A retiring one keeps its place until the
+         * shortened expiry it was given, so it thins and spirals in on the way out instead of vanishing.
+         */
+        private boolean retiring;
         private final long spawnTick;
-        private final long expireTick;
+        private long expireTick;
         private long damageTick = -1L;
         private int damageCount;
 
@@ -2509,11 +3285,17 @@ public final class DynamicStormState {
             this.expireTick = expireTick;
         }
 
+        /**
+         * The lowest the orbit-speed wobble ever takes a satellite's own rate, so anything measuring how
+         * long a satellite needs to go round can ask about its slowest turn rather than its fastest.
+         */
+        static final float ORBIT_WOBBLE_FLOOR = 0.88F;
+
         private void tickVisual(long gameTime, float rotationDirection) {
             updateLifecycle(gameTime);
             // Kepler-ish spin-up as the orbit tightens, with a slow speed wobble for organic motion.
             float radiusScale = baseOrbitRadius / Math.max(4.0F, orbitRadius);
-            float speedWobble = 0.88F + 0.12F * (float) Math.sin(gameTime * 0.021D + id * 1.31D);
+            float speedWobble = ORBIT_WOBBLE_FLOOR + 0.12F * (float) Math.sin(gameTime * 0.021D + id * 1.31D);
             orbitSpeedDegrees = Mth.clamp(baseOrbitSpeedDegrees * (0.35F + 0.65F * radiusScale) * speedWobble, 0.6F, 14.0F);
             // Orbit breathes: radius wanders organically and tightens as the vortex decays into the parent.
             float wander = 0.82F + 0.18F * (float) Math.sin(gameTime * 0.013D + id * 1.7D);
@@ -2626,6 +3408,13 @@ public final class DynamicStormState {
             currentWindFraction = Mth.lerp(0.35F, currentWindFraction, incoming.currentWindFraction);
             touchedDown = touchedDown || incoming.touchedDown;
             absorbed = absorbed || incoming.absorbed;
+            // A retirement is the server's decision and the client draws what it is told: without this the
+            // client would keep a satellite the server has already given up on until the end it was born
+            // with. Expiry only ever moves earlier, so a late packet cannot resurrect one.
+            if (incoming.expireTick < expireTick) {
+                expireTick = incoming.expireTick;
+            }
+            retiring = retiring || incoming.retiring;
         }
 
         public boolean tryConsumeDamage(long gameTime, int cap) {
@@ -2696,6 +3485,24 @@ public final class DynamicStormState {
             absorbed = true;
         }
 
+        /**
+         * Ends this circulation on the parent's terms instead of its own: its expiry is pulled in to a short
+         * fade, so the life curve it already has - the shrinking funnel, the falling wind, the orbit
+         * tightening toward the parent - plays out and it dies the death it was going to die anyway.
+         */
+        void retire(long gameTime, long fadeTicks) {
+            long end = VortexLife.retireTick(gameTime, expireTick, fadeTicks);
+            if (end < expireTick) {
+                expireTick = end;
+            }
+            retiring = true;
+        }
+
+        /** Whether the parent has already taken this one back and it is on its way out. */
+        public boolean retiring() {
+            return retiring;
+        }
+
         public long spawnTick() {
             return spawnTick;
         }
@@ -2743,6 +3550,7 @@ public final class DynamicStormState {
             tag.putFloat("CurrentWindFraction", currentWindFraction);
             tag.putBoolean("TouchedDown", touchedDown);
             tag.putBoolean("Absorbed", absorbed);
+            tag.putBoolean("Retiring", retiring);
             tag.putLong("SpawnTick", spawnTick);
             tag.putLong("ExpireTick", expireTick);
             return tag;
@@ -2785,6 +3593,7 @@ public final class DynamicStormState {
             state.radiusOfMaxWind = tag.contains("RadiusOfMaxWind") ? tag.getFloat("RadiusOfMaxWind") : Math.max(3.0F, damageWidth * 0.28F);
             state.currentWindFraction = tag.contains("CurrentWindFraction") ? tag.getFloat("CurrentWindFraction") : state.windFraction;
             state.absorbed = tag.getBoolean("Absorbed");
+            state.retiring = tag.getBoolean("Retiring");
             return state;
         }
 

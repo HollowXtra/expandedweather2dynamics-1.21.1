@@ -1,15 +1,20 @@
 package com.imbet.radar;
 
 import com.imbet.Config;
+import com.imbet.network.NetworkSafety;
+import com.imbet.network.RadarSnapshotPayload;
 import com.imbet.registry.ModContent;
 import com.imbet.weather.AdvancementAwarder;
 import com.mojang.serialization.MapCodec;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.ItemInteractionResult;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
@@ -68,13 +73,25 @@ public class RadarBlock extends BaseEntityBlock {
         if (level.isClientSide()) {
             return InteractionResult.SUCCESS;
         }
-        if (level.getBlockEntity(pos) instanceof RadarBlockEntity radar) {
-            radar.cycleMode();
-            if (player instanceof ServerPlayer serverPlayer) {
-                AdvancementAwarder.award(serverPlayer, AdvancementAwarder.USE_RADAR);
-                serverPlayer.sendSystemMessage(net.minecraft.network.chat.Component.literal("Radar " + radar.getModeLabel() + " / range " + radar.getRange() + " blocks"));
-            }
+        if (!(level.getBlockEntity(pos) instanceof RadarBlockEntity radar) || !(player instanceof ServerPlayer serverPlayer)) {
+            return InteractionResult.SUCCESS;
         }
+        AdvancementAwarder.award(serverPlayer, AdvancementAwarder.USE_RADAR);
+        if (!Config.RADAR_WORLD_PANEL_ENABLED.get() && level instanceof ServerLevel serverLevel) {
+            // With the in-world panel switched off the radar opens its screen instead: the same scope a
+            // linked handheld shows, from the same feed, which is what the setting promises. The sweep is
+            // sent first so the first frame is this radar's picture rather than an empty scope.
+            int range = radar.effectiveRange();
+            NetworkSafety.sendToPlayer(serverPlayer, new RadarSnapshotPayload(pos, true, radar.getMode(), range,
+                    RadarService.buildSnapshot(serverLevel, pos, range)));
+            serverPlayer.openMenu(new SimpleMenuProvider(
+                    (containerId, inventory, openedPlayer) -> new RadarMenu(containerId, inventory, pos),
+                    Component.translatable("block.expandedweather2dynamics.radar_block")),
+                    buffer -> buffer.writeBlockPos(pos));
+            return InteractionResult.SUCCESS;
+        }
+        radar.cycleMode();
+        serverPlayer.sendSystemMessage(Component.literal("Radar " + radar.getModeLabel() + " / range " + radar.getRange() + " blocks"));
         return InteractionResult.SUCCESS;
     }
 

@@ -1,0 +1,100 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "expandedweather2dynamics:block/instrument_metal",
+    "metal": "expandedweather2dynamics:block/instrument_metal",
+    "dark": "expandedweather2dynamics:block/instrument_dark",
+    "planks": "minecraft:block/oak_planks",
+    "face": "expandedweather2dynamics:block/sawmill"
+  },
+  "elements": [
+    {
+      "comment": "The saw bed: plain planks, because that is what the table of a mill is made of.",
+      "from": [0, 8, 0],
+      "to": [16, 12, 16],
+      "faces": {
+        "down": {"texture": "#planks"},
+        "up": {"texture": "#planks"},
+        "north": {"texture": "#planks"},
+        "south": {"texture": "#planks"},
+        "west": {"texture": "#planks"},
+        "east": {"texture": "#planks"}
+      }
+    },
+    {
+      "comment": "The blade, standing up through the bed and thinner than the bed is deep.",
+      "from": [7, 12, 6],
+      "to": [9, 16, 15],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#metal"},
+        "north": {"texture": "#metal"},
+        "south": {"texture": "#metal"},
+        "west": {"texture": "#metal"},
+        "east": {"texture": "#metal"}
+      }
+    },
+    {
+      "comment": "The guard in front of the blade, carrying the mill's own painted face - the saw, the log and its teeth - one texel per pixel across the plate rather than squeezed into a strip.",
+      "from": [6.8, 12.2, 5.6],
+      "to": [9.2, 15.8, 6.0],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"uv": [0, 0, 16, 16], "texture": "#face"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "comment": "The four legs the bench also stands on, so the village's workstations read as one family.",
+      "from": [1, 0, 1],
+      "to": [3, 8, 3],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [13, 0, 1],
+      "to": [15, 8, 3],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [1, 0, 13],
+      "to": [3, 8, 15],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    },
+    {
+      "from": [13, 0, 13],
+      "to": [15, 8, 15],
+      "faces": {
+        "down": {"texture": "#dark"},
+        "up": {"texture": "#dark"},
+        "north": {"texture": "#dark"},
+        "south": {"texture": "#dark"},
+        "west": {"texture": "#dark"},
+        "east": {"texture": "#dark"}
+      }
+    }
+  ]
+}

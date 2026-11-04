@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "expandedweather2dynamics:block/instrument_metal"
+  }
+}

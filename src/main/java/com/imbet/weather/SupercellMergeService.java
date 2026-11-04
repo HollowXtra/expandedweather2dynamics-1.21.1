@@ -74,11 +74,16 @@ public final class SupercellMergeService {
         if (storm == null || storm.pos == null || storm.isDead || DynamicStormController.isAbsorbedOrDecaying(storm)) {
             return false;
         }
+        // A twin is never a merge candidate. Two tornadoes running side by side is exactly the picture
+        // this service reads as a converging pair, and absorbing the second one into the first would
+        // delete the pair at the moment it became the thing twins are for. Neither is a twin ever the
+        // absorber: it stays the storm it is until its own life ends.
         if (storm.stormType != StormObject.TYPE_LAND
                 || storm.attrib_waterSpout
                 || DynamicStormController.isNativeCyclone(storm)
                 || AddonWeatherEventService.isSquallLineHelperStorm(storm)
-                || AddonWeatherEventService.isHurricaneHelperStorm(storm)) {
+                || AddonWeatherEventService.isHurricaneHelperStorm(storm)
+                || TwinTornadoService.isTwinStorm(storm)) {
             return false;
         }
         return storm.levelCurIntensityStage >= Config.SUPERCELL_MERGE_MIN_INTENSITY_STAGE.get();

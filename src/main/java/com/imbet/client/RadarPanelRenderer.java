@@ -1,10 +1,10 @@
 package com.imbet.client;
 
 import com.imbet.Config;
+import com.imbet.network.RadarSnapshotPayload;
 import com.imbet.radar.ClientRadarStore;
 import com.imbet.radar.RadarBlockEntity;
 import com.imbet.radar.RadarStormSnapshot;
-import com.imbet.weather.SpcRisk;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -15,51 +15,85 @@ import net.minecraft.util.Mth;
 import java.util.List;
 
 public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity> {
+
+    /**
+     * The vertex colour the scope face is drawn with.
+     *
+     * <p>Its alpha sits below {@link RadarShader#PASS_THROUGH_ALPHA} on purpose: that is how the program
+     * is told to generate the screen instead of keeping the colour it was given, which is why the RGB is
+     * immaterial here. It is drawn through {@link PanelRenderPath#screenPass}, which swaps it for an
+     * explicitly painted screen while a shaderpack is active - that program keeps whatever colour it
+     * is handed, so this alpha would leave the scope a nearly invisible wash.
+     */
+    private static final int SCOPE_PASS = 0x2A020303;
+
+
+    /**
+     * Reflectivity samples for the cell corners currently being drawn. Reused between calls because the render
+     * thread is single-threaded and this is otherwise a fresh array per storm per frame.
+     */
+    private static float[] fieldScratch = new float[0];
+
+    /** Radial velocity samples for the lattice corners currently being drawn, reused for the same reason. */
+    private static float[] velocityScratch = new float[0];
+
+    /**
+     * The in-world half of the radar's display: it draws what {@link RadarEchoField} computes onto the top
+     * face of the block, where the radar program turns the panel coordinate into a scope face.
+     */
     public RadarPanelRenderer(BlockEntityRendererProvider.Context context) {
     }
 
     @Override
     public void render(RadarBlockEntity radar, float partialTick, PoseStack stack, MultiBufferSource buffer, int packedLight, int packedOverlay) {
-        if (!Config.RADAR_WORLD_PANEL_ENABLED.get() || RenderingCompat.isShaderPackActive()) {
+        if (!Config.RADAR_WORLD_PANEL_ENABLED.get()) {
             return;
         }
-        VertexConsumer consumer = buffer.getBuffer(RadarShader.radarPanel());
+        VertexConsumer consumer = PanelRenderPath.consumer(buffer, RadarShader.radarPanel(), packedLight);
         PoseStack.Pose pose = stack.last();
         float y = 1.014F;
-        RenderQuads.topQuadUv(consumer, pose, 0.055F, 0.055F, 0.945F, 0.945F, y, 0xEE020303);
+        // The face goes down first: the map, the returns and the markers are all drawn over it, and the
+        // buffer keeps the order the vertices went in.
+        RenderQuads.topQuadUv(consumer, pose, 0.055F, 0.055F, 0.945F, 0.945F, y, PanelRenderPath.screenPass(SCOPE_PASS));
         drawRadarMapGrid(consumer, pose, y + 0.001F);
 
-        List<RadarStormSnapshot> storms = ClientRadarStore.stormsFor(radar.getBlockPos());
-        int range = Math.max(64, radar.getRange());
-        int mode = radar.getMode();
+        // The feed says which product it was swept in and how far it reaches, so this panel and a handheld
+        // showing the same radar cannot disagree; the block entity is only the fallback before the first sweep
+        // lands, or with the radar switched off.
+        RadarSnapshotPayload feed = ClientRadarStore.feedFor(radar.getBlockPos());
+        List<RadarStormSnapshot> storms = feed == null ? List.of() : feed.storms();
+        int range = feed != null ? Math.max(64, feed.range()) : Math.max(64, radar.getRange());
+        int mode = feed != null ? feed.mode() : radar.getMode();
         for (RadarStormSnapshot storm : storms) {
-            float rx = radarX(radar, storm.x(), range);
-            float rz = radarZ(radar, storm.z(), range);
-            float size = returnSize(storm);
-            float circulationX = radarX(radar, storm.circulationX(), range);
-            float circulationZ = radarZ(radar, storm.circulationZ(), range);
-            float hookX = radarX(radar, storm.hookX(), range);
-            float hookZ = radarZ(radar, storm.hookZ(), range);
-            if (!insideScope(circulationX, circulationZ)) {
+            float rx = RadarEchoField.scopeCoord(storm.x(), radar.getBlockPos().getX(), range);
+            float rz = RadarEchoField.scopeCoord(storm.z(), radar.getBlockPos().getZ(), range);
+            float size = RadarEchoField.returnSize(storm, range);
+            float circulationX = RadarEchoField.scopeCoord(storm.circulationX(), radar.getBlockPos().getX(), range);
+            float circulationZ = RadarEchoField.scopeCoord(storm.circulationZ(), radar.getBlockPos().getZ(), range);
+            float hookX = RadarEchoField.scopeCoord(storm.hookX(), radar.getBlockPos().getX(), range);
+            float hookZ = RadarEchoField.scopeCoord(storm.hookZ(), radar.getBlockPos().getZ(), range);
+            if (!RadarEchoField.insideScope(circulationX, circulationZ)) {
                 circulationX = rx;
                 circulationZ = rz;
             }
             float displayX = storm.hasConfirmedCirculation() ? circulationX : storm.hookEcho() ? hookX : rx;
             float displayZ = storm.hasConfirmedCirculation() ? circulationZ : storm.hookEcho() ? hookZ : rz;
-            boolean returnInside = insideScope(rx, rz);
-            boolean displayInside = insideScope(displayX, displayZ);
+            boolean returnInside = RadarEchoField.insideScope(rx, rz);
+            boolean displayInside = RadarEchoField.insideScope(displayX, displayZ);
             if (!returnInside && !displayInside) {
                 continue;
             }
+            // A circulation inside a parent storm has no precipitation shield of its own, so it draws no
+            // reflectivity return - but it does have a velocity signature, so the other two products still
+            // give it an extent.
+            float markerSize = Math.max(size, 0.030F);
             if (returnInside) {
                 if (mode == 1) {
-                    drawVelocityReturn(consumer, pose, storm, hookX, hookZ, size, y + 0.007F);
-                } else {
-                    if (mode == 2) {
-                        drawRiskPixels(consumer, pose, storm, rx, rz, size, y + 0.007F);
-                    } else {
-                        drawReflectivityReturn(consumer, pose, storm, rx, rz, size, y + 0.007F);
-                    }
+                    drawVelocityReturn(consumer, pose, storm, hookX, hookZ, markerSize, y + 0.007F);
+                } else if (mode == 2) {
+                    drawRiskPixels(consumer, pose, storm, rx, rz, markerSize, y + 0.007F);
+                } else if (size > 0.0F) {
+                    drawReflectivityReturn(consumer, pose, storm, radar.getBlockPos().getX(), radar.getBlockPos().getZ(), rx, rz, size, range, y + 0.007F);
                 }
             }
             float trackX = displayInside ? displayX : rx;
@@ -68,46 +102,59 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
             if (storm.subVortices() > 0) {
                 drawSubVortexMarkers(consumer, pose, storm, circulationX, circulationZ, size, y + 0.016F);
             }
-            if (storm.hasConfirmedCirculation() && Config.RADAR_CONFIRMED_CIRCULATION_MARKER.get() && displayInside) {
+            // The ground-truth marker first, so a signature icon drawn over it still leaves the cross's arms
+            // reading: a tornado known to be on the ground has both, which is what an operator's display shows.
+            boolean confirmedMarker = storm.hasConfirmedCirculation()
+                    && Config.RADAR_CONFIRMED_CIRCULATION_MARKER.get() && displayInside;
+            if (confirmedMarker) {
                 drawTornadoMarker(consumer, pose, circulationX, circulationZ, size, y + 0.017F);
-            } else if (storm.hookEcho() && displayInside) {
+            }
+            // Then the velocity product's own read, at the point the rotation is actually at - the couplet's
+            // circulation for a TVS, and the resolved mesocyclone for a diamond, which for a hooking storm is
+            // not the hook notch itself.
+            int signature = Config.RADAR_VORTEX_ICONS.get()
+                    ? RadarEchoField.vortexSignatureTier(storm) : RadarEchoField.SIGNATURE_NONE;
+            float mesoX = RadarEchoField.scopeCoord(storm.mesoX(), radar.getBlockPos().getX(), range);
+            float mesoZ = RadarEchoField.scopeCoord(storm.mesoZ(), radar.getBlockPos().getZ(), range);
+            if (signature == RadarEchoField.SIGNATURE_TVS && displayInside) {
+                drawVortexIcon(consumer, pose, circulationX, circulationZ, RadarEchoField.SIGNATURE_TVS, y + 0.019F);
+            } else if (signature == RadarEchoField.SIGNATURE_MESO && RadarEchoField.insideScope(mesoX, mesoZ)) {
+                drawVortexIcon(consumer, pose, mesoX, mesoZ, RadarEchoField.SIGNATURE_MESO, y + 0.019F);
+            } else if (!confirmedMarker && storm.hookEcho() && displayInside) {
                 drawMesocycloneMarker(consumer, pose, hookX, hookZ, size, y + 0.016F);
             }
         }
     }
 
-    private static float returnSize(RadarStormSnapshot storm) {
-        float dbzSize = (float) Mth.clamp((storm.reflectivityDbz() - 15.0D) / 60.0D, 0.0D, 1.0D);
-        float widthSize = Mth.clamp(storm.width() / 180.0F, 0.0F, 0.45F);
-        float base = storm.vortex() ? 0.078F : 0.054F;
-        return base + dbzSize * 0.048F + widthSize * 0.044F;
-    }
-
-    private static float radarX(RadarBlockEntity radar, double worldX, int range) {
-        float dx = (float) ((worldX - (radar.getBlockPos().getX() + 0.5D)) / range * 0.84D);
-        return snapToRadarPixel(0.5F + Mth.clamp(dx, -0.42F, 0.42F));
-    }
-
-    private static float radarZ(RadarBlockEntity radar, double worldZ, int range) {
-        float dz = (float) ((worldZ - (radar.getBlockPos().getZ() + 0.5D)) / range * 0.84D);
-        return snapToRadarPixel(0.5F + Mth.clamp(dz, -0.42F, 0.42F));
-    }
-
+    /**
+     * The map under the returns: an 8x8 graticule, the power lines and the roads that cross it.
+     *
+     * <p>These lines used to be written well below the alpha the program switches passes on, so every one
+     * of them was being repainted as a miniature radar scope rather than kept as a line, which is where
+     * the dotted grid came from. They go through {@link #overlay} now, which lifts the alpha above that
+     * threshold and dims the colour by the same factor.
+     *
+     * <p>The lines are a little wider than they were, too. At 0.0016 blocks across - the width they used to
+     * be - a line is about nine tenths of a screen pixel even with the block filling the view, so it
+     * rasterised as a row of dots wherever it happened to fall between two pixel centres.
+     *
+     * <p>The near-black quad that used to wash the whole panel is gone with it: the program's face draws
+     * the screen and its bezel now, so the wash had nothing left to darken - and drawn through the
+     * pass-through path it would have been clipped to the round screen, leaving exactly the corners it was
+     * there to cover. The blue centre cross went too, because the face draws its own crosshair.
+     */
     private static void drawRadarMapGrid(VertexConsumer consumer, PoseStack.Pose pose, float y) {
-        RenderQuads.topQuadUv(consumer, pose, 0.064F, 0.064F, 0.936F, 0.936F, y, 0xF5040505);
         for (int i = 0; i <= 8; i++) {
             float p = 0.08F + i * 0.105F;
-            int color = i % 2 == 0 ? 0x3332D657 : 0x2422A445;
-            RenderQuads.topLineUv(consumer, pose, p, 0.075F, p, 0.925F, 0.0008F, y + 0.001F, color);
-            RenderQuads.topLineUv(consumer, pose, 0.075F, p, 0.925F, p, 0.0008F, y + 0.001F, color);
+            int color = i % 2 == 0 ? RadarEchoField.overlay(0x32D657, 0.30F) : RadarEchoField.overlay(0x22A445, 0.20F);
+            RenderQuads.topLineUv(consumer, pose, p, 0.075F, p, 0.925F, 0.0014F, y + 0.001F, color);
+            RenderQuads.topLineUv(consumer, pose, 0.075F, p, 0.925F, p, 0.0014F, y + 0.001F, color);
         }
-        RenderQuads.topLineUv(consumer, pose, 0.08F, 0.24F, 0.37F, 0.18F, 0.0011F, y + 0.002F, 0x5FCB9B12);
-        RenderQuads.topLineUv(consumer, pose, 0.37F, 0.18F, 0.69F, 0.31F, 0.0011F, y + 0.002F, 0x5FCB9B12);
-        RenderQuads.topLineUv(consumer, pose, 0.69F, 0.31F, 0.91F, 0.27F, 0.0011F, y + 0.002F, 0x5FCB9B12);
-        RenderQuads.topLineUv(consumer, pose, 0.22F, 0.86F, 0.45F, 0.66F, 0.0010F, y + 0.002F, 0x55B11818);
-        RenderQuads.topLineUv(consumer, pose, 0.45F, 0.66F, 0.78F, 0.72F, 0.0010F, y + 0.002F, 0x55B11818);
-        RenderQuads.topLineUv(consumer, pose, 0.50F, 0.075F, 0.50F, 0.925F, 0.0013F, y + 0.003F, 0x482EC4FF);
-        RenderQuads.topLineUv(consumer, pose, 0.075F, 0.50F, 0.925F, 0.50F, 0.0013F, y + 0.003F, 0x482EC4FF);
+        RenderQuads.topLineUv(consumer, pose, 0.08F, 0.24F, 0.37F, 0.18F, 0.0016F, y + 0.002F, RadarEchoField.overlay(0xCB9B12, 0.42F));
+        RenderQuads.topLineUv(consumer, pose, 0.37F, 0.18F, 0.69F, 0.31F, 0.0016F, y + 0.002F, RadarEchoField.overlay(0xCB9B12, 0.42F));
+        RenderQuads.topLineUv(consumer, pose, 0.69F, 0.31F, 0.91F, 0.27F, 0.0016F, y + 0.002F, RadarEchoField.overlay(0xCB9B12, 0.42F));
+        RenderQuads.topLineUv(consumer, pose, 0.22F, 0.86F, 0.45F, 0.66F, 0.0016F, y + 0.002F, RadarEchoField.overlay(0xB11818, 0.38F));
+        RenderQuads.topLineUv(consumer, pose, 0.45F, 0.66F, 0.78F, 0.72F, 0.0016F, y + 0.002F, RadarEchoField.overlay(0xB11818, 0.38F));
     }
 
     private static void drawMotionTrack(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, float rx, float rz, int range, float y) {
@@ -115,129 +162,142 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
         if (speed < 0.001D) {
             return;
         }
-        float mx = (float) Mth.clamp(storm.motionX() * 34.0D / Math.max(128.0D, range), -0.07D, 0.07D);
-        float mz = (float) Mth.clamp(storm.motionZ() * 34.0D / Math.max(128.0D, range), -0.07D, 0.07D);
+        float mx = RadarEchoField.motionTrackX(storm, range, 0.07F);
+        float mz = RadarEchoField.motionTrackZ(storm, range, 0.07F);
         RenderQuads.topLineUv(consumer, pose, rx - mx, rz - mz, rx, rz, 0.004F, y, 0x82B7FFF2);
     }
 
-    private static void drawReflectivityReturn(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, float rx, float rz, float size, float y) {
-        float angle = motionAngle(storm);
-        float cell = pixelCell();
-        int cells = Mth.clamp(Mth.ceil(size * 2.85F / cell), 8, 32);
+    private static void drawReflectivityReturn(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, double originX, double originZ, float rx, float rz, float size, int range, float y) {
+        float angle = RadarEchoField.motionAngle(storm);
+        float cell = RadarEchoField.pixelCell();
+        int cells = RadarEchoField.echoCells(size, cell);
         float cos = Mth.cos(angle);
         float sin = Mth.sin(angle);
-        for (int ix = -cells; ix <= cells; ix++) {
-            for (int iz = -cells; iz <= cells; iz++) {
-                float sx = snapToRadarPixel(rx + ix * cell);
-                float sz = snapToRadarPixel(rz + iz * cell);
-                if (!insidePanel(sx, sz)) {
-                    continue;
-                }
-                float dx = sx - rx;
-                float dz = sz - rz;
-                float forward = dx * cos + dz * sin;
-                float right = -dx * sin + dz * cos;
-                double dbz = reflectivityAtPixel(storm, forward, right, size, ix, iz);
-                if (dbz < 7.0D) {
-                    continue;
-                }
-                drawPixelCell(consumer, pose, sx, sz, cell, y + dbzLayer(dbz), dbzColor(dbz, 230));
-            }
-        }
-    }
+        RadarEchoField.EchoAnchors anchors = RadarEchoField.anchorsFor(storm,
+                RadarEchoField.scopeCoord(RadarEchoField.hookWorldX(storm), originX, range) - rx,
+                RadarEchoField.scopeCoord(RadarEchoField.hookWorldZ(storm), originZ, range) - rz,
+                RadarEchoField.scopeCoord(storm.hookX(), originX, range) - rx,
+                RadarEchoField.scopeCoord(storm.hookZ(), originZ, range) - rz,
+                cos, sin);
 
-    private static double reflectivityAtPixel(RadarStormSnapshot storm, float forward, float right, float size, int gridX, int gridZ) {
-        double core = Math.pow((forward - size * 0.20F) / (size * 1.42F), 2.0D) + Math.pow(right / (size * 0.76F), 2.0D);
-        double dbz = storm.reflectivityDbz() - core * 26.0D + pixelNoise(storm.id(), gridX, gridZ) * 7.0D;
-        if (storm.hookEcho() || storm.severity() >= 3) {
-            double forwardFlank = Math.pow((forward - size * 0.34F) / (size * 1.08F), 2.0D) + Math.pow((right + size * 0.22F) / (size * 0.56F), 2.0D);
-            dbz = Math.max(dbz, storm.reflectivityDbz() - 8.0D - forwardFlank * 17.0D + pixelNoise(storm.id() ^ 0x51A7L, gridX, gridZ) * 5.0D);
-            double hailCore = Math.pow((forward - size * 0.40F) / (size * 0.38F), 2.0D) + Math.pow((right + size * 0.08F) / (size * 0.26F), 2.0D);
-            if (hailCore < 1.0D && storm.reflectivityDbz() >= 48.0D) {
-                dbz = Math.max(dbz, storm.reflectivityDbz() + (1.0D - hailCore) * 10.0D);
-            }
-            double weakEchoRegion = Math.pow((forward + size * 0.02F) / (size * 0.38F), 2.0D) + Math.pow((right - size * 0.26F) / (size * 0.32F), 2.0D);
-            if (weakEchoRegion < 1.0D) {
-                dbz -= (1.0D - weakEchoRegion) * 18.0D;
+        // Sample the field once per lattice corner and share the samples between the cells that meet there. The
+        // corner colours then give each cell a smooth gradient, and cells either side of a shared edge
+        // interpolate to the same values along it, so the shield reads as one continuous field instead of a
+        // mosaic of squares. This costs about what the old per-cell sampling cost: the lattice has roughly as
+        // many corners as there used to be cells.
+        int side = cells * 2 + 1;
+        if (fieldScratch.length < side * side) {
+            fieldScratch = new float[side * side];
+        }
+        float[] field = fieldScratch;
+        for (int ix = 0; ix < side; ix++) {
+            for (int iz = 0; iz < side; iz++) {
+                float dx = (ix - cells) * cell;
+                float dz = (iz - cells) * cell;
+                field[iz * side + ix] = (float) RadarEchoField.reflectivityAt(storm,
+                        dx * cos + dz * sin, -dx * sin + dz * cos, size, anchors, ix - cells, iz - cells);
             }
         }
-        if (forward > size * 0.25F) {
-            double vNotch = Math.max(0.0D, 1.0D - Math.abs(right) / Math.max(0.001D, (forward - size * 0.15F) * 0.48D));
-            dbz -= vNotch * 14.0D;
+
+        for (int ix = 0; ix < side - 1; ix++) {
+            for (int iz = 0; iz < side - 1; iz++) {
+                float minX = rx + (ix - cells) * cell;
+                float minZ = rz + (iz - cells) * cell;
+                float maxX = minX + cell;
+                float maxZ = minZ + cell;
+                if (!RadarEchoField.insidePanel(minX, minZ) && !RadarEchoField.insidePanel(maxX, maxZ)) {
+                    continue;
+                }
+                float dbzMinMin = field[iz * side + ix];
+                float dbzMaxMin = field[iz * side + ix + 1];
+                float dbzMinMax = field[(iz + 1) * side + ix];
+                float dbzMaxMax = field[(iz + 1) * side + ix + 1];
+                int minMin = RadarEchoField.sampleColor(dbzMinMin);
+                int maxMin = RadarEchoField.sampleColor(dbzMaxMin);
+                int maxMax = RadarEchoField.sampleColor(dbzMaxMax);
+                int minMax = RadarEchoField.sampleColor(dbzMinMax);
+                // A cell is drawn when anything in it reaches the floor, and from there the four corner
+                // colours fade toward the faintest a return may be, which is what gives the edge of a
+                // shield its gradient instead of a cut-out.
+                float peak = Math.max(Math.max(dbzMinMin, dbzMaxMin), Math.max(dbzMinMax, dbzMaxMax));
+                if (peak < RadarEchoField.ECHO_FLOOR_DBZ) {
+                    continue;
+                }
+                // One flat layer. Each cell used to be raised by its own peak reflectivity, which put a
+                // step at every boundary between a strong cell and a weak one; the render type writes
+                // colour only, so those steps separated nothing and were read as terracing across an
+                // otherwise smooth shield. Strength is carried by the colour ramp alone now.
+                RenderQuads.topQuadUvGradient(consumer, pose, minX, minZ, maxX, maxZ, y, minMin, maxMin, maxMax, minMax);
+            }
         }
-        if (storm.vortex() || storm.hookEcho()) {
-            double notch = Math.pow((forward + size * 0.24F) / (size * 0.42F), 2.0D) + Math.pow((right - size * 0.28F) / (size * 0.34F), 2.0D);
-            if (notch < 1.0D) {
-                dbz -= (1.0D - notch) * 32.0D;
-            }
-            double hookF = forward + size * 0.78F;
-            double hookR = right - size * 0.56F;
-            double hookRadius = Math.sqrt(hookF * hookF + hookR * hookR);
-            double hookAngle = Math.atan2(hookR, hookF);
-            if (hookRadius > size * 0.35D && hookRadius < size * 0.86D && hookAngle > -2.80D && hookAngle < 0.85D) {
-                double band = 1.0D - Math.abs(hookRadius - size * 0.58D) / (size * 0.25D);
-                dbz = Math.max(dbz, storm.reflectivityDbz() - 10.0D + Math.max(0.0D, band) * 16.0D);
-            }
-            double debrisF = forward + size * 1.10F;
-            double debrisR = right - size * 0.82F;
-            double debris = Math.sqrt(debrisF * debrisF + debrisR * debrisR);
-            if (storm.vortex() && debris < size * 0.18D && storm.reflectivityDbz() >= 48.0D) {
-                dbz = Math.max(dbz, 67.0D + pixelNoise(storm.id() ^ 0xD36B, gridX, gridZ) * 8.0D);
-            }
-        }
-        return dbz;
     }
 
     private static void drawVelocityReturn(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, float rx, float rz, float size, float y) {
-        float cell = pixelCell();
-        int cells = Mth.clamp(Mth.ceil(size * 2.20F / cell), 7, 28);
+        float cell = RadarEchoField.pixelCell();
+        int cells = RadarEchoField.velocityCells(size, cell);
         float rangeDistance = Math.max(0.001F, Mth.sqrt((rx - 0.5F) * (rx - 0.5F) + (rz - 0.5F) * (rz - 0.5F)));
         float beamX = (rx - 0.5F) / rangeDistance;
         float beamZ = (rz - 0.5F) / rangeDistance;
         float crossX = -beamZ;
         float crossZ = beamX;
-        for (int ix = -cells; ix <= cells; ix++) {
-            for (int iz = -cells; iz <= cells; iz++) {
-                float sx = snapToRadarPixel(rx + ix * cell);
-                float sz = snapToRadarPixel(rz + iz * cell);
-                if (!insidePanel(sx, sz)) {
+
+        // The same shared lattice the reflectivity return uses: one sample per corner, four corner
+        // colours per cell, and neighbours interpolating to the same value along their common edge. The
+        // product used to be one flat quad per cell, which is what made a couplet read as a checkerboard.
+        int side = cells * 2 + 1;
+        if (velocityScratch.length < side * side) {
+            velocityScratch = new float[side * side];
+        }
+        float[] field = velocityScratch;
+        for (int ix = 0; ix < side; ix++) {
+            for (int iz = 0; iz < side; iz++) {
+                field[iz * side + ix] = RadarEchoField.radialVelocityAt(storm, (ix - cells) * cell, (iz - cells) * cell, size, beamX, beamZ, crossX, crossZ);
+            }
+        }
+
+        for (int ix = 0; ix < side - 1; ix++) {
+            for (int iz = 0; iz < side - 1; iz++) {
+                float minX = rx + (ix - cells) * cell;
+                float minZ = rz + (iz - cells) * cell;
+                float maxX = minX + cell;
+                float maxZ = minZ + cell;
+                if (!RadarEchoField.insidePanel(minX, minZ) && !RadarEchoField.insidePanel(maxX, maxZ)) {
                     continue;
                 }
-                float px = sx - rx;
-                float pz = sz - rz;
-                float dist = Mth.sqrt(px * px + pz * pz);
-                if (dist > size * 1.45F) {
+                float peak = Math.max(Math.max(Math.abs(field[iz * side + ix]), Math.abs(field[iz * side + ix + 1])),
+                        Math.max(Math.abs(field[(iz + 1) * side + ix]), Math.abs(field[(iz + 1) * side + ix + 1])));
+                if (peak < RadarEchoField.VELOCITY_FLOOR_MPS) {
                     continue;
                 }
-                float velocity = (float) storm.radialVelocityMps() * Mth.clamp(1.0F - dist / (size * 1.6F), 0.0F, 1.0F);
-                if (storm.vortex()) {
-                    float acrossBeam = px * crossX + pz * crossZ;
-                    float alongBeam = px * beamX + pz * beamZ;
-                    float coupletFalloff = Mth.clamp(1.0F - (Math.abs(alongBeam) / (size * 0.82F) + Math.abs(acrossBeam) / (size * 1.12F)) * 0.54F, 0.0F, 1.0F);
-                    if (coupletFalloff > 0.05F) {
-                        velocity = Math.signum(acrossBeam == 0.0F ? 0.001F : acrossBeam) * (float) Math.max(12.0D, storm.rotationMps()) * coupletFalloff;
-                    }
-                }
-                if (Math.abs(velocity) < 1.5F) {
-                    continue;
-                }
-                drawPixelCell(consumer, pose, sx, sz, cell, y + 0.001F + Math.min(0.006F, Math.abs(velocity) * 0.00012F), velocityColorMps(velocity));
+                int minMin = RadarEchoField.velocityColor(field[iz * side + ix]);
+                int maxMin = RadarEchoField.velocityColor(field[iz * side + ix + 1]);
+                int minMax = RadarEchoField.velocityColor(field[(iz + 1) * side + ix]);
+                int maxMax = RadarEchoField.velocityColor(field[(iz + 1) * side + ix + 1]);
+                RenderQuads.topQuadUvGradient(consumer, pose, minX, minZ, maxX, maxZ, y + 0.001F, minMin, maxMin, maxMax, minMax);
             }
         }
     }
 
     private static void drawRiskPixels(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, float rx, float rz, float size, float y) {
-        float cell = pixelCell();
-        int cells = Mth.clamp(Mth.ceil(size * 1.7F / cell), 5, 18);
-        int color = riskColor(storm);
+        float cell = RadarEchoField.pixelCell();
+        int cells = RadarEchoField.riskCells(size, cell);
+        int color = RadarEchoField.riskColor(storm);
         for (int ix = -cells; ix <= cells; ix++) {
             for (int iz = -cells; iz <= cells; iz++) {
-                if (ix * ix + iz * iz > cells * cells) {
+                float radial = Mth.sqrt((float) (ix * ix + iz * iz)) / cells;
+                if (radial > 1.0F) {
                     continue;
                 }
-                float sx = snapToRadarPixel(rx + ix * cell);
-                float sz = snapToRadarPixel(rz + iz * cell);
-                if (insidePanel(sx, sz) && pixelNoise(storm.id(), ix, iz) > -0.35F) {
+                // Solid through the middle, dithered only where the disc is running out. The old test
+                // dropped one pixel in six wherever it liked, so every contour was speckled through its
+                // own centre - and a risk area is a filled shape, not a stipple.
+                float edge = Mth.clamp((1.0F - radial) / 0.28F, 0.0F, 1.0F);
+                if (edge < 0.999F && RadarEchoField.pixelNoise(storm.id(), ix, iz) * 0.5F + 0.5F > edge) {
+                    continue;
+                }
+                float sx = rx + ix * cell;
+                float sz = rz + iz * cell;
+                if (RadarEchoField.insidePanel(sx, sz)) {
                     drawPixelCell(consumer, pose, sx, sz, cell, y + 0.001F, color);
                 }
             }
@@ -275,122 +335,54 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
         RenderQuads.topLineUv(consumer, pose, rx - ring, rz + ring, rx - ring, rz - ring, 0.0022F, y, color);
     }
 
-    private static int dbzColor(double dbz, int alpha) {
-        if (dbz < 8.0D) {
-            return withAlpha(0x3A6EE8, alpha);
+    /**
+     * A vortex signature icon: the filled triangle a real display uses for a TVS, or the smaller diamond it
+     * uses for a mesocyclone.
+     *
+     * <p>Both are drawn as a larger dark shape with the bright one on top of it, which is how an icon gets its
+     * outline - these programs are drawn with one flat vertex colour per vertex and have no stroke to call.
+     * The size does not scale with the storm, because an icon is a symbol rather than a measurement: on a real
+     * scope a TVS is the same size whether the storm under it is small or enormous.
+     */
+    private static void drawVortexIcon(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, int tier, float y) {
+        float half = RadarEchoField.signatureHalf(tier);
+        if (tier == RadarEchoField.SIGNATURE_TVS) {
+            float height = half * (RadarEchoField.SIGNATURE_HEIGHT / RadarEchoField.SIGNATURE_HALF);
+            drawUpTriangle(consumer, pose, centerX, centerZ, half * 1.34F, height * 1.16F, y, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+            drawUpTriangle(consumer, pose, centerX, centerZ, half, height, y + 0.0007F, RadarEchoField.TVS_ICON_COLOR);
+            return;
         }
-        if (dbz < 18.0D) {
-            return withAlpha(0x04E9E7, alpha);
-        }
-        if (dbz < 28.0D) {
-            return withAlpha(0x02FD02, alpha);
-        }
-        if (dbz < 38.0D) {
-            return withAlpha(0x008E00, alpha);
-        }
-        if (dbz < 45.0D) {
-            return withAlpha(0xFDF802, alpha);
-        }
-        if (dbz < 52.0D) {
-            return withAlpha(0xFD9500, alpha);
-        }
-        if (dbz < 60.0D) {
-            return withAlpha(0xFD0000, alpha);
-        }
-        if (dbz < 68.0D) {
-            return withAlpha(0xBC0000, alpha);
-        }
-        if (dbz < 74.0D) {
-            return withAlpha(0xF800FD, alpha);
-        }
-        return withAlpha(0xFDFDFD, alpha);
+        float axis = half * 1.55F;
+        diamond(consumer, pose, centerX, centerZ, axis * 1.30F, y, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+        diamond(consumer, pose, centerX, centerZ, axis, y + 0.0007F, RadarEchoField.MESO_ICON_COLOR);
     }
 
-    private static int riskColor(RadarStormSnapshot storm) {
-        return switch (Mth.clamp(storm.severity(), 0, SpcRisk.maxSeverity())) {
-            case 8 -> withAlpha(0xE9D9FF, 236);
-            case 7 -> withAlpha(0x9B1FE0, 230);
-            case 6 -> withAlpha(0xFF5BFF, 226);
-            case 5 -> withAlpha(0xE83B2F, 220);
-            case 4 -> withAlpha(0xF08E24, 214);
-            case 3 -> withAlpha(0xF5D742, 206);
-            case 2 -> withAlpha(0x48D55D, 198);
-            case 1 -> withAlpha(0x8FD05F, 188);
-            default -> withAlpha(0x40505A, 160);
-        };
+    /**
+     * An upward triangle on the panel: apex at {@code height} above the centre, base {@code 0.42 * height}
+     * below it.
+     *
+     * <p>It points toward -z. A top face has no single "up" on screen - it depends on which side of the block
+     * the player is standing - so the icon takes the map's own convention instead of trying to face the reader,
+     * and a storm's icon therefore does not swing around as you walk past the radar.
+     */
+    private static void drawUpTriangle(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float half, float height, float y, int color) {
+        RenderQuads.topTriangleUv(consumer, pose,
+                centerX, centerZ - height,
+                centerX - half, centerZ + height * 0.42F,
+                centerX + half, centerZ + height * 0.42F,
+                y, color);
     }
 
-    private static int velocityColorMps(float radialMotion) {
-        float strength = Mth.clamp(Math.abs(radialMotion) / 45.0F, 0.18F, 1.0F);
-        int alpha = 198 + Math.round(strength * 42.0F);
-        if (radialMotion < 0.0F) {
-            return withAlpha(lerpColor(0x70D878, 0x00FF27, strength), alpha);
-        }
-        return withAlpha(lerpColor(0xDA6A6A, 0xFF1414, strength), alpha);
-    }
-
-    private static float motionAngle(RadarStormSnapshot storm) {
-        double speed = Math.sqrt(storm.motionX() * storm.motionX() + storm.motionZ() * storm.motionZ());
-        if (speed > 0.001D) {
-            return (float) Math.atan2(storm.motionZ(), storm.motionX());
-        }
-        return (float) (storm.id() * 0.017453292519943295D);
-    }
-
-    private static int lerpColor(int a, int b, float t) {
-        int ar = a >> 16 & 255;
-        int ag = a >> 8 & 255;
-        int ab = a & 255;
-        int br = b >> 16 & 255;
-        int bg = b >> 8 & 255;
-        int bb = b & 255;
-        int r = Mth.clamp(Math.round(Mth.lerp(t, ar, br)), 0, 255);
-        int g = Mth.clamp(Math.round(Mth.lerp(t, ag, bg)), 0, 255);
-        int bl = Mth.clamp(Math.round(Mth.lerp(t, ab, bb)), 0, 255);
-        return r << 16 | g << 8 | bl;
-    }
-
-    private static int withAlpha(int rgb, int alpha) {
-        return Mth.clamp(alpha, 0, 255) << 24 | rgb & 0xFFFFFF;
+    /** A diamond on the panel, with its corners {@code axis} from the centre along each axis. */
+    private static void diamond(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float axis, float y, int color) {
+        // The rotated square primitive turns a corner onto the axes at sqrt(2) times its half-extent.
+        float halfExtent = axis * 0.70711F;
+        RenderQuads.topRotatedQuadUv(consumer, pose, centerX, centerZ, halfExtent, halfExtent, (float) (Math.PI / 4.0D), y, color);
     }
 
     private static void drawPixelCell(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float cell, float y, int color) {
         float half = cell * 0.50F;
         RenderQuads.topQuadUv(consumer, pose, centerX - half, centerZ - half, centerX + half, centerZ + half, y, color);
-    }
-
-    private static float pixelCell() {
-        return 0.01075F;
-    }
-
-    private static float snapToRadarPixel(float value) {
-        float min = 0.075F;
-        float cell = pixelCell();
-        return min + Math.round((value - min) / cell) * cell;
-    }
-
-    private static boolean insidePanel(float x, float z) {
-        return x >= 0.070F && x <= 0.930F && z >= 0.070F && z <= 0.930F;
-    }
-
-    private static boolean insideScope(float x, float z) {
-        float dx = x - 0.5F;
-        float dz = z - 0.5F;
-        return dx * dx + dz * dz <= 0.43F * 0.43F;
-    }
-
-    private static float pixelNoise(long stormId, int x, int z) {
-        long n = stormId * 0x9E3779B97F4A7C15L + x * 0xBF58476D1CE4E5B9L + z * 0x94D049BB133111EBL;
-        n ^= n >>> 30;
-        n *= 0xBF58476D1CE4E5B9L;
-        n ^= n >>> 27;
-        n *= 0x94D049BB133111EBL;
-        n ^= n >>> 31;
-        return ((n & 0xFFFF) / 32767.5F) - 1.0F;
-    }
-
-    private static float dbzLayer(double dbz) {
-        return (float) Mth.clamp((dbz - 20.0D) * 0.00008D, 0.0D, 0.006D);
     }
 
     @Override

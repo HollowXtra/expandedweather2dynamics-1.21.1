@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "axis=y": {
+      "model": "expandedweather2dynamics:block/charred_log"
+    },
+    "axis=z": {
+      "model": "expandedweather2dynamics:block/charred_log_horizontal",
+      "x": 90
+    },
+    "axis=x": {
+      "model": "expandedweather2dynamics:block/charred_log_horizontal",
+      "x": 90,
+      "y": 90
+    }
+  }
+}

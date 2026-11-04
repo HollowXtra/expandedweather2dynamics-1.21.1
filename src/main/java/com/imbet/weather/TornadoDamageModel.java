@@ -80,12 +80,22 @@ public final class TornadoDamageModel {
     }
 
     public static Vec3 adjustEntityMotion(StormObject storm, TornadoWindField.WindSample sample, Vec3 originalMotion, boolean forPlayer, boolean forCube, float grabAdj) {
+        return adjustEntityMotion(storm, sample, originalMotion, forPlayer, forCube, grabAdj, true);
+    }
+
+    /**
+     * @param tornadoCapture whether the violent-core capture (the orbit-and-lift that a tornado's core
+     *                       does to whatever it catches) may apply. A hurricane pushes, drags and knocks
+     *                       things over with the same wind, but it has no core to be caught in: its
+     *                       "core" is a calm eye, so capture is exactly the wrong behaviour there.
+     */
+    public static Vec3 adjustEntityMotion(StormObject storm, TornadoWindField.WindSample sample, Vec3 originalMotion, boolean forPlayer, boolean forCube, float grabAdj, boolean tornadoCapture) {
         Vec3 base = originalMotion == null ? Vec3.ZERO : originalMotion;
         if (storm == null || sample == null || sample.speedMph() <= 1.0D) {
             return base;
         }
         double localWindMph = Math.max(sample.speedMph(), sample.strongestLocalMph());
-        if (forPlayer && playerCaptureRamp(sample, localWindMph) > 0.0D) {
+        if (forPlayer && tornadoCapture && playerCaptureRamp(sample, localWindMph) > 0.0D) {
             return capturePlayerMotion(sample, base, localWindMph);
         }
         double scale = Config.WINDFIELD_ENTITY_PUSH_SCALE.get();
@@ -227,7 +237,7 @@ public final class TornadoDamageModel {
         }
         long tick = level.getGameTime();
         MobTumble previous = MOB_TUMBLE.getOrDefault(entity.getUUID(),
-                new MobTumble(living.getYRot(), living.getXRot(), tick - 2L));
+                new MobTumble(living.getXRot(), tick - 2L));
         boolean freshlyCaptured = tick - previous.lastTick() > 1L;
         // Mobs have gravity and their own AI fighting the wind - lift them hard enough
         // to clearly beat gravity so they fly up with the block debris instead of
@@ -245,35 +255,30 @@ public final class TornadoDamageModel {
         }
         living.setDeltaMovement(newMotion);
         living.hurtMarked = true;
-        // Whole-model TUMBLE like the grabbed blocks: yaw AND pitch both rotate
-        // continuously while captured, each at its own randomized per-mob rate (some
-        // spin one way, some the other; pitch turns a bit slower than yaw so the body
-        // flips and spins instead of doing a flat spin). The roll axis is added
-        // client-side in the renderer, so captured mobs tumble on all three axes
-        // exactly like the debris cubes.
+        // The flip, plus the roll the renderer adds client-side: an entity thrown through a funnel turns
+        // end over end, which is what the grabbed block debris does.
+        //
+        // The yaw is deliberately NOT touched, and this is the one thing here that is easy to get wrong.
+        // Yaw turns a model about its own vertical axis - head, body and legs together - so accumulating it
+        // does not read as tumbling at all: it reads as the mob being spun by the ankle on the spot, which is
+        // the one motion nothing in a tornado actually does. Pitch and roll alone give the tumble, and they
+        // leave the model's own facing where the entity put it.
         int hash = entity.getUUID().hashCode();
         double speedJitter = 0.70D + 0.60D * ((hash >> 4) & 0xF) / 15.0D;
         // NOTE: deliberately NOT scaled by launch strength or fully by the capture ramp - those
-        // are motion knobs, and scaling the spin by them made the tumble crawl in all but the
+        // are motion knobs, and scaling the flip by them made the tumble crawl in all but the
         // deepest core (ramp is only ~0.1-0.4 for a typical grab). Speed lives in its own knob so
         // the whole capture tumble can be turned up without touching how hard the mob is thrown.
         double tumbleSpeed = (5.5D + ramp * 7.0D) * speedJitter * Config.tumbleSpeedMultiplier();
-        double yawDirection = (hash & 1) == 0 ? 1.0D : -1.0D;
         double pitchDirection = ((hash >> 1) & 1) == 0 ? 1.0D : -1.0D;
-        float yaw = (float) ((previous.yaw() + tumbleSpeed * yawDirection) % 360.0D);
         float pitch = (float) ((previous.pitch() + tumbleSpeed * 0.78D * pitchDirection) % 360.0D);
-        if (yaw < 0.0F) {
-            yaw += 360.0F;
-        }
         if (pitch < 0.0F) {
             pitch += 360.0F;
         }
-        MOB_TUMBLE.put(entity.getUUID(), new MobTumble(yaw, pitch, tick));
+        MOB_TUMBLE.put(entity.getUUID(), new MobTumble(pitch, tick));
         if (MOB_TUMBLE.size() > 2048) {
             MOB_TUMBLE.clear();
         }
-        living.yRotO = previous.yaw();
-        living.setYRot(yaw);
         living.xRotO = previous.pitch();
         living.setXRot(pitch);
         if (level instanceof ServerLevel serverLevel) {
@@ -289,7 +294,7 @@ public final class TornadoDamageModel {
      * flings entities at players outright. Entities carried by that system never enter
      * {@link #applyMobCapture} - which only takes over the violent core above our wind gate - so
      * they used to fly through the funnel with no tumble at all. This runs after Weather2 has moved
-     * them and adds the same yaw/pitch tumble, leaving Weather2's motion untouched.
+     * them and adds the same end-over-end flip, leaving Weather2's motion - and its own facing - untouched.
      */
     public static void applyTossTumble(StormObject storm, net.minecraft.world.entity.Entity entity) {
         if (storm == null || entity == null
@@ -312,34 +317,25 @@ public final class TornadoDamageModel {
             return;
         }
         MobTumble state = previous == null
-                ? new MobTumble(living.getYRot(), living.getXRot(), tick - 2L)
+                ? new MobTumble(living.getXRot(), tick - 2L)
                 : previous;
-        // Weather2's tornado_shoot branch aims the entity at a player and rewrites its yaw every
-        // tick, so those keep their aim and only get the flip + render roll.
-        boolean aimed = entity.getPersistentData().getBoolean("tornado_shoot");
         double strength = Config.WINDFIELD_PLAYER_LAUNCH_STRENGTH.get() * Config.WINDFIELD_MOB_LAUNCH_SCALE.get();
         int hash = entity.getUUID().hashCode();
         double speedJitter = 0.70D + 0.60D * ((hash >> 4) & 0xF) / 15.0D;
         double tumbleSpeed = (5.0D + 2.6D * strength) * speedJitter * Config.tumbleSpeedMultiplier();
         double pitchDirection = ((hash >> 1) & 1) == 0 ? 1.0D : -1.0D;
-        float yaw = state.yaw();
-        if (!aimed) {
-            double yawDirection = (hash & 1) == 0 ? 1.0D : -1.0D;
-            yaw = (float) ((state.yaw() + tumbleSpeed * yawDirection) % 360.0D);
-            if (yaw < 0.0F) {
-                yaw += 360.0F;
-            }
-        }
+        // Only the flip, for the reason applyMobCapture gives: a spinning yaw turns the whole model about its
+        // vertical axis - head and body together - and reads as pirouetting rather than being thrown. Leaving
+        // the yaw alone also means Weather2's own tornado_shoot aim, which writes it every tick, is never
+        // fought over, so those entities keep pointing at whoever they were flung at.
         float pitch = (float) ((state.pitch() + tumbleSpeed * 0.78D * pitchDirection) % 360.0D);
         if (pitch < 0.0F) {
             pitch += 360.0F;
         }
-        MOB_TUMBLE.put(entity.getUUID(), new MobTumble(yaw, pitch, tick));
+        MOB_TUMBLE.put(entity.getUUID(), new MobTumble(pitch, tick));
         if (MOB_TUMBLE.size() > 2048) {
             MOB_TUMBLE.clear();
         }
-        living.yRotO = state.yaw();
-        living.setYRot(yaw);
         living.xRotO = state.pitch();
         living.setXRot(pitch);
     }
@@ -378,7 +374,11 @@ public final class TornadoDamageModel {
 
     private static final Map<java.util.UUID, MobTumble> MOB_TUMBLE = new HashMap<>();
 
-    private record MobTumble(float yaw, float pitch, long lastTick) {
+    /**
+     * Per-mob tumble state. It carries the FLIP only: there is no yaw field by design, because the yaw is
+     * never touched - see {@link #applyMobCapture} for why accumulating one is wrong.
+     */
+    private record MobTumble(float pitch, long lastTick) {
     }
 
 
