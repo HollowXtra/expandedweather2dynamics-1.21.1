@@ -56,7 +56,7 @@ public final class Config {
     public static final ModConfigSpec.IntValue TORNADO_ELEPHANT_TRUNK_MIN_STAGE;
     public static final ModConfigSpec.DoubleValue TORNADO_ELEPHANT_TRUNK_MAX_VISIBLE_WIDTH_FRACTION;
     public static final ModConfigSpec.DoubleValue TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH;
-    public static final ModConfigSpec.IntValue TORNADO_ELEPHANT_TRUNK_TRANSITION_TICKS;
+    public static final ModConfigSpec.DoubleValue TORNADO_SHAPE_CHANGE_SECONDS;
     public static final ModConfigSpec.BooleanValue TORNADO_DRILL_BIT_ENABLED;
     public static final ModConfigSpec.BooleanValue TORNADO_ADDITIONAL_SHAPES_ENABLED;
     public static final ModConfigSpec.DoubleValue TORNADO_ADDITIONAL_SHAPES_CHANCE;
@@ -102,7 +102,7 @@ public final class Config {
     public static final ModConfigSpec.BooleanValue TORNADO_REALISTIC_WIDTH_MODEL;
     public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_MIN_MULTIPLIER;
     public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_MAX_MULTIPLIER;
-    public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_SMOOTHING;
+    public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_CHANGE_SECONDS;
     public static final ModConfigSpec.DoubleValue TORNADO_WIDTH_TURBULENCE;
     public static final ModConfigSpec.IntValue TORNADO_WIDTH_MIN_RETARGET_TICKS;
     public static final ModConfigSpec.IntValue TORNADO_WIDTH_MAX_RETARGET_TICKS;
@@ -1166,7 +1166,8 @@ public final class Config {
         TORNADO_ELEPHANT_TRUNK_MAX_VISIBLE_WIDTH_FRACTION = BUILDER.comment("Maximum visible-funnel to damage-path width fraction for elephant-trunk visuals. Wider wedge-like funnels are blocked.")
                 .defineInRange("elephantTrunkMaxVisibleWidthFraction", 0.70D, 0.05D, 1.0D);
         TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH = BUILDER.defineInRange("elephantTrunkCurveStrength", 1.25D, 0.0D, 3.0D);
-        TORNADO_ELEPHANT_TRUNK_TRANSITION_TICKS = BUILDER.defineInRange("elephantTrunkTransitionTicks", 55, 1, 20 * 60);
+        TORNADO_SHAPE_CHANGE_SECONDS = BUILDER.comment("How long a funnel takes to morph from one shape into the next, in seconds. A funnel takes the shape its width, height and age call for: a rope when it is thin or dying, a cone or plain funnel in between, and a stovepipe or bowl when it is broad. It holds a shape for at least a minute before it may change again.")
+                .defineInRange("shapeChangeSeconds", 30.0D, 2.0D, 300.0D);
         TORNADO_DRILL_BIT_ENABLED = BUILDER.comment("Allows rare drill-bit tornado morphology: a very narrow, fast-spinning funnel that can still carry strong windfield damage.")
                 .define("drillBitTornadoes", true);
         TORNADO_DRILL_BIT_CHANCE = BUILDER.comment("Per-retarget chance for an eligible tornado to lock into the drill-bit tag. The tag is mutually exclusive with sidewinders, elephant trunks, and multi-vortex episodes.")
@@ -1281,7 +1282,8 @@ public final class Config {
                 .defineInRange("tornadoWidthMinMultiplier", 0.45D, 0.1D, 50.0D);
         TORNADO_WIDTH_MAX_MULTIPLIER = BUILDER.comment("Legacy multiplier used only when realisticModel=false. This is not miles.")
                 .defineInRange("tornadoWidthMaxMultiplier", 2.35D, 0.1D, 50.0D);
-        TORNADO_WIDTH_SMOOTHING = BUILDER.defineInRange("tornadoWidthSmoothing", 0.035D, 0.001D, 1.0D);
+        TORNADO_WIDTH_CHANGE_SECONDS = BUILDER.comment("About how long a tornado takes to settle on a new width, in seconds. It gathers pace into a change and eases out of it, and never grows or shrinks faster than about 3% of its own width a second, so a big change takes a minute or more.")
+                .defineInRange("tornadoWidthChangeSeconds", 18.0D, 1.0D, 300.0D);
         TORNADO_WIDTH_TURBULENCE = BUILDER.comment("Width surges layered over the eased dynamic width. 0 holds the calm curve; higher swings the funnel further from that width, and it swings by arriving at a new width and holding it for the better part of a minute rather than by swelling and shrinking on a beat. Each storm draws its own levels, so funnels never surge in lockstep. Weak funnels surge hardest and wide wedges stay statelier. The damage path and wind field keep their calm width.")
                 .defineInRange("tornadoWidthTurbulence", 0.24D, 0.0D, 0.6D);
         TORNADO_WIDTH_MIN_RETARGET_TICKS = BUILDER.defineInRange("widthRetargetMinTicks", 200, 1, 20 * 60 * 10);

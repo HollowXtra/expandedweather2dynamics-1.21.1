@@ -23,6 +23,8 @@ final class SpiralPuff extends EntityRotFX {
     /** Below this height up the funnel the axis is taken as the storm's position, because the lean has not begun. */
     private static final float AXIS_FOLLOW_FROM = 0.03F;
     private static final double MIN_WALL_RADIUS = 9.0D;
+    /** How far out the dust settles at the least, as a share of the damage path's whole width. */
+    private static final double WIND_FIELD_SHARE = 0.22D;
 
     private final StormObject storm;
     /** Tangential speed at the wall, in blocks a tick. Round the axis it falls off as one over the distance. */
@@ -104,6 +106,9 @@ final class SpiralPuff extends EntityRotFX {
     private double wallRadiusAt(float up) {
         // Never right in on the axis. A forming funnel is only a few blocks across, and everything drawn to it piled up into
         // one solid dark ball hanging in the air.
-        return Math.max(MIN_WALL_RADIUS, DynamicStormController.funnelWallRadiusAt(storm, up)) * wallShare;
+        // A tornado's debris cloud is as wide as its wind field, not as its condensation funnel. Held to the funnel, the dust
+        // of a thin one packed into a solid dark ball round its foot.
+        double windField = DynamicStormController.stateFor(storm).damagePathWidth() * WIND_FIELD_SHARE;
+        return Math.max(Math.max(MIN_WALL_RADIUS, windField), DynamicStormController.funnelWallRadiusAt(storm, up)) * wallShare;
     }
 }

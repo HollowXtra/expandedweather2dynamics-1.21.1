@@ -10,6 +10,16 @@ still an honest unknown - is in the README.
 
 **The funnel reaches the cloud.** It used to stop in mid-air up to a hundred blocks short. It now runs from the ground to a flat cloud base, as a slender trunk that opens out fast near the top, in new fibrous textures in the style of Weather2 Remastered. It comes down out of the cloud as a thin tip that widens behind it, and a dying tornado draws in along its whole length into a thin leaning rope.
 
+**Size and shape change like a real funnel's.** A tornado used to reach most of any new width within a second or two, and the funnel you saw crept along at its own fixed pace no matter what the storm was doing. The width now gathers pace into a change and eases out of it, never faster than about 3% of itself a second, and the funnel is drawn at exactly that width. Shapes are no longer random rolls that snapped in three seconds and squeezed the funnel to a tenth of its width. A funnel's shape follows how wide it is against how tall: a rope when thin or dying, a cone or plain funnel in between, a stovepipe or bowl when broad. Each storm keeps its own character, a change morphs over about 30 seconds, and a shape is held for at least a minute. The `tornadoWidthChangeSeconds` and `shapeChangeSeconds` settings set the pace.
+
+**Rain-wrap and dust-wrap.** In a rain-heavy storm a curved curtain of falling rain now wraps round the back of the tornado, swept round with it and open on the inflow side, and a classic supercell gets a lighter one. A violent tornado, from the top of EF3 up, is wrapped in a turning shroud of dust up the lower part of its funnel. A tornado's dust spreads as wide as its wind field rather than piling up round a thin funnel.
+
+**A summoned tornado keeps its class.** An F4 you summon now reads as an F4, its wind moving up and down inside that class as its strength changes, with gusts on top. A natural storm can still be carried past its class by the air it is in, but no longer runs away to the top of the scale.
+
+**Landspouts and waterspouts hang from a storm.** Each has its own shower cloud above it now, a dark flat base where the column meets it and a rounded tower over that, instead of standing in a clear sky.
+
+**No more fake blocks.** The little block-textured cubes that circled inside the funnel were never real blocks, only particles. They are gone, along with this mod's own cube-shaped ground chunks. Blocks a tornado really picks up are untouched.
+
 **It bends properly.** The funnel used to be bent by a formula, so when a storm turned the whole column swung round at once like a stick. Its centreline now has a history: the foot moves first and the top follows later, so a tall funnel curves through a turn and a kink climbs the column.
 
 **Clouds are soft.** These are still Weather2's particles, with no volumetric rendering. They are now drawn back to front instead of cutting straight lines through each other, they feather into the ground, and they fade as you fly through them. Deck puffs face you rather than turning into black needles when seen from the side. The `softPuffs` setting under `storm_look` turns all of this off.
@@ -41,6 +51,7 @@ still an honest unknown - is in the README.
 - The `weatherDrone` config switch did nothing. It now blocks new launches, and a drone already flying can still be recalled.
 - The portable radar drew its title twice and let long storm names run off the screen.
 - Parts of a storm's structure over unloaded chunks were placed from the bottom of the world, which put whole sheets of cloud at head height.
+- The server reloaded every storm's saved state from a copy of itself every tick, before it had moved on. That froze a tornado's width and wind on the server: its damage path stayed at its starting width, and its wind sat near its starting value, which is why a new tornado could read as little as 77 mph. Tornadoes now grow and strengthen on the server as they always should have, and their damage path is as wide as they look.
 
 ## 1.06.3
 

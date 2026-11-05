@@ -196,6 +196,11 @@ public abstract class TornadoFunnelSimpleMixin {
             float smoothing = Mth.clamp(Math.max(0.080F, Config.TORNADO_FUNNEL_BEND_SMOOTHING.get().floatValue()), 0.0F, 1.0F);
             expandedweather2dynamics$ensureParticleState();
             expandedweather2dynamics$activeParticles.clear();
+            // Drawn at the width the storm says it is, which is already eased smoothly. Weather2 creeps its own radius at a
+            // hundredth of a block a tick toward a whole-block target, so the funnel lagged the storm by minutes.
+            if (funnel.getConfig() != null) {
+                funnel.getConfig().setRadiusOfBase(DynamicStormController.funnelRingBaseRadius(storm, funnel.getConfig().getRadiusOfBase()));
+            }
             double cloudBase = DynamicStormController.cloudBaseWorldY(storm);
             VortexSpine spine = expandedweather2dynamics$advanceSpine(storm, world, base, cloudBase);
             double anchorFraction = Math.min(Config.TORNADO_FUNNEL_BEND_ANCHOR_FRACTION.get(), 0.08D);

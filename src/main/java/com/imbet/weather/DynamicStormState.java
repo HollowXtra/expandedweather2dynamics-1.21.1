@@ -19,6 +19,25 @@ import java.util.Random;
 
 public final class DynamicStormState {
     private static final float WEDGE_ENTER_WIDTH_BLOCKS = 1609.344F * 0.5F;
+    private static final FunnelMorphology[] SHAPES = FunnelMorphology.values();
+    /** Share of the configured change time used as the easing's own time constant: it is most of the way there in about twice this. */
+    private static final float SETTLE_SHARE = 0.45F;
+    /** The fastest a width may change, as a share of itself a tick (3.2% a second), and in blocks a tick for a thin one. */
+    private static final float WIDTH_RATE_SHARE = 0.0016F;
+    private static final float WIDTH_RATE_FLOOR = 0.05F;
+    private static final float WIDTH_MULTIPLIER_RATE_FLOOR = 0.002F;
+    /** How quickly the trunk's neck and curve follow a new shape, a share of the gap a tick: about four seconds. */
+    private static final float TRUNK_EASE = 0.012F;
+    /** Width against height below which a funnel is a rope, and above which it is broad. */
+    private static final double ROPE_ASPECT = 0.10D;
+    private static final double BROAD_ASPECT = 0.62D;
+    /** How far into roping out a funnel has to be before its shape follows the rope-out rather than its width. */
+    private static final float ROPE_OUT_SHAPE_SHARE = 0.30F;
+    /** How long a funnel keeps a shape before it may start another change, in ticks. */
+    private static final int SHAPE_HOLD_MIN_TICKS = 1200;
+    private static final int SHAPE_HOLD_MAX_TICKS = 2400;
+    /** How long a new target has to hold before the shape starts to move toward it, in ticks. */
+    private static final int SHAPE_TARGET_SETTLE_TICKS = 60;
     private static final float WEDGE_EXIT_WIDTH_BLOCKS = 1609.344F * 0.38F;
     /** A wedge may render up to three miles wide, matching the raised config ceilings. */
     private static final float WEDGE_FORCED_VISIBLE_CAP_BLOCKS = 1609.344F * 3.0F;
@@ -61,7 +80,6 @@ public final class DynamicStormState {
     private boolean sidewinderTagLocked;
     private FunnelMorphology funnelMorphology = FunnelMorphology.DEFAULT;
     private FunnelMorphology targetFunnelMorphology = FunnelMorphology.DEFAULT;
-    private boolean funnelMorphologyLocked;
     /**
      * The wedge decision for the current wide episode: rolled once when the storm crosses into the wedge
      * width, then held until it shrinks back below the exit width. Rolling on every retarget instead would
@@ -100,12 +118,29 @@ public final class DynamicStormState {
      */
     private float targetTrunkCurveStrength = 1.0F;
     /**
-     * True while one shape is easing OUT before another eases in. A shape change cannot be a straight
-     * swap - the profile reads whichever shape is in force, so moving from one to the other in one tick
-     * steps the funnel - so the outgoing shape keeps the profile while its blend falls to plain, and the
-     * new shape takes over at zero and eases up from there.
+     * How much of each shape the funnel is drawn with, by {@link FunnelMorphology} ordinal. The shape being headed
+     * for gains and every other shape gives way at the same pace, so a change is a continuous morph from one outline
+     * into the next, and a change of target partway through turns the morph rather than stepping it.
      */
-    private boolean morphologyHandoff;
+    private final float[] shapeWeights = new float[SHAPES.length];
+    /** The weights eased and made to add up to one: what the profile is drawn with. */
+    private final float[] shapeShares = new float[SHAPES.length];
+    private boolean shapeWeightsSeeded;
+    /** The shape the weights are moving toward, and the target that has to hold before they turn toward it. */
+    private int shapeHeading = FunnelMorphology.DEFAULT.ordinal();
+    private int shapeCandidate = FunnelMorphology.DEFAULT.ordinal();
+    private int shapeCandidateTicks;
+    /** Whether this state has had its first server tick, which is the one tick the mirror may be restored on. */
+    private boolean serverStarted;
+    /** The earliest tick the funnel may start another change of shape, short of roping out. */
+    private long shapeHoldUntilTick;
+    /** How fast the widths are changing, in their own units a tick: the multiplier, the damage path, the funnel. */
+    private final float[] widthRates = new float[3];
+
+    {
+        shapeWeights[FunnelMorphology.DEFAULT.ordinal()] = 1.0F;
+        shapeShares[FunnelMorphology.DEFAULT.ordinal()] = 1.0F;
+    }
     private long nextMorphologyRetargetTick;
     private float visualSpinSpeed = 0.055F;
     private float targetVisualSpinSpeed = 0.055F;
@@ -727,11 +762,14 @@ public final class DynamicStormState {
                 ? Math.max((float) Config.effectiveMaxVisibleFunnelWidthBlocks(), WEDGE_FORCED_VISIBLE_CAP_BLOCKS)
                 : (float) Config.effectiveMaxVisibleFunnelWidthBlocks();
         float boundTarget = Mth.clamp((float) (targetWidth * (1.0D + turb * turbScale)), 1.5F, ceiling);
-        float widthSmoothing = Config.TORNADO_WIDTH_SMOOTHING.get().floatValue();
-        widthMultiplier += (targetWidthMultiplier * genesisWidth - widthMultiplier) * widthSmoothing;
-        damagePathWidth += (targetDamageWidth - damagePathWidth) * widthSmoothing;
+        // A funnel changes size the way a heavy thing moves: it gathers pace into a change and eases out of it, and never
+        // faster than a few percent of its own width a second. It used to cover most of any change within a second or two
+        // of being asked to, so every new target read as a lurch.
+        float settleTicks = Math.max(20.0F, Config.TORNADO_WIDTH_CHANGE_SECONDS.get().floatValue() * 20.0F * SETTLE_SHARE);
+        widthMultiplier = settle(widthMultiplier, targetWidthMultiplier * genesisWidth, 0, settleTicks, WIDTH_MULTIPLIER_RATE_FLOOR);
+        damagePathWidth = settle(damagePathWidth, targetDamageWidth, 1, settleTicks, WIDTH_RATE_FLOOR);
         coreRadius = Math.max(2.0F, damagePathWidth * 0.16F);
-        visibleFunnelWidth += (boundTarget - visibleFunnelWidth) * widthSmoothing;
+        visibleFunnelWidth = settle(visibleFunnelWidth, boundTarget, 2, settleTicks, WIDTH_RATE_FLOOR);
         // The eased value is deliberately NOT clamped to its target envelope: it has to stay free to
         // travel down from a wide target, and clamping it would snap it instantly on a downward retarget
         // - exactly the reset the easing exists to avoid. The renderer clamps what it actually draws.
@@ -769,41 +807,93 @@ public final class DynamicStormState {
         bendAngle = wrapDegrees(bendAngle + bendDelta * bendSmoothing);
         bendStrength += (targetBendStrength - bendStrength) * bendSmoothing;
         sidewindingBendBlend += (targetSidewindingBendBlend - sidewindingBendBlend) * 0.040F;
-        // Shape transition, all of it in one place.
-        //
-        // The shape in force is latched as soon as its blend is non-zero and released only once the blend
-        // is back to zero, so a shape is always eased out over the same transition it eased in over. A tag
-        // used to drop it on the spot instead, and since the profile reads whichever shape is in force,
-        // that snapped the whole column back to plain between two ticks - worst at the top of a flared
-        // shape, because the flare is the largest scale the profile has: the ring at the cloud base swelled
-        // past every layer under it and then reset.
-        //
-        // A change from one shape to another is a handoff through plain rather than a swap, because there
-        // is only one blend and it fades a shape against plain: the outgoing shape holds the profile while
-        // its blend falls, then the new one takes over at zero. Without that, a bowl that became a wedge
-        // stepped from one profile to the other in a single tick.
-        float targetMorphBlend = targetFunnelMorphology.shaped() && !morphologyHandoff ? 1.0F : 0.0F;
-        float transitionStep = 1.0F / Math.max(1, Math.min(Config.TORNADO_ELEPHANT_TRUNK_TRANSITION_TICKS.get(), 55));
-        if (funnelMorphologyBlend < targetMorphBlend) {
-            funnelMorphologyBlend = Math.min(targetMorphBlend, funnelMorphologyBlend + transitionStep);
-        } else if (funnelMorphologyBlend > targetMorphBlend) {
-            funnelMorphologyBlend = Math.max(targetMorphBlend, funnelMorphologyBlend - transitionStep);
+        // Shape: every shape holds a weight, and the funnel is drawn as the mix. See tickShapeWeights.
+        tickShapeWeights();
+        trunkNeckFraction += (targetTrunkNeckFraction - trunkNeckFraction) * TRUNK_EASE;
+        trunkCurveStrength += (targetTrunkCurveStrength - trunkCurveStrength) * TRUNK_EASE;
+    }
+
+    /**
+     * One tick of a critically damped approach, limited in speed: a width gathers pace into a change and eases out of
+     * it, never overshoots, and never moves faster than {@link #WIDTH_RATE_SHARE} of itself a tick.
+     *
+     * @param channel which of {@link #widthRates} carries this width's speed
+     * @param settleTicks the easing's time constant
+     * @param floor the least speed limit, for a value too small for a share of it to move it at all
+     */
+    private float settle(float current, float target, int channel, float settleTicks, float floor) {
+        float omega = 2.0F / settleTicks;
+        float decay = 1.0F / (1.0F + omega + 0.48F * omega * omega + 0.235F * omega * omega * omega);
+        float limit = Math.max(floor, Math.abs(current) * WIDTH_RATE_SHARE);
+        float change = Mth.clamp(current - target, -limit * settleTicks, limit * settleTicks);
+        float rate = widthRates[channel];
+        float pull = (rate + omega * change);
+        rate = Mth.clamp((rate - omega * pull) * decay, -limit, limit);
+        float next = (current - change) + (change + pull) * decay;
+        next = Mth.clamp(next, current - limit, current + limit);
+        if ((target - current > 0.0F) == (next > target) && next != current) {
+            next = target;
+            rate = 0.0F;
         }
-        trunkNeckFraction += (targetTrunkNeckFraction - trunkNeckFraction) * 0.045F;
-        trunkCurveStrength += (targetTrunkCurveStrength - trunkCurveStrength) * 0.045F;
-        if (morphologyHandoff) {
-            if (funnelMorphologyBlend <= 0.001F) {
-                morphologyHandoff = false;
-                funnelMorphology = targetFunnelMorphology;
+        widthRates[channel] = rate;
+        return next;
+    }
+
+    /**
+     * Moves every shape's weight one tick toward the target: the shape being headed for gains and every other one gives
+     * way at the same pace, over {@link Config#TORNADO_SHAPE_CHANGE_SECONDS}. A change is then a continuous morph from
+     * one outline into the next, and if the target changes again partway through, the mix turns and heads somewhere
+     * else from wherever it is. The shape used to be faded against plain in under three seconds, so a cone became a
+     * drill bit by way of an ordinary funnel in five.
+     */
+    private void tickShapeWeights() {
+        int requested = targetFunnelMorphology.ordinal();
+        if (!shapeWeightsSeeded) {
+            // A storm seen for the first time, loaded or joined, is drawn as it is rather than morphing into itself.
+            java.util.Arrays.fill(shapeWeights, 0.0F);
+            shapeWeights[requested] = 1.0F;
+            shapeHeading = requested;
+            shapeCandidate = requested;
+            shapeWeightsSeeded = true;
+        }
+        // A target has to hold for a few seconds before the funnel starts to change toward it. A client can see the target
+        // flick for a moment between syncs, and following every flick put a tremor into the outline.
+        if (requested != shapeCandidate) {
+            shapeCandidate = requested;
+            shapeCandidateTicks = 0;
+        } else if (shapeCandidateTicks < SHAPE_TARGET_SETTLE_TICKS) {
+            shapeCandidateTicks++;
+        }
+        if (shapeCandidateTicks >= SHAPE_TARGET_SETTLE_TICKS) {
+            shapeHeading = shapeCandidate;
+        }
+        int target = shapeHeading;
+        float step = 1.0F / Math.max(20.0F, Config.TORNADO_SHAPE_CHANGE_SECONDS.get().floatValue() * 20.0F);
+        float total = 0.0F;
+        int strongest = target;
+        for (int i = 0; i < SHAPES.length; i++) {
+            float goal = i == target ? 1.0F : 0.0F;
+            float weight = shapeWeights[i];
+            weight = weight < goal ? Math.min(goal, weight + step) : Math.max(goal, weight - step);
+            shapeWeights[i] = weight;
+            // Eased, so a change starts and finishes gently. Two shapes crossing over still add up to one exactly.
+            float eased = weight * weight * (3.0F - 2.0F * weight);
+            shapeShares[i] = eased;
+            total += eased;
+            if (weight > shapeWeights[strongest]) {
+                strongest = i;
             }
-        } else if (targetFunnelMorphology.shaped() && funnelMorphology.shaped()
-                && targetFunnelMorphology != funnelMorphology && funnelMorphologyBlend > 0.001F) {
-            morphologyHandoff = true;
-        } else if (funnelMorphologyBlend > 0.001F && targetFunnelMorphology.shaped()) {
-            funnelMorphology = targetFunnelMorphology;
-        } else if (funnelMorphologyBlend <= 0.001F && !funnelMorphologyLocked) {
-            funnelMorphology = FunnelMorphology.DEFAULT;
         }
+        if (total <= 1.0E-6F) {
+            java.util.Arrays.fill(shapeShares, 0.0F);
+            shapeShares[target] = 1.0F;
+        } else {
+            for (int i = 0; i < SHAPES.length; i++) {
+                shapeShares[i] /= total;
+            }
+        }
+        funnelMorphology = SHAPES[strongest];
+        funnelMorphologyBlend = shapeShares[strongest];
     }
 
     void updateVisualSpin(double maxWindMph) {
@@ -901,7 +991,8 @@ public final class DynamicStormState {
         if (reading <= 0.05D) {
             return;
         }
-        if (storm.weatherMachineControlled || storm.isPlayerControlled() || storm.isPet()) {
+        // A summoned storm keeps the class it was summoned as.
+        if (storm.weatherMachineControlled || storm.isPlayerControlled() || storm.isPet() || !storm.naturallySpawned) {
             return;
         }
         if (storm.attrib_waterSpout || storm.stormType == StormObject.TYPE_WATER
@@ -1028,11 +1119,21 @@ public final class DynamicStormState {
      * picking between the two fields itself, so nothing can be drawing a different shape from the rest of
      * the funnel during a transition.
      */
+    /** True the first time it is asked, on the state's first server tick, and false ever after. */
+    boolean markServerStarted() {
+        boolean first = !serverStarted;
+        serverStarted = true;
+        return first;
+    }
+
+    /** The shape with the most say in the funnel's outline right now. */
     public FunnelMorphology funnelMorphologyInForce() {
-        if (morphologyHandoff) {
-            return funnelMorphology;
-        }
-        return targetFunnelMorphology.shaped() ? targetFunnelMorphology : funnelMorphology;
+        return funnelMorphology;
+    }
+
+    /** How much of the funnel's outline is this shape, 0 to 1. The shares of all the shapes add up to 1. */
+    public float shapeShare(FunnelMorphology shape) {
+        return shapeShares[shape.ordinal()];
     }
 
     public FunnelMorphology targetFunnelMorphology() {
@@ -1452,10 +1553,10 @@ public final class DynamicStormState {
 
     private void enforceExclusiveVisualTags() {
         if (multiVortexVisualActive()) {
+            // The funnel's shape is left to retargetFunnelMorphology, which runs on the server at its own pace and gives way
+            // to a multi-vortex episode there. Clearing it here, every tick and on both sides, flicked the client's target
+            // back and forth against the server's every few seconds.
             clearSidewinderTag();
-            if (!wedgeMorphologyActive()) {
-                clearFunnelMorphologyTag();
-            }
             return;
         }
         if (funnelMorphologyVisualActive()) {
@@ -1524,7 +1625,7 @@ public final class DynamicStormState {
     }
 
     private boolean funnelMorphologyVisualActive() {
-        return targetFunnelMorphology.shaped() || funnelMorphology.shaped() || funnelMorphologyBlend > 0.03F;
+        return targetFunnelMorphology.shaped() || shapeShares[FunnelMorphology.DEFAULT.ordinal()] < 0.97F;
     }
 
     /**
@@ -1543,8 +1644,7 @@ public final class DynamicStormState {
 
     public boolean wedgeMorphologyActive() {
         return targetFunnelMorphology == FunnelMorphology.WEDGE
-                || funnelMorphology == FunnelMorphology.WEDGE
-                || (funnelMorphologyBlend > 0.03F && targetFunnelMorphology == FunnelMorphology.WEDGE);
+                || shapeShares[FunnelMorphology.WEDGE.ordinal()] > 0.03F;
     }
 
     private boolean sidewinderVisualActive() {
@@ -1558,7 +1658,6 @@ public final class DynamicStormState {
     }
 
     private void clearFunnelMorphologyTag() {
-        funnelMorphologyLocked = false;
         targetFunnelMorphology = FunnelMorphology.DEFAULT;
         // Only the TARGET clears here. The shape itself stays in force, and `smooth()` eases its blend
         // back to plain and releases it once the blend reaches zero. Dropping the shape and zeroing the
@@ -1578,13 +1677,11 @@ public final class DynamicStormState {
         // plain - the shape in force keeps the profile while its blend falls, then the wedge takes over at
         // zero. No shape is dropped here.
         targetFunnelMorphology = FunnelMorphology.WEDGE;
-        funnelMorphologyLocked = true;
         targetTrunkNeckFraction = 0.78F;
         targetTrunkCurveStrength = 0.35F;
     }
 
     private void clearWedgeMorphologyTag() {
-        funnelMorphologyLocked = false;
         if (targetFunnelMorphology == FunnelMorphology.WEDGE) {
             targetFunnelMorphology = FunnelMorphology.DEFAULT;
         }
@@ -1604,7 +1701,6 @@ public final class DynamicStormState {
         // Whatever shape was in force is deliberately left alone: the handoff in `smooth()` eases it out
         // before the wedge eases in. Dropping it and zeroing the blend here stepped the funnel straight
         // from the outgoing profile to the wedge profile in one tick.
-        funnelMorphologyLocked = true;
         targetTrunkNeckFraction = 0.78F;
         targetTrunkCurveStrength = 0.35F;
     }
@@ -2134,7 +2230,6 @@ public final class DynamicStormState {
         }
         tag.putString("FunnelMorphology", funnelMorphology.name());
         tag.putString("TargetFunnelMorphology", targetFunnelMorphology.name());
-        tag.putBoolean("FunnelMorphologyLocked", funnelMorphologyLocked);
         tag.putBoolean("WedgeEpisodeRolled", wedgeEpisodeRolled);
         tag.putBoolean("WedgeEpisodeIsWedge", wedgeEpisodeIsWedge);
         tag.putFloat("FunnelMorphologyBlend", funnelMorphologyBlend);
@@ -2143,7 +2238,6 @@ public final class DynamicStormState {
         tag.putFloat("TrunkCurvePhase", trunkCurvePhase);
         tag.putFloat("TrunkCurveStrength", trunkCurveStrength);
         tag.putFloat("TargetTrunkCurveStrength", targetTrunkCurveStrength);
-        tag.putBoolean("MorphologyHandoff", morphologyHandoff);
         tag.putLong("NextMorphologyRetargetTick", nextMorphologyRetargetTick);
         tag.putFloat("VisualSpinSpeed", visualSpinSpeed);
         tag.putFloat("TargetVisualSpinSpeed", targetVisualSpinSpeed);
@@ -2250,7 +2344,6 @@ public final class DynamicStormState {
         replaceHorizontalVortices(tag);
         funnelMorphology = tag.contains("FunnelMorphology") ? FunnelMorphology.byName(tag.getString("FunnelMorphology")) : funnelMorphology;
         targetFunnelMorphology = tag.contains("TargetFunnelMorphology") ? FunnelMorphology.byName(tag.getString("TargetFunnelMorphology")) : funnelMorphology;
-        funnelMorphologyLocked = tag.contains("FunnelMorphologyLocked") ? tag.getBoolean("FunnelMorphologyLocked") : targetFunnelMorphology.shaped();
         funnelMorphologyBlend = tag.contains("FunnelMorphologyBlend") ? Mth.clamp(tag.getFloat("FunnelMorphologyBlend"), 0.0F, 1.0F) : funnelMorphologyBlend;
         trunkNeckFraction = tag.contains("TrunkNeckFraction") ? Mth.clamp(tag.getFloat("TrunkNeckFraction"), 0.22F, 0.78F) : trunkNeckFraction;
         targetTrunkNeckFraction = tag.contains("TargetTrunkNeckFraction") ? Mth.clamp(tag.getFloat("TargetTrunkNeckFraction"), 0.22F, 0.78F) : trunkNeckFraction;
@@ -2259,7 +2352,6 @@ public final class DynamicStormState {
         targetTrunkCurveStrength = tag.contains("TargetTrunkCurveStrength")
                 ? Mth.clamp(tag.getFloat("TargetTrunkCurveStrength"), 0.0F, 3.0F)
                 : trunkCurveStrength;
-        morphologyHandoff = tag.contains("MorphologyHandoff") ? tag.getBoolean("MorphologyHandoff") : false;
         nextMorphologyRetargetTick = tag.contains("NextMorphologyRetargetTick") ? tag.getLong("NextMorphologyRetargetTick") : nextMorphologyRetargetTick;
         // A storm saved before this existed keeps the shape it was drawn with: a loaded wedge tag counts as
         // an already-rolled wedge, rather than a fresh roll that could take the wedge away mid-episode.
@@ -2499,7 +2591,6 @@ public final class DynamicStormState {
                 || level == null
                 || storm.attrib_waterSpout
                 || !storm.isTornadoFormingOrGreater()) {
-            funnelMorphologyLocked = false;
             targetFunnelMorphology = FunnelMorphology.DEFAULT;
             nextMorphologyRetargetTick = gameTime + nextIntInclusive(180, 420);
             return;
@@ -2525,166 +2616,117 @@ public final class DynamicStormState {
             nextMorphologyRetargetTick = gameTime + nextIntInclusive(180, 420);
             return;
         }
-        if (funnelMorphologyLocked && targetFunnelMorphology.shaped()) {
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(900, 1800);
+        FunnelMorphology selectedMorphology = naturalShape(storm);
+        if (selectedMorphology == targetFunnelMorphology) {
+            nextMorphologyRetargetTick = gameTime + nextIntInclusive(200, 400);
             return;
         }
-        boolean canElephantTrunk = Config.TORNADO_ELEPHANT_TRUNK_ENABLED.get()
-                && storm.levelCurIntensityStage >= Config.TORNADO_ELEPHANT_TRUNK_MIN_STAGE.get()
-                && DynamicStormController.canUseElephantTrunkVisuals(this);
-        boolean canDrillBit = Config.TORNADO_DRILL_BIT_ENABLED.get()
-                && storm.levelCurIntensityStage >= Config.TORNADO_DRILL_BIT_MIN_STAGE.get();
-        boolean canFloater = Config.FLOATER_TORNADOES_ENABLED.get()
-                && storm.levelCurIntensityStage >= StormObject.STATE_FORMING
-                && Math.max(damagePathWidth, targetDamagePathWidth) < WEDGE_ENTER_WIDTH_BLOCKS * 0.72F;
-        boolean canAdditionalShapes = Config.TORNADO_ADDITIONAL_SHAPES_ENABLED.get()
-                && Config.TORNADO_ADDITIONAL_SHAPES_CHANCE.get() > 0.0D
-                && storm.levelCurIntensityStage >= StormObject.STATE_FORMING;
-        if (!canElephantTrunk && !canDrillBit && !canFloater && !canAdditionalShapes) {
-            targetFunnelMorphology = FunnelMorphology.DEFAULT;
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(180, 420);
+        // Having taken a shape, a funnel keeps it for a while. A real one does not change its outline every few seconds,
+        // and without this a funnel whose width sat near a threshold would hover back and forth across it. Roping out is
+        // the one thing that does not wait.
+        if (gameTime < shapeHoldUntilTick && DynamicStormController.funnelRopeOut(storm) < ROPE_OUT_SHAPE_SHARE) {
+            nextMorphologyRetargetTick = gameTime + nextIntInclusive(100, 200);
             return;
-        }
-
-        float widthFraction = damagePathWidth <= 1.0F ? 1.0F : visibleFunnelWidth / damagePathWidth;
-        float maxFraction = Math.max(0.70F, Config.TORNADO_ELEPHANT_TRUNK_MAX_VISIBLE_WIDTH_FRACTION.get().floatValue());
-        float narrowFavor = Mth.clamp((maxFraction - widthFraction) / Math.max(0.05F, maxFraction), 0.0F, 1.0F);
-        float stageFavor = storm.levelCurIntensityStage <= StormObject.STATE_STAGE2 ? 1.0F : 0.68F;
-        FunnelMorphology selectedMorphology = FunnelMorphology.DEFAULT;
-        if (canDrillBit) {
-            float drillChance = Config.TORNADO_DRILL_BIT_CHANCE.get().floatValue()
-                    * (0.30F + narrowFavor * 1.35F)
-                    * (storm.levelCurIntensityStage >= StormObject.STATE_STAGE3 ? 1.18F : 1.0F);
-            if (random.nextFloat() < drillChance) {
-                selectedMorphology = FunnelMorphology.DRILL_BIT;
-            }
-        }
-        if (selectedMorphology == FunnelMorphology.DEFAULT && canElephantTrunk) {
-            float chance = Config.TORNADO_ELEPHANT_TRUNK_CHANCE.get().floatValue() * (0.35F + narrowFavor * 1.15F) * stageFavor;
-            if (random.nextFloat() < chance) {
-                selectedMorphology = FunnelMorphology.ELEPHANT_TRUNK;
-            }
-        }
-        if (selectedMorphology == FunnelMorphology.DEFAULT && canFloater) {
-            float floaterChance = Config.FLOATER_TORNADO_SPAWN_CHANCE.get().floatValue()
-                    * (0.55F + narrowFavor * 0.90F)
-                    * (storm.isGrowing ? 1.18F : 0.72F);
-            if (random.nextFloat() < floaterChance) {
-                selectedMorphology = FunnelMorphology.FLOATER;
-            }
-        }
-        if (selectedMorphology == FunnelMorphology.DEFAULT && canAdditionalShapes) {
-            // additional shape pack: ropes favor weak narrow tornadoes, corkscrews
-            // favor violent ones, stovepipes and bowls favor wider paths, cones
-            // occur across the board
-            float packChance = Math.min(1.0F, Config.TORNADO_ADDITIONAL_SHAPES_CHANCE.get().floatValue() * 0.55F);
-            float weak = storm.levelCurIntensityStage <= StormObject.STATE_STAGE2 ? 1.0F : 0.45F;
-            float violent = storm.levelCurIntensityStage >= StormObject.STATE_STAGE3 ? 1.0F : 0.5F;
-            float wide = Mth.clamp(widthFraction * 1.15F, 0.30F, 1.35F);
-            float narrow = Mth.clamp((1.0F - widthFraction) * 1.15F, 0.30F, 1.35F);
-            float ropeW = 0.85F * weak * narrow;
-            float coneW = 1.25F;
-            float pipeW = 0.90F * wide;
-            float corkW = 0.80F * violent * narrow;
-            float bowlW = 0.70F * wide;
-            float total = ropeW + coneW + pipeW + corkW + bowlW;
-            if (random.nextFloat() < packChance) {
-                float roll = random.nextFloat() * total;
-                if (roll < ropeW) {
-                    selectedMorphology = FunnelMorphology.ROPE;
-                } else if (roll < ropeW + coneW) {
-                    selectedMorphology = FunnelMorphology.CONE;
-                } else if (roll < ropeW + coneW + pipeW) {
-                    selectedMorphology = FunnelMorphology.STOVEPIPE;
-                } else if (roll < ropeW + coneW + pipeW + corkW) {
-                    selectedMorphology = FunnelMorphology.CORKSCREW;
-                } else {
-                    selectedMorphology = FunnelMorphology.BOWL;
-                }
-            }
         }
         targetFunnelMorphology = selectedMorphology;
         if (targetFunnelMorphology == FunnelMorphology.DRILL_BIT) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.34F + random.nextFloat() * 0.18F;
             targetTrunkCurveStrength = Mth.clamp(0.56F + random.nextFloat() * 0.28F, 0.0F, 1.05F);
-            float drillWidth = Math.max(2.75F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.14F + random.nextFloat() * 0.08F)));
-            targetVisibleFunnelWidth = drillWidth;
-            if (storm != null) {
-                targetWidthMultiplier = drillWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
-            }
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(900, 2400);
         } else if (targetFunnelMorphology == FunnelMorphology.ELEPHANT_TRUNK) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.38F + random.nextFloat() * 0.24F;
             targetTrunkCurveStrength = Mth.clamp(1.02F + random.nextFloat() * 0.58F, 0.0F, Math.max(1.55F, Config.TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH.get().floatValue() * 1.55F));
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(460, 1040);
         } else if (targetFunnelMorphology == FunnelMorphology.FLOATER) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.46F + random.nextFloat() * 0.16F;
             targetTrunkCurveStrength = Mth.clamp(0.52F + random.nextFloat() * 0.36F, 0.0F, 1.05F);
-            float floaterWidth = Math.max(3.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.28F + random.nextFloat() * 0.10F)));
-            targetVisibleFunnelWidth = floaterWidth;
-            if (storm != null) {
-                targetWidthMultiplier = floaterWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
-            }
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(700, 1700);
         } else if (targetFunnelMorphology == FunnelMorphology.ROPE) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.55F + random.nextFloat() * 0.20F;
             targetTrunkCurveStrength = Mth.clamp(1.10F + random.nextFloat() * 0.50F, 0.0F, 1.60F);
-            float ropeWidth = Math.max(2.5F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.12F + random.nextFloat() * 0.06F)));
-            targetVisibleFunnelWidth = ropeWidth;
-            if (storm != null) {
-                targetWidthMultiplier = ropeWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
-            }
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(400, 1000);
         } else if (targetFunnelMorphology == FunnelMorphology.CONE) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.42F + random.nextFloat() * 0.16F;
             targetTrunkCurveStrength = Mth.clamp(0.45F + random.nextFloat() * 0.25F, 0.0F, 0.90F);
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(700, 1600);
         } else if (targetFunnelMorphology == FunnelMorphology.STOVEPIPE) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.50F + random.nextFloat() * 0.14F;
             targetTrunkCurveStrength = Mth.clamp(0.30F + random.nextFloat() * 0.22F, 0.0F, 0.70F);
-            float pipeWidth = Math.max(6.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.50F + random.nextFloat() * 0.20F)));
-            targetVisibleFunnelWidth = pipeWidth;
-            if (storm != null) {
-                targetWidthMultiplier = pipeWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
-            }
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(800, 1800);
         } else if (targetFunnelMorphology == FunnelMorphology.CORKSCREW) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.40F + random.nextFloat() * 0.15F;
             targetTrunkCurveStrength = Mth.clamp(0.85F + random.nextFloat() * 0.35F, 0.0F, 1.25F);
-            float corkWidth = Math.max(3.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.20F + random.nextFloat() * 0.10F)));
-            targetVisibleFunnelWidth = corkWidth;
-            if (storm != null) {
-                targetWidthMultiplier = corkWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
-            }
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(600, 1400);
         } else if (targetFunnelMorphology == FunnelMorphology.BOWL) {
-            funnelMorphologyLocked = true;
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.40F + random.nextFloat() * 0.14F;
             targetTrunkCurveStrength = Mth.clamp(0.40F + random.nextFloat() * 0.25F, 0.0F, 0.85F);
-            float bowlWidth = Math.max(6.0F, Math.min(targetVisibleFunnelWidth, targetDamagePathWidth * (0.48F + random.nextFloat() * 0.20F)));
-            targetVisibleFunnelWidth = bowlWidth;
-            if (storm != null) {
-                targetWidthMultiplier = bowlWidth / Math.max(3.0F, DynamicStormController.rawBaseRadiusForWind(storm));
-            }
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(700, 1600);
         } else {
-            nextMorphologyRetargetTick = gameTime + nextIntInclusive(180, 440);
+            targetTrunkNeckFraction = 0.50F;
+            targetTrunkCurveStrength = 1.0F;
         }
+        shapeHoldUntilTick = gameTime + nextIntInclusive(SHAPE_HOLD_MIN_TICKS, SHAPE_HOLD_MAX_TICKS);
+        nextMorphologyRetargetTick = gameTime + nextIntInclusive(240, 480);
+    }
+
+    /**
+     * The outline a funnel of this size and age takes. Real funnels are described by how wide they are against how tall:
+     * a rope is thin, a cone or a plain funnel sits in between, a stovepipe or bowl is broad, and a wedge is wider than it
+     * is tall (the wedge has its own episodes, above). A dying funnel ropes out whatever it was. Which of the shapes that
+     * fit a band a storm takes is its own character, fixed for its life, so one storm does not keep trying on outlines.
+     */
+    private FunnelMorphology naturalShape(StormObject storm) {
+        boolean extraShapes = Config.TORNADO_ADDITIONAL_SHAPES_ENABLED.get() && Config.TORNADO_ADDITIONAL_SHAPES_CHANCE.get() > 0.0D;
+        boolean canTrunk = Config.TORNADO_ELEPHANT_TRUNK_ENABLED.get()
+                && storm.levelCurIntensityStage >= Config.TORNADO_ELEPHANT_TRUNK_MIN_STAGE.get()
+                && DynamicStormController.canUseElephantTrunkVisuals(this);
+        if (DynamicStormController.funnelRopeOut(storm) >= ROPE_OUT_SHAPE_SHARE) {
+            return canTrunk && shapeFlavour(1) < 0.25D ? FunnelMorphology.ELEPHANT_TRUNK
+                    : extraShapes ? FunnelMorphology.ROPE : FunnelMorphology.DEFAULT;
+        }
+        double aspect = visibleFunnelWidth / Math.max(24.0D, DynamicStormController.funnelHeightBlocks(storm));
+        // A little hysteresis, so a funnel sitting on a boundary does not keep crossing it.
+        int band = shapeBand(targetFunnelMorphology);
+        double ropeEdge = band == 0 ? ROPE_ASPECT * 1.25D : ROPE_ASPECT;
+        double broadEdge = band == 2 ? BROAD_ASPECT * 0.80D : BROAD_ASPECT;
+        if (aspect < ropeEdge) {
+            if (Config.TORNADO_DRILL_BIT_ENABLED.get() && storm.levelCurIntensityStage >= Config.TORNADO_DRILL_BIT_MIN_STAGE.get()
+                    && shapeFlavour(2) < Config.TORNADO_DRILL_BIT_CHANCE.get() * 4.0D) {
+                return FunnelMorphology.DRILL_BIT;
+            }
+            if (!extraShapes) {
+                return FunnelMorphology.DEFAULT;
+            }
+            return storm.levelCurIntensityStage >= StormObject.STATE_STAGE3 && shapeFlavour(3) > 0.60D ? FunnelMorphology.CORKSCREW : FunnelMorphology.ROPE;
+        }
+        if (aspect < broadEdge) {
+            if (Config.FLOATER_TORNADOES_ENABLED.get() && storm.isGrowing
+                    && random.nextFloat() < Config.FLOATER_TORNADO_SPAWN_CHANCE.get().floatValue()) {
+                return FunnelMorphology.FLOATER;
+            }
+            if (canTrunk && shapeFlavour(4) < Config.TORNADO_ELEPHANT_TRUNK_CHANCE.get() * 4.0D) {
+                return FunnelMorphology.ELEPHANT_TRUNK;
+            }
+            return extraShapes && shapeFlavour(5) > 0.55D ? FunnelMorphology.CONE : FunnelMorphology.DEFAULT;
+        }
+        if (!extraShapes) {
+            return FunnelMorphology.DEFAULT;
+        }
+        return shapeFlavour(6) < 0.30D ? FunnelMorphology.BOWL : FunnelMorphology.STOVEPIPE;
+    }
+
+    /** 0 for the thin shapes, 2 for the broad ones, 1 for everything between. */
+    private static int shapeBand(FunnelMorphology shape) {
+        return switch (shape) {
+            case ROPE, DRILL_BIT, CORKSCREW -> 0;
+            case STOVEPIPE, BOWL, WEDGE -> 2;
+            default -> 1;
+        };
+    }
+
+    /** A number in [0, 1) fixed for this storm's whole life, a different one for each question asked of it. */
+    private double shapeFlavour(int question) {
+        return TornadoSizeModel.bone(stormId * 0x9E3779B97F4A7C15L + question * 0x632BE59BD9B4E019L);
     }
 
     private boolean refreshWedgeMorphology(StormObject storm) {

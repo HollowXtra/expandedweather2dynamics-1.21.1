@@ -14,6 +14,7 @@ import com.imbet.weather.SteamDevilVisual;
 import com.imbet.weather.SnowDevilVisual;
 import com.imbet.weather.WaterspoutEntity;
 import extendedrenderer.particle.ParticleRegistry;
+import extendedrenderer.particle.entity.EntityRotFX;
 import extendedrenderer.particle.entity.PivotingParticle;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.ParticleStatus;
@@ -32,6 +33,9 @@ import java.util.Map;
 
 public final class AddonVortexParticleRenderer {
     private static final Map<Integer, VortexVisual> VISUALS = new HashMap<>();
+    /** How many puffs a spout's parent cloud is built from, and the share of them that make its flat base. */
+    private static final int PARENT_CLOUD_PUFFS = 36;
+    private static final double PARENT_CLOUD_BASE_SHARE = 0.60D;
 
     private AddonVortexParticleRenderer() {
     }
@@ -122,6 +126,9 @@ public final class AddonVortexParticleRenderer {
     private static final class VortexVisual {
         private final List<VisualLayer> layers = new ArrayList<>();
         private VortexKind lastKind;
+        /** The cloud a spout hangs from. See tickParentCloud. */
+        private final List<EntityRotFX> parentCloud = new ArrayList<>();
+        private double parentCloudHeight;
         private Vec3 base;
         private long lastSeenTick;
         private long lastUpdateTick = Long.MIN_VALUE;
@@ -195,6 +202,18 @@ public final class AddonVortexParticleRenderer {
                 positionParticles(layer.clouds, layer, (float) layerRadius, fraction, kind, surfaceTone, false);
                 positionParticles(layer.core, layer, (float) Math.max(0.35D, layerRadius * 0.48D), fraction, kind, surfaceTone, true);
             }
+            if (kind == VortexKind.LANDSPOUT || kind == VortexKind.WATERSPOUT) {
+                parentCloudHeight = height;
+                tickParentCloud(level, height, 1.0F);
+            }
+        }
+
+        private void tickParentCloudFade(float fade) {
+            for (EntityRotFX puff : parentCloud) {
+                float alpha = puff.getAlphaF() * Math.max(0.0F, Math.min(1.0F, fade / Math.max(0.05F, fade + 0.02F)));
+                puff.setAlpha(alpha);
+                puff.setFullAlphaTarget(alpha);
+            }
         }
 
         private boolean fadeTick(long gameTime) {
@@ -220,6 +239,10 @@ public final class AddonVortexParticleRenderer {
                     : lastKind == VortexKind.LAVA_WHIRL ? LavaWhirlVisual.FADE_SPIN_PER_TICK
                     : lastKind == VortexKind.STEAM_DEVIL ? SteamDevilVisual.FADE_SPIN_PER_TICK
                     : 2.2F;
+            if (!parentCloud.isEmpty()) {
+                // The cloud outlives the spout a little and thins away with it rather than vanishing.
+                tickParentCloudFade(fade);
+            }
             for (VisualLayer layer : layers) {
                 if (layer.pos != null) {
                     layer.pos = layer.pos.add(drift.x, lastKind == VortexKind.GUSTNADO ? 0.010D : 0.025D, drift.z);
@@ -645,7 +668,7 @@ public final class AddonVortexParticleRenderer {
             // sprite, so they take the same allowance for the sheet's denser regenerated body.
             if (kind.funnelLike()) {
                 // A spout has no cloud of its own to end in, so its top dissolves into the air rather than stopping at a lid.
-                base *= 1.0F - (float) smoothstep((fraction - 0.74D) / 0.26D);
+                base *= 1.0F - (float) smoothstep((fraction - 0.88D) / 0.12D);
             }
             float alpha = Mth.clamp(core ? base + 0.06F : base, kind.funnelLike() ? 0.0F : 0.16F, maxAlpha);
             return alpha * ClientWeatherEffects.FUNNEL_SPRITE_DENSITY_ALLOWANCE;
@@ -713,6 +736,65 @@ public final class AddonVortexParticleRenderer {
                 layer.remove();
             }
             layers.clear();
+            for (EntityRotFX puff : parentCloud) {
+                puff.remove();
+            }
+            parentCloud.clear();
+        }
+
+        /**
+         * The thunderstorm a spout hangs from. A landspout or a waterspout is the bottom of a growing shower cloud's
+         * updraft, and drawn on its own it was a column standing in a clear sky. This is the cloud above it: a dark flat
+         * base where the column meets it and a rounded tower over that, built from the same puffs as the storms, turning
+         * slowly and moving with the spout.
+         */
+        private void tickParentCloud(ClientLevel level, double height, float fade) {
+            if (base == null) {
+                return;
+            }
+            while (parentCloud.size() < PARENT_CLOUD_PUFFS) {
+                EntityRotFX puff = new EntityRotFX(level, base.x, base.y + height, base.z, 0.0D, 0.0D, 0.0D);
+                puff.setSprite(ParticleArt.cloud256());
+                puff.setMaxAge(25000);
+                puff.setTicksFadeInMax(40.0F);
+                puff.setGravity(0.0F);
+                puff.setCanCollide(false);
+                puff.facePlayer = true;
+                puff.isTransparent = true;
+                puff.renderOrder = 1;
+                puff.spawnAsWeatherEffect();
+                parentCloud.add(puff);
+            }
+            double baseY = base.y + height - 2.0D;
+            double spread = Math.max(22.0D, height * 0.75D);
+            long time = level.getGameTime();
+            for (int i = 0; i < parentCloud.size(); i++) {
+                EntityRotFX puff = parentCloud.get(i);
+                double share = (i + 0.5D) / parentCloud.size();
+                boolean tower = share > PARENT_CLOUD_BASE_SHARE;
+                double angle = i * 2.39996D + time * 0.0015D;
+                double up = tower ? (share - PARENT_CLOUD_BASE_SHARE) / (1.0D - PARENT_CLOUD_BASE_SHARE) : 0.0D;
+                double radius = tower ? spread * 0.55D * (1.0D - up * 0.45D) * Math.sqrt((i * 0.618D) % 1.0D)
+                        : spread * Math.sqrt(share / PARENT_CLOUD_BASE_SHARE);
+                float scale = (float) (tower ? 12.0D + spread * 0.20D : 10.0D + spread * 0.18D);
+                // Every puff stands on the same floor, which is what makes the base of a shower cloud flat.
+                double y = Math.max(tower ? baseY + 8.0D + up * spread * 0.9D : baseY + (i % 3) * 2.5D, baseY + scale * 0.8D);
+                double px = base.x + Math.cos(angle) * radius;
+                double pz = base.z + Math.sin(angle) * radius;
+                puff.setPrevPosX(puff.getPosX());
+                puff.setPrevPosY(puff.getPosY());
+                puff.setPrevPosZ(puff.getPosZ());
+                puff.setPosX(px);
+                puff.setPosY(y);
+                puff.setPosZ(pz);
+                puff.setScale(scale);
+                // Dark underneath, lit on top.
+                float shade = tower ? 0.80F : 0.46F;
+                puff.setColor(shade, shade, shade * 1.04F);
+                float alpha = (tower ? 0.55F : 0.72F) * fade;
+                puff.setAlpha(alpha);
+                puff.setFullAlphaTarget(alpha);
+            }
         }
     }
 

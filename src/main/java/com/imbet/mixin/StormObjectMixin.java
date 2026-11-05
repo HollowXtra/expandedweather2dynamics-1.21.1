@@ -124,6 +124,7 @@ public abstract class StormObjectMixin {
         // RESHAPE ITSELF decides whether there is anything to do: the classic look stands the
         // cauliflower silhouette down but keeps the hurricane shield, which has its own switch.
         com.imbet.client.StormDeckCauliflower.reshape((StormObject) (Object) this);
+        com.imbet.client.ClientWeatherEffects.dropFakeDebris((StormObject) (Object) this);
     }
 
     /**

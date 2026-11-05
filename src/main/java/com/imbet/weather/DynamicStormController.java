@@ -71,9 +71,15 @@ public final class DynamicStormController {
             // its first server tick instead of letting it re-grow from defaults. A storm that
             // loaded fine from Weather2's NBT finds nothing here and loses nothing but one map
             // lookup - restore() consumes, so a deliberately gone storm cannot resurrect forever.
-            CompoundTag mirrored = StormAddonStateMirror.restore(serverLevel, storm.ID);
-            if (mirrored != null && !mirrored.isEmpty()) {
-                state.load(mirrored);
+            //
+            // Only on the state's first server tick. The mirror is saved again at the end of every tick, so restoring it
+            // every tick reloaded the storm's own state from a copy of itself each tick - a whole write and read per storm
+            // per tick - and wiped everything the copy does not carry, such as how fast the funnel's width was changing.
+            if (state.markServerStarted()) {
+                CompoundTag mirrored = StormAddonStateMirror.restore(serverLevel, storm.ID);
+                if (mirrored != null && !mirrored.isEmpty()) {
+                    state.load(mirrored);
+                }
             }
             applyNativeCycloneProgression(serverLevel, storm);
             state.tickServer(serverLevel, storm, gameTime);
@@ -182,6 +188,54 @@ public final class DynamicStormController {
         return Mth.clamp(Math.round(originalSize * state.widthMultiplier()), 3, visibleCap);
     }
 
+    /** The most a funnel's rings are drawn out to by Weather2 itself; past it the same rings are spread wider. */
+    private static final float FUNNEL_RING_RADIUS_CAP = 60.0F;
+
+    /**
+     * The radius the funnel's foot should be drawn at: half the storm's own visible width, unrounded. Weather2 creeps its
+     * own radius toward a whole-block target at a hundredth of a block a tick, so the drawn funnel used to lag the
+     * storm by minutes and kept creeping long after the storm had settled. A storm this mod does not size keeps
+     * {@code fallback}, the radius Weather2 already has.
+     */
+    public static float funnelDrawnBaseRadius(StormObject storm, float fallback) {
+        if (!Config.VARIABLE_WIDTHS_ENABLED.get() || storm == null || !isDynamicVortex(storm)) {
+            return fallback;
+        }
+        DynamicStormState state = stateFor(storm);
+        float cap = Math.max(3.0F, (float) Config.effectiveMaxVisibleFunnelWidthBlocks());
+        if (state.wideTornado()) {
+            cap = Math.max(cap, (float) Math.min(Config.milesToBlocks(3.0D), Math.max(state.visibleFunnelWidth(), Config.milesToBlocks(0.5D))));
+        }
+        float width = Config.TORNADO_REALISTIC_WIDTH_MODEL.get()
+                ? state.visibleFunnelWidth()
+                : fallback * 2.0F * state.widthMultiplier();
+        return Mth.clamp(width, 3.0F, cap) * 0.5F;
+    }
+
+    /**
+     * The radius Weather2's own rings are set to. Weather2 puts more puffs on a ring the wider it is, so a mile-wide
+     * funnel drawn at its full radius would need more puffs than the particle queue holds. Past the cap the rings are
+     * drawn at the cap and spread out to the full width instead, see {@link #funnelRingOverflow}.
+     */
+    public static float funnelRingBaseRadius(StormObject storm, float fallback) {
+        return Math.min(funnelDrawnBaseRadius(storm, fallback), FUNNEL_RING_RADIUS_CAP);
+    }
+
+    /** How much further out than Weather2's own ring a layer has to be drawn to stand at the storm's real width. */
+    private static float funnelRingOverflow(StormObject storm, int layerIndex) {
+        TornadoFunnelSimple funnel = storm == null ? null : storm.getTornadoFunnelSimple();
+        if (funnel == null || funnel.getConfig() == null) {
+            return 1.0F;
+        }
+        float drawn = funnel.getConfig().getRadiusOfBase();
+        float wanted = funnelDrawnBaseRadius(storm, drawn);
+        if (wanted <= drawn + 0.01F) {
+            return 1.0F;
+        }
+        float step = funnel.getConfig().getRadiusIncreasePerLayer() * layerIndex;
+        return (wanted + step) / Math.max(0.5F, drawn + step);
+    }
+
     /**
      * Where the shear wants the top of the funnel, against its foot, in blocks. It leans along the storm's own motion,
      * because the foot is held back by the ground while the cloud above carries on. A rope leans hard and a wedge stands
@@ -217,11 +271,15 @@ public final class DynamicStormController {
         return Mth.clamp(1.0D - (state.damagePathWidth() - 12.0D) / 450.0D, 0.0D, 1.0D);
     }
 
-    /** How far through roping out this funnel is: nought until the storm has peaked and started to fail. */
+    /**
+     * How far through roping out this funnel is: nought until it is in its last tornadic stage and failing, or being
+     * absorbed. A storm past its peak steps down through every stage on its way out, and counting the whole of that as a
+     * rope-out kept a violent tornado drawn as a thin leaning rope for most of its life.
+     */
     public static float funnelRopeOut(StormObject storm) {
-        float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
-        boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
-        return decaying ? Mth.clamp((1.0F - Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F)) * 1.55F, 0.0F, 1.0F) : 0.0F;
+        boolean absorbed = isAbsorbedOrDecaying(storm);
+        boolean lastStage = storm.hasStormPeaked && !storm.isGrowing && storm.levelCurIntensityStage <= StormObject.STATE_STAGE1;
+        return absorbed || lastStage ? Mth.clamp((1.0F - Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F)) * 1.55F, 0.0F, 1.0F) : 0.0F;
     }
 
     /** A layer's height up the column, 0 at the foot and 1 at the cloud base. */
@@ -234,24 +292,24 @@ public final class DynamicStormController {
             return Vec3.ZERO;
         }
         DynamicStormState state = stateFor(storm);
-        FunnelMorphology morphology = state.funnelMorphologyInForce();
-        if (morphology == FunnelMorphology.DEFAULT) {
-            return Vec3.ZERO;
+        double x = 0.0D;
+        double z = 0.0D;
+        for (FunnelMorphology shape : SHAPES) {
+            float share = state.shapeShare(shape);
+            if (share <= 0.001F || !shape.shaped()) {
+                continue;
+            }
+            Vec3 offset = shapeOffset(storm, state, shape, layerIndex, layerCount);
+            x += offset.x * share;
+            z += offset.z * share;
         }
-        if (morphology == FunnelMorphology.ELEPHANT_TRUNK && (!Config.TORNADO_ELEPHANT_TRUNK_ENABLED.get() || !canUseElephantTrunkVisuals(state))) {
-            return Vec3.ZERO;
-        }
-        if (morphology == FunnelMorphology.DRILL_BIT && !Config.TORNADO_DRILL_BIT_ENABLED.get()) {
-            return Vec3.ZERO;
-        }
-        if (morphology == FunnelMorphology.FLOATER && !Config.FLOATER_TORNADOES_ENABLED.get()) {
-            return Vec3.ZERO;
-        }
-        if (morphology == FunnelMorphology.WEDGE) {
-            return Vec3.ZERO;
-        }
-        float blend = state.funnelMorphologyBlend();
-        if (blend <= 0.001F) {
+        return x == 0.0D && z == 0.0D ? Vec3.ZERO : new Vec3(x, 0.0D, z);
+    }
+
+    /** One shape's bend of the axis at a layer, at full strength. */
+    private static Vec3 shapeOffset(StormObject storm, DynamicStormState state, FunnelMorphology morphology, int layerIndex, int layerCount) {
+        if (!shapeEnabled(state, morphology) || morphology == FunnelMorphology.WEDGE
+                || morphology == FunnelMorphology.CONE || morphology == FunnelMorphology.STOVEPIPE) {
             return Vec3.ZERO;
         }
         float fraction = layerFraction(storm, layerIndex, layerCount);
@@ -268,49 +326,60 @@ public final class DynamicStormController {
         Vec3 cross = new Vec3(-lean.z, 0.0D, lean.x);
         double bendLimit = Math.max(36.0D, Config.TORNADO_FUNNEL_BEND_MAX_BLOCKS.get()) * 1.35D;
         double widthScale = Math.max(7.0D, Math.min(Math.max(state.visibleFunnelWidth() * 0.34D, baseRadiusForWind(storm) * 0.78D), bendLimit));
-        if (morphology == FunnelMorphology.DRILL_BIT) {
-            double tightScale = Math.max(2.75D, Math.min(widthScale * 0.34D, 8.0D));
-            double helix = Math.sin(effective * Math.PI * 5.50D + state.trunkCurvePhase() * 2.25D) * tightScale * (0.20D + effective * 0.50D);
-            double wobble = Math.cos(effective * Math.PI * 3.10D + state.trunkCurvePhase()) * tightScale * 0.30D * Math.sin(effective * Math.PI);
-            return lean.scale(wobble * blend).add(cross.scale(helix * blend));
+        double phase = state.trunkCurvePhase();
+        switch (morphology) {
+            case DRILL_BIT -> {
+                double tightScale = Math.max(2.75D, Math.min(widthScale * 0.34D, 8.0D));
+                double helix = Math.sin(effective * Math.PI * 5.50D + phase * 2.25D) * tightScale * (0.20D + effective * 0.50D);
+                double wobble = Math.cos(effective * Math.PI * 3.10D + phase) * tightScale * 0.30D * Math.sin(effective * Math.PI);
+                return lean.scale(wobble).add(cross.scale(helix));
+            }
+            case FLOATER -> {
+                double floatScale = Math.max(4.0D, Math.min(widthScale * 0.42D, 14.0D));
+                double weave = Math.sin(effective * Math.PI * 2.35D + phase * 0.72D) * floatScale * 0.22D * Math.sin(effective * Math.PI);
+                double hook = Math.cos(effective * Math.PI * 1.60D + phase) * floatScale * 0.12D * effective;
+                return lean.scale(hook).add(cross.scale(weave));
+            }
+            case ROPE -> {
+                // A thin sinuous rope: a travelling snake that grows toward the ground.
+                double ropeScale = Math.max(2.2D, Math.min(widthScale * 0.22D, 5.0D));
+                double wiggle = Math.sin(effective * Math.PI * 3.2D + phase * 1.6D) * ropeScale * (0.35D + effective * 0.65D);
+                double snake = Math.sin(effective * Math.PI * 1.7D + phase * 0.9D) * ropeScale * 0.5D * Math.sin(effective * Math.PI);
+                return lean.scale(snake * 0.6D).add(cross.scale(wiggle * 0.72D + snake * 0.42D));
+            }
+            case CORKSCREW -> {
+                double twistScale = Math.max(3.5D, Math.min(widthScale * 0.34D, 9.0D));
+                double helix = Math.sin(effective * Math.PI * 4.2D + phase * 2.1D) * twistScale * (0.30D + effective * 0.45D);
+                double wobble = Math.cos(effective * Math.PI * 2.6D + phase) * twistScale * 0.35D * Math.sin(effective * Math.PI);
+                return lean.scale(wobble).add(cross.scale(helix));
+            }
+            case BOWL -> {
+                double sway = Math.sin(effective * Math.PI * 1.8D + phase * 0.8D) * widthScale * 0.16D * Math.sin(effective * Math.PI);
+                return cross.scale(sway);
+            }
+            default -> {
+                // The elephant trunk: a bow through the middle, a lean at the top and a hook at the foot.
+                double strength = state.trunkCurveStrength() * Math.max(1.12D, Config.TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH.get());
+                double neck = Mth.clamp(state.trunkNeckFraction(), 0.28F, 0.70F);
+                double neckPull = Math.sin(Mth.clamp((effective - neck + 0.32D) / 0.64D, 0.0D, 1.0D) * Math.PI);
+                double middleBow = Math.sin(effective * Math.PI) * widthScale * 0.82D;
+                double upperLean = effective * effective * widthScale * 0.34D;
+                double lowerHook = Math.sin((1.0D - effective) * Math.PI) * widthScale * 0.42D * Math.max(0.0D, 0.46D - effective);
+                double curl = Math.sin(effective * Math.PI * 2.70D + phase) * widthScale * 0.30D * effective;
+                double neckCurl = Math.cos(phase * 0.84D + effective * Math.PI * 3.35D) * widthScale * 0.16D * neckPull;
+                return lean.scale((middleBow + upperLean + lowerHook) * strength).add(cross.scale((curl + neckCurl) * strength));
+            }
         }
-        if (morphology == FunnelMorphology.FLOATER) {
-            double floatScale = Math.max(4.0D, Math.min(widthScale * 0.42D, 14.0D));
-            double weave = Math.sin(effective * Math.PI * 2.35D + state.trunkCurvePhase() * 0.72D) * floatScale * 0.22D * Math.sin(effective * Math.PI);
-            double hook = Math.cos(effective * Math.PI * 1.60D + state.trunkCurvePhase()) * floatScale * 0.12D * effective;
-            return lean.scale(hook * blend).add(cross.scale(weave * blend));
-        }
-        if (morphology == FunnelMorphology.ROPE) {
-            // thin sinuous rope: a strong traveling snake that grows near the ground
-            double ropeScale = Math.max(2.2D, Math.min(widthScale * 0.22D, 5.0D));
-            double wiggle = Math.sin(effective * Math.PI * 3.2D + state.trunkCurvePhase() * 1.6D) * ropeScale * (0.35D + effective * 0.65D);
-            double snake = Math.sin(effective * Math.PI * 1.7D + state.trunkCurvePhase() * 0.9D) * ropeScale * 0.5D * Math.sin(effective * Math.PI);
-            return lean.scale(snake * 0.6D * blend).add(cross.scale((wiggle * 0.72D + snake * 0.42D) * blend));
-        }
-        if (morphology == FunnelMorphology.CORKSCREW) {
-            // pronounced helical twist around the axis on a moderate body
-            double twistScale = Math.max(3.5D, Math.min(widthScale * 0.34D, 9.0D));
-            double helix = Math.sin(effective * Math.PI * 4.2D + state.trunkCurvePhase() * 2.1D) * twistScale * (0.30D + effective * 0.45D);
-            double wobble = Math.cos(effective * Math.PI * 2.6D + state.trunkCurvePhase()) * twistScale * 0.35D * Math.sin(effective * Math.PI);
-            return lean.scale(wobble * blend).add(cross.scale(helix * blend));
-        }
-        if (morphology == FunnelMorphology.BOWL) {
-            // the bowl shape lives in the width profile; just a gentle sway
-            double sway = Math.sin(effective * Math.PI * 1.8D + state.trunkCurvePhase() * 0.8D) * widthScale * 0.16D * Math.sin(effective * Math.PI);
-            return cross.scale(sway * blend);
-        }
-        if (morphology == FunnelMorphology.CONE || morphology == FunnelMorphology.STOVEPIPE) {
-            return Vec3.ZERO; // pure width-profile shapes
-        }
-        double strength = blend * state.trunkCurveStrength() * Math.max(1.12D, Config.TORNADO_ELEPHANT_TRUNK_CURVE_STRENGTH.get());
-        double neck = Mth.clamp(state.trunkNeckFraction(), 0.28F, 0.70F);
-        double neckPull = Math.sin(Mth.clamp((effective - neck + 0.32D) / 0.64D, 0.0D, 1.0D) * Math.PI);
-        double middleBow = Math.sin(effective * Math.PI) * widthScale * 0.82D;
-        double upperLean = effective * effective * widthScale * 0.34D;
-        double lowerHook = Math.sin((1.0D - effective) * Math.PI) * widthScale * 0.42D * Math.max(0.0D, 0.46D - effective);
-        double curl = Math.sin(effective * Math.PI * 2.70D + state.trunkCurvePhase()) * widthScale * 0.30D * effective;
-        double neckCurl = Math.cos(state.trunkCurvePhase() * 0.84D + effective * Math.PI * 3.35D) * widthScale * 0.16D * neckPull;
-        return lean.scale((middleBow + upperLean + lowerHook) * strength).add(cross.scale((curl + neckCurl) * strength));
+    }
+
+    /** Whether a shape is switched on in the config. A switched-off shape is drawn as a plain funnel. */
+    private static boolean shapeEnabled(DynamicStormState state, FunnelMorphology shape) {
+        return switch (shape) {
+            case ELEPHANT_TRUNK -> Config.TORNADO_ELEPHANT_TRUNK_ENABLED.get() && canUseElephantTrunkVisuals(state);
+            case DRILL_BIT -> Config.TORNADO_DRILL_BIT_ENABLED.get();
+            case FLOATER -> Config.FLOATER_TORNADOES_ENABLED.get();
+            default -> true;
+        };
     }
 
     /**
@@ -319,7 +388,7 @@ public final class DynamicStormController {
      * it descends, and anything anchored to the wall (horizontal vortices, radar) follows it.
      */
     public static float funnelLayerRadiusScale(StormObject storm, int layerIndex, int layerCount) {
-        float scale = funnelMorphologyRadiusScale(storm, layerIndex, layerCount);
+        float scale = funnelMorphologyRadiusScale(storm, layerIndex, layerCount) * funnelRingOverflow(storm, layerIndex);
         float pinch = funnelBreakdownPinch(storm, layerIndex, layerCount);
         return pinch >= 0.999F ? scale : scale * pinch;
     }
@@ -338,111 +407,108 @@ public final class DynamicStormController {
 
     /** How much wider than Weather2's taper a plain funnel is where it meets the cloud, on top of 1. */
     private static final float DEFAULT_FUNNEL_FLARE = 0.95F;
+    private static final FunnelMorphology[] SHAPES = FunnelMorphology.values();
 
     private static float funnelMorphologyRadiusScale(StormObject storm, int layerIndex, int layerCount) {
         float multivortexScale = multivortexParentLowerScale(storm, layerIndex, layerCount);
+        float fraction = layerFraction(storm, layerIndex, layerCount);
         if (storm == null || !storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout || layerCount <= 1) {
             return multivortexScale;
         }
         DynamicStormState state = stateFor(storm);
-        FunnelMorphology morphology = state.funnelMorphologyInForce();
-        if (morphology == FunnelMorphology.DEFAULT) {
-            // The shape everyone draws when asked to draw a tornado: a slender trunk that opens out fast as it nears the
-            // cloud. Weather2's own straight taper reads as a tube standing under the storm.
-            float up = layerFraction(storm, layerIndex, layerCount);
-            return multivortexScale * (1.0F + DEFAULT_FUNNEL_FLARE * up * up * up);
+        float scale = 0.0F;
+        float total = 0.0F;
+        for (FunnelMorphology shape : SHAPES) {
+            float share = state.shapeShare(shape);
+            if (share <= 0.001F) {
+                continue;
+            }
+            scale += shapeRadius(state, shape, fraction) * share;
+            total += share;
         }
-        if (morphology == FunnelMorphology.ELEPHANT_TRUNK && (!Config.TORNADO_ELEPHANT_TRUNK_ENABLED.get() || !canUseElephantTrunkVisuals(state))) {
-            return multivortexScale;
+        return (total > 0.0F ? scale / total : plainRadius(fraction)) * multivortexScale;
+    }
+
+    /**
+     * The plain funnel: the shape everyone draws when asked to draw a tornado, a slender trunk that opens out fast as it
+     * nears the cloud. Weather2's own straight taper reads as a tube standing under the storm.
+     */
+    private static float plainRadius(float fraction) {
+        return 1.0F + DEFAULT_FUNNEL_FLARE * fraction * fraction * fraction;
+    }
+
+    /**
+     * One shape's outline at a height, as a scale on the funnel's own radius. The width of the funnel is the storm's, so
+     * these are outlines rather than sizes: a rope is only chosen once the funnel is already thin, and is not made thin
+     * a second time here.
+     */
+    private static float shapeRadius(DynamicStormState state, FunnelMorphology shape, float fraction) {
+        if (!shapeEnabled(state, shape)) {
+            return plainRadius(fraction);
         }
-        if (morphology == FunnelMorphology.DRILL_BIT && !Config.TORNADO_DRILL_BIT_ENABLED.get()) {
-            return multivortexScale;
+        float topFlare = fraction * fraction * fraction;
+        switch (shape) {
+            case WEDGE -> {
+                float diameterScale = state.damagePathWidth() / Math.max(1.0F, state.visibleFunnelWidth());
+                float groundScale = Mth.clamp(Math.max(1.35F, diameterScale), 1.35F, 5.25F);
+                float shoulderScale = Mth.clamp(1.10F + diameterScale * 0.20F, 1.25F, 2.45F);
+                float groundWeight = 1.0F - smoothstep(Mth.clamp(fraction / 0.42F, 0.0F, 1.0F));
+                float upperTaper = smoothstep(Mth.clamp((fraction - 0.62F) / 0.38F, 0.0F, 1.0F));
+                float shoulderWeight = (float) Math.sin(Mth.clamp(fraction / 0.82F, 0.0F, 1.0F) * Math.PI) * (1.0F - upperTaper * 0.55F);
+                float wedge = 1.0F + groundWeight * (groundScale - 1.0F) + shoulderWeight * (shoulderScale - 1.0F) - upperTaper * 0.12F;
+                return Mth.clamp(wedge, 0.82F, groundScale);
+            }
+            case DRILL_BIT -> {
+                float lowerContact = 1.0F - smoothstep(Mth.clamp(fraction / 0.16F, 0.0F, 1.0F));
+                float upperTaper = smoothstep(Mth.clamp((fraction - 0.58F) / 0.42F, 0.0F, 1.0F));
+                return Mth.clamp(0.48F + upperTaper * 0.16F + lowerContact * 0.08F, 0.44F, 0.72F) + topFlare * 0.40F;
+            }
+            case FLOATER -> {
+                float lowerDetached = smoothstep(Mth.clamp(fraction / 0.24F, 0.0F, 1.0F));
+                float upperBase = smoothstep(Mth.clamp((fraction - 0.54F) / 0.46F, 0.0F, 1.0F));
+                float waist = 1.0F - Mth.clamp(Math.abs(fraction - 0.46F) / 0.34F, 0.0F, 1.0F);
+                return Mth.clamp(0.30F + lowerDetached * 0.30F + upperBase * 0.30F + waist * 0.10F, 0.28F, 0.95F);
+            }
+            case CONE -> {
+                // The textbook cone: narrow at the ground and widening steadily up to the cloud.
+                return Mth.lerp(fraction, 0.42F, 1.32F);
+            }
+            case STOVEPIPE -> {
+                // A tall even column with a slight taper at the top and a flare at its foot.
+                float topTaper = smoothstep(Mth.clamp((fraction - 0.80F) / 0.20F, 0.0F, 1.0F));
+                float baseFlare = 1.0F - smoothstep(Mth.clamp(fraction / 0.16F, 0.0F, 1.0F));
+                return Mth.clamp(1.0F - topTaper * 0.20F + baseFlare * 0.18F, 0.72F, 1.22F);
+            }
+            case ROPE -> {
+                // Even down its length with a slow ripple travelling along it, opening out into the cloud at the top.
+                float pulse = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 3.0D + state.trunkCurvePhase() * 1.7D);
+                return Mth.clamp(0.72F + (1.0F - fraction) * 0.10F + pulse * 0.06F, 0.68F, 0.92F) + topFlare * 0.50F;
+            }
+            case CORKSCREW -> {
+                float twist = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 4.0D + state.trunkCurvePhase() * 2.0D);
+                return Mth.clamp(0.62F + twist * 0.22F - fraction * 0.10F, 0.45F, 0.95F) + topFlare * 0.40F;
+            }
+            case BOWL -> {
+                // Flares into the cloud at the top, narrows to a waist and stands on a firm base.
+                float bowlFlare = smoothstep(Mth.clamp((fraction - 0.55F) / 0.45F, 0.0F, 1.0F));
+                float waist = 1.0F - smoothstep(Mth.clamp(Math.abs(fraction - 0.38F) / 0.24F, 0.0F, 1.0F));
+                float base = 1.0F - smoothstep(Mth.clamp(fraction / 0.18F, 0.0F, 1.0F));
+                return Mth.clamp(0.62F + bowlFlare * 0.66F + waist * 0.22F + base * 0.30F, 0.55F, 1.35F);
+            }
+            case ELEPHANT_TRUNK -> {
+                float neck = Mth.clamp(state.trunkNeckFraction(), 0.28F, 0.70F);
+                float neckNarrow = 1.0F - Mth.clamp(Math.abs(fraction - neck) / 0.31F, 0.0F, 1.0F);
+                float upperBase = smoothstep(Mth.clamp((fraction - 0.62F) / 0.38F, 0.0F, 1.0F));
+                float upperCapNarrow = smoothstep(Mth.clamp((fraction - 0.84F) / 0.16F, 0.0F, 1.0F));
+                float lowerContact = 1.0F - smoothstep(Mth.clamp(fraction / 0.16F, 0.0F, 1.0F));
+                float lowerRope = smoothstep(Mth.clamp((0.34F - fraction) / 0.34F, 0.0F, 1.0F));
+                float trunk = 0.62F - neckNarrow * 0.20F + upperBase * 0.42F - upperCapNarrow * 0.16F + lowerContact * 0.08F - lowerRope * 0.06F;
+                return Mth.clamp(trunk, 0.46F, 1.06F);
+            }
+            default -> {
+                return plainRadius(fraction);
+            }
         }
-        if (morphology == FunnelMorphology.FLOATER && !Config.FLOATER_TORNADOES_ENABLED.get()) {
-            return multivortexScale;
-        }
-        float blend = state.funnelMorphologyBlend();
-        if (blend <= 0.001F) {
-            return multivortexScale;
-        }
-        float fraction = layerFraction(storm, layerIndex, layerCount);
-        if (morphology == FunnelMorphology.WEDGE) {
-            float diameterScale = state.damagePathWidth() / Math.max(1.0F, state.visibleFunnelWidth());
-            float groundScale = Mth.clamp(Math.max(1.35F, diameterScale), 1.35F, 5.25F);
-            float shoulderScale = Mth.clamp(1.10F + diameterScale * 0.20F, 1.25F, 2.45F);
-            float groundWeight = 1.0F - smoothstep(Mth.clamp(fraction / 0.42F, 0.0F, 1.0F));
-            float upperTaper = smoothstep(Mth.clamp((fraction - 0.62F) / 0.38F, 0.0F, 1.0F));
-            float shoulderWeight = (float) Math.sin(Mth.clamp(fraction / 0.82F, 0.0F, 1.0F) * Math.PI) * (1.0F - upperTaper * 0.55F);
-            float wedgeScale = 1.0F + groundWeight * (groundScale - 1.0F) + shoulderWeight * (shoulderScale - 1.0F) - upperTaper * 0.12F;
-            wedgeScale = Mth.clamp(wedgeScale, 0.82F, groundScale);
-            return Mth.lerp(blend, 1.0F, wedgeScale) * multivortexScale;
-        }
-        if (morphology == FunnelMorphology.DRILL_BIT) {
-            float lowerContact = 1.0F - smoothstep(Mth.clamp(fraction / 0.16F, 0.0F, 1.0F));
-            float upperTaper = smoothstep(Mth.clamp((fraction - 0.58F) / 0.42F, 0.0F, 1.0F));
-            float drillScale = 0.18F + upperTaper * 0.10F + lowerContact * 0.05F;
-            drillScale = Mth.clamp(drillScale, 0.16F, 0.34F);
-            return Mth.lerp(blend, 1.0F, drillScale) * multivortexScale;
-        }
-        if (morphology == FunnelMorphology.FLOATER) {
-            float lowerDetached = smoothstep(Mth.clamp(fraction / 0.24F, 0.0F, 1.0F));
-            float upperBase = smoothstep(Mth.clamp((fraction - 0.54F) / 0.46F, 0.0F, 1.0F));
-            float waist = 1.0F - Mth.clamp(Math.abs(fraction - 0.46F) / 0.34F, 0.0F, 1.0F);
-            float floaterScale = 0.16F + lowerDetached * 0.20F + upperBase * 0.18F + waist * 0.10F;
-            floaterScale = Mth.clamp(floaterScale, 0.14F, 0.60F);
-            return Mth.lerp(blend, 1.0F, floaterScale) * multivortexScale;
-        }
-        if (morphology == FunnelMorphology.CONE) {
-            // textbook cone: narrow top, steadily widening to a solid ground base
-            float coneScale = Mth.lerp(fraction, 0.42F, 1.32F);
-            return Mth.lerp(blend, 1.0F, coneScale) * multivortexScale;
-        }
-        if (morphology == FunnelMorphology.STOVEPIPE) {
-            // tall uniform column with a slight taper at the top and a base flare
-            float topTaper = smoothstep(Mth.clamp((fraction - 0.80F) / 0.20F, 0.0F, 1.0F));
-            float baseFlare = 1.0F - smoothstep(Mth.clamp(fraction / 0.16F, 0.0F, 1.0F));
-            float pipe = 1.0F - topTaper * 0.20F + baseFlare * 0.18F;
-            pipe = Mth.clamp(pipe, 0.72F, 1.22F);
-            return Mth.lerp(blend, 1.0F, pipe) * multivortexScale;
-        }
-        if (morphology == FunnelMorphology.ROPE) {
-            // thin writhing rope: narrow all the way, slight taper to the ground
-            float pulse = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 3.0D + state.trunkCurvePhase() * 1.7D);
-            float rope = 0.24F + (1.0F - fraction) * 0.10F + pulse * 0.08F;
-            rope = Mth.clamp(rope, 0.20F, 0.46F);
-            return Mth.lerp(blend, 1.0F, rope) * multivortexScale;
-        }
-        if (morphology == FunnelMorphology.CORKSCREW) {
-            // helical body: the radius pulses around a moderate core as it twists
-            float twist = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 4.0D + state.trunkCurvePhase() * 2.0D);
-            float cork = 0.62F + twist * 0.22F - fraction * 0.10F;
-            cork = Mth.clamp(cork, 0.45F, 0.95F);
-            return Mth.lerp(blend, 1.0F, cork) * multivortexScale;
-        }
-        if (morphology == FunnelMorphology.BOWL) {
-            // Top flares into the wall cloud, narrows to a waist, then a firm base. The flare runs all
-            // the way up on purpose, so the topmost ring really is the widest ring in the funnel: a
-            // bowl's widest part is where it merges into the cloud base, not a rim that stops short of
-            // it. The top layer is deliberately NOT clamped back to the size of the layer underneath -
-            // the fix for the step at the top of this shape is the layer fraction the profile is read
-            // against (see layerFraction), which glides through Weather2's layer-count changes, not a
-            // ceiling on the top ring.
-            float topFlare = smoothstep(Mth.clamp((fraction - 0.55F) / 0.45F, 0.0F, 1.0F));
-            float waist = 1.0F - smoothstep(Mth.clamp(Math.abs(fraction - 0.38F) / 0.24F, 0.0F, 1.0F));
-            float base = 1.0F - smoothstep(Mth.clamp(fraction / 0.18F, 0.0F, 1.0F));
-            float bowl = 0.62F + topFlare * 0.66F + waist * 0.22F + base * 0.30F;
-            bowl = Mth.clamp(bowl, 0.55F, 1.35F);
-            return Mth.lerp(blend, 1.0F, bowl) * multivortexScale;
-        }
-        float neck = Mth.clamp(state.trunkNeckFraction(), 0.28F, 0.70F);
-        float neckNarrow = 1.0F - Mth.clamp(Math.abs(fraction - neck) / 0.31F, 0.0F, 1.0F);
-        float upperBase = smoothstep(Mth.clamp((fraction - 0.62F) / 0.38F, 0.0F, 1.0F));
-        float upperCapNarrow = smoothstep(Mth.clamp((fraction - 0.84F) / 0.16F, 0.0F, 1.0F));
-        float lowerContact = 1.0F - smoothstep(Mth.clamp(fraction / 0.16F, 0.0F, 1.0F));
-        float lowerRope = smoothstep(Mth.clamp((0.34F - fraction) / 0.34F, 0.0F, 1.0F));
-        float trunkScale = 0.44F - neckNarrow * 0.20F + upperBase * 0.42F - upperCapNarrow * 0.16F + lowerContact * 0.08F - lowerRope * 0.06F;
-        trunkScale = Mth.clamp(trunkScale, 0.30F, 0.88F);
-        return Mth.lerp(blend, 1.0F, trunkScale) * multivortexScale;
     }
 
     /**
@@ -546,14 +612,12 @@ public final class DynamicStormController {
     }
 
     public static float funnelParticleScale(StormObject storm, int layerIndex, int layerCount) {
-        float radiusScale = funnelLayerRadiusScale(storm, layerIndex, layerCount);
+        float overflow = funnelRingOverflow(storm, layerIndex);
+        float radiusScale = funnelLayerRadiusScale(storm, layerIndex, layerCount) / overflow;
         float multivortexScale = multivortexParentLowerScale(storm, layerIndex, layerCount);
-        if (radiusScale >= 0.999F && multivortexScale >= 0.999F) {
-            return 1.0F;
-        }
         float fraction = layerFraction(storm, layerIndex, layerCount);
         float topSoftening = Mth.lerp(fraction, 0.05F, 0.22F);
-        return Mth.clamp(radiusScale * 0.88F + topSoftening * multivortexScale, 0.06F, 1.20F);
+        return Mth.clamp(radiusScale * 0.88F + topSoftening * multivortexScale, 0.06F, 1.20F) * overflow;
     }
 
     public static boolean shouldCullMultivortexParentLayer(StormObject storm, int layerIndex, int layerCount) {
@@ -675,12 +739,8 @@ public final class DynamicStormController {
             return 0.0D;
         }
         DynamicStormState state = stateFor(storm);
-        FunnelMorphology morphology = state.funnelMorphologyInForce();
-        if (morphology == FunnelMorphology.FLOATER && Config.FLOATER_TORNADOES_ENABLED.get()) {
-            float blend = state.funnelMorphologyBlend();
-            if (blend <= 0.001F) {
-                return 0.0D;
-            }
+        float blend = Config.FLOATER_TORNADOES_ENABLED.get() ? state.shapeShare(FunnelMorphology.FLOATER) : 0.0F;
+        if (blend > 0.001F) {
             float fraction = layerFraction(storm, layerIndex, layerCount);
             double lowerWeight = 1.0D - smoothstep(Mth.clamp(fraction / 0.68F, 0.0F, 1.0F));
             double lift = Mth.clamp(18.0D + state.visibleFunnelWidth() * 0.22D, 18.0D, 64.0D);
@@ -1431,13 +1491,19 @@ public final class DynamicStormController {
      * deck whose biggest puffs hung almost to the ground.
      */
     public static double cloudBaseWorldY(StormObject storm) {
+        return Math.max(groundUnderStorm(storm) + CLOUD_BASE_MIN_CLEARANCE_BLOCKS, storm.pos.y - CLOUD_BASE_BELOW_DECK_BLOCKS);
+    }
+
+    /** How tall a storm's funnel is, ground to cloud base, in blocks. */
+    public static double funnelHeightBlocks(StormObject storm) {
+        return cloudBaseWorldY(storm) - groundUnderStorm(storm);
+    }
+
+    private static int groundUnderStorm(StormObject storm) {
         Level world = storm.manager == null ? null : storm.manager.getWorld();
         int ground = world == null ? UNLOADED_GROUND_Y
                 : world.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, Mth.floor(storm.pos.x), Mth.floor(storm.pos.z));
-        if (world != null && ground <= world.getMinBuildHeight() + 1) {
-            ground = UNLOADED_GROUND_Y;
-        }
-        return Math.max(ground + CLOUD_BASE_MIN_CLEARANCE_BLOCKS, storm.pos.y - CLOUD_BASE_BELOW_DECK_BLOCKS);
+        return world != null && ground <= world.getMinBuildHeight() + 1 ? UNLOADED_GROUND_Y : ground;
     }
 
     /**

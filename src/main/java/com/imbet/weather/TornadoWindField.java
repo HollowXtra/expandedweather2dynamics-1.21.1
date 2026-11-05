@@ -517,9 +517,19 @@ public final class TornadoWindField {
         // it was in. What holds the number up now is the health floor above (the storm's own base, which is
         // mostly the air mass) and the grounded EF0 floor in smoothLiveWind, and both of those are about a
         // funnel that is actually on the ground.
+        // A tornado someone summoned is the class it was summoned as. Its wind moves about inside that class with its
+        // intensity and the air, and the gusts ride on top at read time, but the air cannot carry it out of the class: a
+        // summoned F4 reads as an F4.
+        if (!storm.naturallySpawned) {
+            double lower = storm.hasStormPeaked ? 0.0D : stageFloor;
+            return Config.windMph(Mth.clamp(target, lower, Math.max(lower, stageCeiling)));
+        }
         double roomMph = potentialMph > 0.0D ? Math.max(bandMph, potentialMph) : stageCeiling;
+        // The boosts above may lift a storm a little past its room, not half as far again. At 1.45 they compounded with
+        // the stage promotion into a runaway: each promotion raised the band, which raised the target, which earned the
+        // next promotion, until any healthy storm reached the top of the scale.
         double upperBound = Math.min(Config.WINDFIELD_ENVIRONMENT_CEILING_MPH.get(),
-                Math.max(stageCeiling, roomMph * 1.45D * (drillBit ? 1.06D : 1.0D)));
+                Math.max(stageCeiling, roomMph * 1.10D * (drillBit ? 1.06D : 1.0D)));
         // The one place the strength dial is applied to a dynamic storm's wind. A setting of half makes the
         // whole number half, because it multiplies the answer instead of one of its terms.
         return Config.windMph(Mth.clamp(target, 0.0D, upperBound));
