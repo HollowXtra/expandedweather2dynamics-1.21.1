@@ -1,159 +1,17 @@
 {
-  "parent": "minecraft:block/block",
+  "parent": "minecraft:builtin/entity",
+  "gui_light": "side",
   "textures": {
-    "particle": "expandedweather2dynamics:block/instrument_metal",
-    "metal": "expandedweather2dynamics:block/instrument_metal",
-    "dark": "expandedweather2dynamics:block/instrument_dark",
-    "brass": "expandedweather2dynamics:block/instrument_brass",
-    "glass": "expandedweather2dynamics:block/instrument_glass"
+    "particle": "expandedweather2dynamics:block/instrument_metal"
   },
-  "elements": [
-    {
-      "comment": "Plinth.",
-      "from": [2.0, 0.0, 2.0],
-      "to": [14.0, 2.0, 14.0],
-      "faces": {
-        "north": { "texture": "#dark" },
-        "south": { "texture": "#dark" },
-        "east": { "texture": "#dark" },
-        "west": { "texture": "#dark" },
-        "up": { "texture": "#dark" },
-        "down": { "texture": "#dark" }
-      }
-    },
-    {
-      "comment": "Mast, drawn short: the item is a siren, not a scale drawing of one.",
-      "from": [7.0, 2.0, 7.0],
-      "to": [9.0, 11.0, 9.0],
-      "faces": {
-        "north": { "texture": "#metal" },
-        "south": { "texture": "#metal" },
-        "east": { "texture": "#metal" },
-        "west": { "texture": "#metal" },
-        "up": { "texture": "#metal" },
-        "down": { "texture": "#metal" }
-      }
-    },
-    {
-      "comment": "Bolted flange.",
-      "from": [6.0, 5.0, 6.0],
-      "to": [10.0, 6.0, 10.0],
-      "faces": {
-        "north": { "texture": "#dark" },
-        "south": { "texture": "#dark" },
-        "east": { "texture": "#dark" },
-        "west": { "texture": "#dark" },
-        "up": { "texture": "#metal" },
-        "down": { "texture": "#dark" }
-      }
-    },
-    {
-      "comment": "Control cabinet, against the mast.",
-      "from": [3.0, 2.0, 2.5],
-      "to": [10.0, 8.0, 7.0],
-      "faces": {
-        "north": { "texture": "#dark" },
-        "south": { "texture": "#dark" },
-        "east": { "texture": "#dark" },
-        "west": { "texture": "#dark" },
-        "up": { "texture": "#dark" },
-        "down": { "texture": "#dark" }
-      }
-    },
-    {
-      "comment": "Door vent.",
-      "from": [3.6, 3.0, 2.4],
-      "to": [9.4, 4.4, 2.5],
-      "faces": {
-        "north": { "texture": "#dark" },
-        "south": { "texture": "#dark" },
-        "east": { "texture": "#dark" },
-        "west": { "texture": "#dark" },
-        "up": { "texture": "#dark" },
-        "down": { "texture": "#dark" }
-      }
-    },
-    {
-      "comment": "Safety stripe above the vent.",
-      "from": [3.6, 6.2, 2.4],
-      "to": [9.4, 7.4, 2.5],
-      "faces": {
-        "north": { "texture": "#brass" },
-        "south": { "texture": "#brass" },
-        "east": { "texture": "#brass" },
-        "west": { "texture": "#brass" },
-        "up": { "texture": "#brass" },
-        "down": { "texture": "#brass" }
-      }
-    },
-    {
-      "comment": "Quadrant horn, pointing east. The cluster is four horns evenly spaced around the mast, and it is built by mirroring this box rather than by rotating it four times: an element rotation may only be -45/-22.5/0/22.5/45, so the 90-degree steps a four-horn cluster needs cannot be expressed as angles. One 45-degree spin applied to each of the four cardinal boxes gives the four diagonals instead.",
-      "from": [8.0, 11.5, 6.6],
-      "to": [15.0, 14.5, 9.4],
-      "rotation": { "origin": [8.0, 13.0, 8.0], "axis": "y", "angle": 45.0, "rescale": false },
-      "faces": {
-        "north": { "texture": "#metal" },
-        "south": { "texture": "#metal" },
-        "east": { "texture": "#metal" },
-        "west": { "texture": "#metal" },
-        "up": { "texture": "#metal" },
-        "down": { "texture": "#metal" }
-      }
-    },
-    {
-      "comment": "Quadrant horn, pointing west.",
-      "from": [1.0, 11.5, 6.6],
-      "to": [8.0, 14.5, 9.4],
-      "rotation": { "origin": [8.0, 13.0, 8.0], "axis": "y", "angle": 45.0, "rescale": false },
-      "faces": {
-        "north": { "texture": "#metal" },
-        "south": { "texture": "#metal" },
-        "east": { "texture": "#metal" },
-        "west": { "texture": "#metal" },
-        "up": { "texture": "#metal" },
-        "down": { "texture": "#metal" }
-      }
-    },
-    {
-      "comment": "Quadrant horn, pointing south.",
-      "from": [6.6, 11.5, 8.0],
-      "to": [9.4, 14.5, 15.0],
-      "rotation": { "origin": [8.0, 13.0, 8.0], "axis": "y", "angle": 45.0, "rescale": false },
-      "faces": {
-        "north": { "texture": "#metal" },
-        "south": { "texture": "#metal" },
-        "east": { "texture": "#metal" },
-        "west": { "texture": "#metal" },
-        "up": { "texture": "#metal" },
-        "down": { "texture": "#metal" }
-      }
-    },
-    {
-      "comment": "Quadrant horn, pointing north.",
-      "from": [6.6, 11.5, 1.0],
-      "to": [9.4, 14.5, 8.0],
-      "rotation": { "origin": [8.0, 13.0, 8.0], "axis": "y", "angle": 45.0, "rescale": false },
-      "faces": {
-        "north": { "texture": "#metal" },
-        "south": { "texture": "#metal" },
-        "east": { "texture": "#metal" },
-        "west": { "texture": "#metal" },
-        "up": { "texture": "#metal" },
-        "down": { "texture": "#metal" }
-      }
-    },
-    {
-      "comment": "Beacon dome above the cluster.",
-      "from": [7.0, 14.6, 7.0],
-      "to": [9.0, 16.0, 9.0],
-      "faces": {
-        "north": { "texture": "#brass" },
-        "south": { "texture": "#brass" },
-        "east": { "texture": "#brass" },
-        "west": { "texture": "#brass" },
-        "up": { "texture": "#glass" },
-        "down": { "texture": "#brass" }
-      }
-    }
-  ]
+  "display": {
+    "gui": { "rotation": [ 18, 215, 0 ], "translation": [ 0, -4.2, 0 ], "scale": [ 0.27, 0.27, 0.27 ] },
+    "ground": { "rotation": [ 0, 0, 0 ], "translation": [ 0, 1, 0 ], "scale": [ 0.16, 0.16, 0.16 ] },
+    "fixed": { "rotation": [ 0, 180, 0 ], "translation": [ 0, -4, 0 ], "scale": [ 0.28, 0.28, 0.28 ] },
+    "head": { "rotation": [ 0, 180, 0 ], "translation": [ 0, 8, 0 ], "scale": [ 0.4, 0.4, 0.4 ] },
+    "thirdperson_righthand": { "rotation": [ 15, 45, 0 ], "translation": [ 0, 1.5, 1 ], "scale": [ 0.2, 0.2, 0.2 ] },
+    "thirdperson_lefthand": { "rotation": [ 15, 45, 0 ], "translation": [ 0, 1.5, 1 ], "scale": [ 0.2, 0.2, 0.2 ] },
+    "firstperson_righthand": { "rotation": [ 0, 45, 0 ], "translation": [ 1, -1, 0 ], "scale": [ 0.22, 0.22, 0.22 ] },
+    "firstperson_lefthand": { "rotation": [ 0, 45, 0 ], "translation": [ 1, -1, 0 ], "scale": [ 0.22, 0.22, 0.22 ] }
+  }
 }

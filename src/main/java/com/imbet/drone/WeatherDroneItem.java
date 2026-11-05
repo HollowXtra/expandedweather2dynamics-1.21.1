@@ -63,6 +63,12 @@ public class WeatherDroneItem extends Item {
             return InteractionResultHolder.success(stack);
         }
         WeatherDroneEntity existing = findDrone(level, player);
+        // Off means no new airframes, not a stranded one: a drone already in the air can still be recalled by
+        // its pilot, so turning the switch off mid-flight cannot cost anybody the airframe or its flight log.
+        if (existing == null && !Config.DRONE_ENABLED.get()) {
+            player.displayClientMessage(Component.literal("Weather drones are switched off on this world"), true);
+            return InteractionResultHolder.fail(stack);
+        }
         if (existing != null) {
             // Recalling is the useful half: it brings the log home and saves walking.
             if (existing.linked() || existing.isPilotedBy(player)) {

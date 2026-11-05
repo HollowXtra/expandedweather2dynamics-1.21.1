@@ -80,7 +80,10 @@ public final class CelestialSky {
      * every machine and every time it is asked, and a shared random source would drift.
      */
     public static double roll(long day) {
-        long x = day * 0x9E3779B97F4A7C15L;
+        // The constant is what keeps day zero out of it. With a bare multiplication, zero stayed zero all the way
+        // through the mix and rolled exactly 0.0, which is under any chance at all - so every new world opened with
+        // a total eclipse at its very first noon, dimming the world to half for four minutes.
+        long x = day * 0x9E3779B97F4A7C15L ^ 0x6A09E667F3BCC909L;
         x ^= x >>> 30;
         x *= 0xBF58476D1CE4E5B9L;
         x ^= x >>> 27;

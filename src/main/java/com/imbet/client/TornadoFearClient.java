@@ -459,7 +459,10 @@ public final class TornadoFearClient {
         }
         float insideMultiplier = Config.TORNADO_IMMERSION_INSIDE_FOG_MULTIPLIER.get().floatValue();
         float coreCollapse = Mth.clamp(insideCoreIntensity * 0.70F * insideMultiplier, 0.0F, 1.0F);
-        float pressure = Mth.clamp(fearIntensity * 0.72F + insideDamagePathIntensity * 0.30F
+        // Cubed, so the dread only closes the air in once the funnel is nearly on top of you. Taken straight, a tornado three
+        // hundred blocks off drew the fog in to a hundred and seventy, and the thing being dreaded could not be seen.
+        float dread = fearIntensity * fearIntensity * fearIntensity;
+        float pressure = Mth.clamp(dread * 0.72F + insideDamagePathIntensity * 0.30F
                 + coreCollapse, 0.0F, 1.0F);
         float targetFar = Mth.lerp(pressure, event.getFarPlaneDistance(), 13.0F);
         if (Config.TORNADO_IMMERSION_EYE_EFFECT.get() && insideEyeIntensity > 0.02F) {

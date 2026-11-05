@@ -56,37 +56,18 @@ public final class ClientWeatherEffects {
      * sheet actually in use has a different mean.
      *
      * <p>All three are measured from the shipped PNG (mean alpha over one frame), not estimated - re-measure
-     * the regenerated figure whenever that sprite is drawn again. {@code TUNED} is the sheet the alphas
-     * below were written against, a frame mean of 0.296 some revisions back; the regenerated sheet is this
-     * mod's own {@code particles/modern/cloud256}, which is now the author's cloud puff used as supplied and
-     * measures a frame mean of 0.683 with a peak alpha of 255 and 59% of the frame above 200 (the funnel's
-     * sheets are the author's darker column puff and are not this compensation's business); and the
-     * original is Weather2's own {@code particles/cloud256}, the sheet every 1.12.2 storm was drawn against,
-     * whose frame mean is 13.2/255 = 0.052 with a peak of 81. So the compensation is 0.43 on the sheet in
-     * play - the dust is scaled *down*, because the sheet under it is now more than twice as dense as the one
-     * its alphas were tuned on - and about 5.7 on Weather2's own faint art, and the dust keeps the weight it
-     * was given either way, which is the point of expressing the alphas against the sheet they were tuned on
-     * rather than against whichever sheet happens to be shipping.
-     *
-     * <p>That matters more than it sounds, because the sheet has been redrawn five times now (0.296, then
-     * 0.347, then 0.392, then 0.486, then 0.290 - a change of shape rather than of density - and now the
-     * author's 0.683 puff). The alphas below are the storm's own loose dust - ground fog, the debris cloud,
-     * the kick-up under a vortex - and the compensation is what keeps the weight a player has always seen
-     * while the sheet underneath it changes. The cloud base changes with its own sheet instead, since it
-     * draws Weather2's own per-particle alphas rather than these and has no such ratio to lean on.
+     * the regenerated figure whenever {@code tools/TextureGen.java} draws that sprite again. {@code TUNED} is the
+     * sheet the alphas below were written against; the regenerated sheet is this mod's own
+     * {@code particles/modern/cloud256}; and the original is Weather2's own {@code particles/cloud256}, the sheet
+     * every 1.12.2 storm was drawn against, whose frame mean is 13.2/255 = 0.052 with a peak of 81.
      */
     private static final float CLOUD256_SPRITE_MEAN_ALPHA_TUNED = 0.296F;
-    private static final float CLOUD256_SPRITE_MEAN_ALPHA_REGENERATED = 0.683F;
+    private static final float CLOUD256_SPRITE_MEAN_ALPHA_REGENERATED = 0.290F;
     private static final float CLOUD256_SPRITE_MEAN_ALPHA_ORIGINAL = 0.052F;
     /**
-     * The vortex funnels used to be the other user of the dust sheet. They now have a puff of their own
-     * ({@code particles/modern/funnel} and the layered funnel's {@code cloud256combined}), the second of
-     * the two the author supplied: a frame mean of 0.466, a peak of 255, 43% of it above 200 and a mid
-     * grey of 104, with a harder edge than the cloud's and far less alpha left at its outer ring. It is
-     * darker than the cloud and sparser across its own square, so a column drawn with it is exactly as
-     * dense as the puff is - which is why this dial stays at full, because it can only hold density back
-     * and never put it back. Lower it toward 0.85 for a softer column, and note that no sheet's peak alpha
-     * is more than 255, so a knob can only ever hold density back here once the art is faint.
+     * The vortex funnels used to be the other user of the dust sheet. They now have one of their own
+     * ({@code particles/modern/funnel} and the layered funnel's {@code cloud256combined}), drawn in long vertical fibres.
+     * This dial can only hold a column's density back, so it stays at full.
      */
     public static final float FUNNEL_SPRITE_DENSITY_ALLOWANCE = 1.0F;
     /**
@@ -150,6 +131,7 @@ public final class ClientWeatherEffects {
             StormSkyClient.clear();
             return;
         }
+        SoftPuffs.tick(minecraft);
         stickDebrisSpawnedThisTick = 0;
         debrisCloudSpawnedThisTick = 0;
         structureParticlesSpawnedThisTick = 0;
@@ -187,8 +169,7 @@ public final class ClientWeatherEffects {
         float proximity = Mth.clamp((float) (1.0D - distance / 700.0D), 0.0F, 1.0F);
         // How much cloud and rain is over the player, rather than how near the storm's centre is: the
         // shade then follows the deck's own shape and ends at its edge. The distance ramp survives as
-        // the fallback for the config that turns cover off, and for the thick-cloud particles below,
-        // which are spawned around the player as the storm arrives and are about proximity, not cover.
+        // the fallback for the config that turns cover off.
         float cover = StormShade.cover(minecraft.level, minecraft.player.position());
         if (cover <= 0.0F && !Config.STORM_COVER_SHADING.get()) {
             cover = proximity;
@@ -197,7 +178,6 @@ public final class ClientWeatherEffects {
             float tint = Config.SEVERE_SKY_TINT_STRENGTH.get().floatValue() * cover;
             targetRain = tint;
             targetThunder = tint;
-            spawnThickClouds(minecraft.level, minecraft.player.position(), proximity);
         }
         smoothSky(minecraft.level, minecraft.player, manager, targetRain, targetThunder);
         for (StormObject vortexStorm : dynamicVorticesInRange(manager, minecraft.player.position(), LodViewDistance.extendSpawnRange(Config.TORNADO_DEBRIS_CLOUD_RENDER_RANGE_BLOCKS.get()))) {
@@ -241,20 +221,6 @@ public final class ClientWeatherEffects {
         }
     }
 
-    private static void spawnThickClouds(ClientLevel level, Vec3 playerPos, float proximity) {
-        int count = Math.max(1, (int) (proximity * 6.0F));
-        for (int i = 0; i < count; i++) {
-            double x = playerPos.x + (level.random.nextDouble() - 0.5D) * 60.0D;
-            double y = playerPos.y + 14.0D + level.random.nextDouble() * 14.0D;
-            double z = playerPos.z + (level.random.nextDouble() - 0.5D) * 60.0D;
-            Vec3 pos = new Vec3(x, y, z);
-            Vec3 velocity = new Vec3(0.0D, -0.01D, 0.0D);
-            if (!spawnWeather2Particle(level, pos, velocity, ParticleArt.cloud256(), 18.0F + proximity * 18.0F, 0.36F, 0.36F, 0.42F, 0.34F, 90, 0.04F)) {
-                level.addParticle(ParticleTypes.CLOUD, x, y, z, velocity.x, velocity.y, velocity.z);
-            }
-        }
-    }
-
     private static List<StormObject> dynamicVorticesInRange(WeatherManagerClient manager, Vec3 playerPos, double rangeBlocks) {
         List<StormObject> storms = new ArrayList<>();
         double rangeSqr = rangeBlocks * rangeBlocks;
@@ -291,8 +257,45 @@ public final class ClientWeatherEffects {
         }
     }
 
+    /** The storm whose structure is being spawned, for the air kept clear round its funnel. Null outside that. */
+    private static StormObject structureFunnelStorm;
+    private static double structureClearBelowY;
+    private static int structureGroundY;
+
+    /**
+     * Nothing of the storm's own may hang in the air round its funnel. Rain curtains, hook puffs, scud and the rest are
+     * all laid out round the mesocyclone, and the mesocyclone is where the tornado is, so left alone they pile up on
+     * exactly the thing a player has come to look at. Everything from the wall cloud's underside to the ground is kept
+     * out of a cylinder round the funnel's axis, wide enough for a puff's own width to miss it as well.
+     */
+    private static boolean inFunnelsClearAir(Vec3 pos, float scale) {
+        StormObject storm = structureFunnelStorm;
+        if (storm == null || pos.y >= structureClearBelowY || !storm.isTornadoFormingOrGreater()) {
+            return false;
+        }
+        double topY = DynamicStormController.funnelTopWorldY(storm);
+        float up = Double.isNaN(topY) ? 0.5F : (float) Mth.clamp((pos.y - (structureClearBelowY - (storm.pos.y - structureClearBelowY))) / Math.max(1.0D, topY - pos.y + 1.0D), 0.0F, 1.0F);
+        Vec3 axis = DynamicStormController.funnelLayerCenterAt(storm, up);
+        double wall = Math.max(DynamicStormController.funnelWallRadiusAt(storm, up), DynamicStormController.funnelWallRadiusAt(storm, 0.0F));
+        double clear = wall * 1.35D + 26.0D + scale * 0.5D;
+        double dx = pos.x - axis.x;
+        double dz = pos.z - axis.z;
+        return dx * dx + dz * dz < clear * clear;
+    }
+
     private static void spawnSupercellStructure(ClientLevel level, StormObject storm, DynamicStormState state) {
         SupercellStructureService.StructureSample structure = SupercellStructureService.sample(storm, state);
+        structureFunnelStorm = storm;
+        structureGroundY = stormGroundY(level, storm);
+        structureClearBelowY = visualY(level, storm.pos, structure.rainFreeBaseY() - wallCloudDepth(structure, state));
+        try {
+            spawnSupercellParts(level, storm, state, structure);
+        } finally {
+            structureFunnelStorm = null;
+        }
+    }
+
+    private static void spawnSupercellParts(ClientLevel level, StormObject storm, DynamicStormState state, SupercellStructureService.StructureSample structure) {
         float strength = state.supercellStructureStrength();
         if (Config.SUPERCELL_STRUCTURE_ANVIL_PARTICLES.get()) {
             spawnAnvilAndOvershootingTop(level, structure, strength);
@@ -318,22 +321,29 @@ public final class ClientWeatherEffects {
     }
 
     private static void spawnAnvilAndOvershootingTop(ClientLevel level, SupercellStructureService.StructureSample structure, float strength) {
-        int count = Mth.clamp(2 + (int) (strength * 5.0F), 2, 7);
+        double towerTop = updraftTowerTop(structure);
+        int count = level.random.nextFloat() < strength * 0.7F ? 1 : 0;
         for (int i = 0; i < count; i++) {
-            double along = (level.random.nextDouble() - 0.18D) * structure.radius() * 1.55D;
-            double lateral = (level.random.nextDouble() - 0.5D) * structure.radius() * 1.18D;
-            Vec3 base = structure.anvilCore().add(structure.forward().scale(along)).add(structure.right().scale(lateral));
-            Vec3 pos = new Vec3(base.x, visualY(level, base, 96.0D + level.random.nextDouble() * 42.0D), base.z);
-            Vec3 velocity = structure.forward().scale(0.018D + strength * 0.014D).add(0.0D, -0.002D, 0.0D);
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), 22.0F + level.random.nextFloat() * 22.0F, 0.72F, 0.72F, 0.78F, 0.24F, 150, 0.02F, ParticleTypes.CLOUD);
+            // A plume: narrow where it leaves the tower and fanning out with distance downshear.
+            double reach = Math.pow(level.random.nextDouble(), 0.8D);
+            double along = (reach * 3.0D - 0.25D) * structure.radius();
+            double lateral = (level.random.nextDouble() - 0.5D) * structure.radius() * (0.55D + reach * 1.9D);
+            Vec3 base = structure.updraft().add(structure.forward().scale(along)).add(structure.right().scale(lateral));
+            // Flat on top, because it has run into the tropopause, and thinning toward its far edge.
+            double thickness = 34.0D * (1.0D - reach * 0.6D);
+            Vec3 pos = new Vec3(base.x, visualY(level, base, towerTop - level.random.nextDouble() * thickness), base.z);
+            Vec3 velocity = structure.forward().scale(0.030D + strength * 0.020D).add(0.0D, -0.002D, 0.0D);
+            float shade = 0.80F + level.random.nextFloat() * 0.12F;
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), 34.0F + level.random.nextFloat() * 30.0F + (float) reach * 22.0F,
+                    shade, shade, shade * 1.03F, 0.30F * (1.0F - (float) reach * 0.5F), 220, 0.02F, ParticleTypes.CLOUD);
         }
 
         Vec3 top = structure.updraft();
-        Vec3 topPos = new Vec3(top.x, visualY(level, top, 126.0D + level.random.nextDouble() * 28.0D), top.z);
+        Vec3 topPos = new Vec3(top.x, visualY(level, top, towerTop + level.random.nextDouble() * 26.0D), top.z);
         spawnStructureParticle(level, topPos, new Vec3(0.0D, 0.026D + strength * 0.014D, 0.0D), ParticleArt.cloud256(), 18.0F + strength * 13.0F, 0.82F, 0.82F, 0.88F, 0.30F, 130, 0.01F, ParticleTypes.CLOUD);
 
         Vec3 back = structure.backShearedAnvil();
-        Vec3 backPos = new Vec3(back.x, visualY(level, back, 92.0D + level.random.nextDouble() * 30.0D), back.z);
+        Vec3 backPos = new Vec3(back.x, visualY(level, back, towerTop - 10.0D - level.random.nextDouble() * 26.0D), back.z);
         spawnStructureParticle(level, backPos, structure.forward().scale(-0.012D), ParticleArt.cloud256(), 18.0F + strength * 11.0F, 0.66F, 0.66F, 0.74F, 0.22F, 140, 0.02F, ParticleTypes.CLOUD);
     }
 
@@ -350,8 +360,9 @@ public final class ClientWeatherEffects {
         // lives for seconds, so the lowered base is built out of thousands of puffs rather than dozens.
         float particleSize = Mth.clamp(Config.SUPERCELL_STRUCTURE_WALL_CLOUD_PARTICLE_SIZE.get().floatValue(), 0.05F, 2.0F);
         double radius = Math.max(14.0D, structure.wallCloudDiameter() * 0.5D);
-        double loweredBaseOffset = Mth.clamp(structure.rainFreeBaseY() - state.wallCloudLoweringDepth(), 10.0D, structure.rainFreeBaseY());
-        int count = Mth.clamp(3 + (int) (strength * 9.0F), 3, 12);
+        double lowering = wallCloudDepth(structure, state);
+        double loweredBaseOffset = Mth.clamp(structure.rainFreeBaseY() - lowering, 10.0D, structure.rainFreeBaseY());
+        int count = Mth.clamp(1 + (int) (strength * 1.5F), 1, 2);
         for (int i = 0; i < count; i++) {
             double angle = level.random.nextDouble() * Math.PI * 2.0D;
             double cosAngle = Math.cos(angle);
@@ -361,15 +372,17 @@ public final class ClientWeatherEffects {
             if (horizontalDistance(base, structure.clearSlotCenter()) < radius * 0.34D && level.random.nextFloat() < 0.55F) {
                 continue;
             }
-            double raggedDrop = state.wallCloudLoweringDepth() * (0.18D + level.random.nextDouble() * 0.28D);
-            Vec3 pos = new Vec3(base.x, visualY(level, base, loweredBaseOffset - raggedDrop), base.z);
+            // A block of cloud rather than a plate: it fills the whole way from the lowered underside up into the base.
+            double fill = level.random.nextDouble() * lowering * 0.9D;
+            double raggedDrop = lowering * level.random.nextDouble() * 0.14D;
+            Vec3 pos = new Vec3(base.x, visualY(level, base, loweredBaseOffset - raggedDrop + fill), base.z);
             Vec3 tangent = new Vec3(-sinAngle * rotationSign, 0.0D, cosAngle * rotationSign);
             Vec3 inflow = structure.mesocyclone().subtract(structure.inflowSource());
             inflow = inflow.horizontalDistanceSqr() < 1.0E-5D ? structure.forward().scale(-1.0D) : new Vec3(inflow.x, 0.0D, inflow.z).normalize();
             Vec3 velocity = tangent.scale(0.026D + state.wallCloudRotationStrength() * 0.070D)
                     .add(inflow.scale(0.010D + state.inflowStrength() * 0.030D))
                     .add(0.0D, 0.002D + strength * 0.008D, 0.0D);
-            float puffSize = Mth.clamp((12.0F + strength * 18.0F) * particleSize, 0.9F, 40.0F);
+            float puffSize = Mth.clamp((16.0F + strength * 22.0F) * Math.max(0.55F, particleSize), 0.9F, 48.0F);
             spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), puffSize, 0.24F, 0.25F, 0.30F, 0.56F, 96, 0.16F, ParticleTypes.CLOUD);
         }
 
@@ -380,14 +393,14 @@ public final class ClientWeatherEffects {
         float scudScale = Config.SUPERCELL_STRUCTURE_WALL_CLOUD_SCUD_SIZE.get().floatValue();
         if (Config.SUPERCELL_STRUCTURE_WALL_CLOUD_ROTATION_PARTICLES.get()
                 && level.random.nextFloat() < Config.SUPERCELL_STRUCTURE_WALL_CLOUD_SCUD_CHANCE.get().floatValue()) {
-            int tags = Mth.clamp(3 + (int) (state.wallCloudRotationStrength() * 16.0F), 3, 22);
+            int tags = Mth.clamp(1 + (int) (state.wallCloudRotationStrength() * 3.0F), 1, 4);
             for (int i = 0; i < tags; i++) {
                 double angle = level.random.nextDouble() * Math.PI * 2.0D;
                 double cosAngle = Math.cos(angle);
                 double sinAngle = Math.sin(angle);
                 double distance = radius * (0.74D + level.random.nextDouble() * 0.34D);
                 Vec3 base = structure.wallCloudCenter().add(cosAngle * distance, 0.0D, sinAngle * distance);
-                double hang = 0.6D + level.random.nextDouble() * Math.max(2.2D, state.wallCloudLoweringDepth() * 0.30D);
+                double hang = 0.6D + level.random.nextDouble() * Math.max(2.2D, lowering * 0.30D);
                 Vec3 pos = new Vec3(base.x, visualY(level, base, loweredBaseOffset - hang), base.z);
                 Vec3 velocity = new Vec3(-sinAngle * rotationSign, 0.012D + strength * 0.014D, cosAngle * rotationSign)
                         .scale(0.052D + state.wallCloudRotationStrength() * 0.105D);
@@ -419,11 +432,11 @@ public final class ClientWeatherEffects {
         inflow = inflow.horizontalDistanceSqr() < 1.0E-5D
                 ? structure.forward().scale(-1.0D)
                 : new Vec3(inflow.x, 0.0D, inflow.z).normalize();
-        int count = Mth.clamp(2 + (int) (state.inflowStrength() * 10.0F), 2, 14);
+        int count = level.random.nextFloat() < state.inflowStrength() ? 1 : 0;
         for (int i = 0; i < count; i++) {
             Vec3 base = structure.inflowSource().lerp(structure.wallCloudCenter(), 0.20D + level.random.nextDouble() * 0.75D)
                     .add(structure.right().scale((level.random.nextDouble() - 0.5D) * 30.0D));
-            double drop = 1.6D + level.random.nextDouble() * Math.max(2.6D, state.wallCloudLoweringDepth() * 0.55D);
+            double drop = 1.6D + level.random.nextDouble() * Math.max(2.6D, wallCloudDepth(structure, state) * 0.55D);
             Vec3 pos = new Vec3(base.x, visualY(level, base, loweredBaseOffset - drop), base.z);
             Vec3 tangent = new Vec3(-inflow.z * rotationSign, 0.0D, inflow.x * rotationSign);
             Vec3 velocity = inflow.scale(0.045D + state.inflowStrength() * 0.095D)
@@ -440,12 +453,12 @@ public final class ClientWeatherEffects {
             return;
         }
 
-        int baseCount = Mth.clamp(2 + (int) (strength * 5.0F), 2, 7);
+        int baseCount = level.random.nextFloat() < strength * 0.6F ? 1 : 0;
         // The storm's flat skirt. Real base strata spread well beyond the tower's footprint -
         // the reference look is a base noticeably wider than the stem - so the skirt rings
         // extend out past the wall cloud diameter and cluster in two altitude sheets to read
         // as stratified layers rather than one slab.
-        double skirtRadius = Math.max(30.0D, structure.wallCloudDiameter() * 0.85D);
+        double skirtRadius = Math.max(60.0D, Math.max(structure.wallCloudDiameter() * 1.5D, structure.radius() * 0.72D));
         long skirtSeed = (stormSeedOffset(structure) * 0x9E3779B97F4A7C15L) >>> 16;
         for (int i = 0; i < baseCount; i++) {
             boolean innerSheet = (i & 1) == 0;
@@ -466,10 +479,37 @@ public final class ClientWeatherEffects {
             Vec3 velocity = structure.forward().scale(0.006D + strength * 0.012D).add(structure.right().scale(-0.004D)).add(0.0D, 0.001D, 0.0D);
             float sheetShade = innerSheet ? 0.58F : 0.48F;
             spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(),
-                    20.0F + strength * 20.0F + level.random.nextFloat() * 10.0F,
-                    sheetShade * 0.60F, sheetShade * 0.62F, sheetShade * 0.70F, 0.20F, 132, 0.02F, ParticleTypes.CLOUD);
+                    26.0F + strength * 24.0F + level.random.nextFloat() * 12.0F,
+                    sheetShade * 0.60F, sheetShade * 0.62F, sheetShade * 0.70F, 0.26F, 170, 0.02F, ParticleTypes.CLOUD);
         }
 
+        // The inflow tail: a low smooth band of cloud reaching out from the wall cloud along the air feeding it, thinning
+        // with distance. The air it is made of is on its way in, so it drifts inward as it goes.
+        float inflow = state.inflowStrength();
+        if (inflow > 0.08F) {
+            Vec3 toWall = structure.wallCloudCenter().subtract(structure.inflowSource());
+            Vec3 inward = toWall.horizontalDistanceSqr() < 1.0E-5D ? structure.forward().scale(-1.0D) : new Vec3(toWall.x, 0.0D, toWall.z).normalize();
+            int tailCount = level.random.nextFloat() < inflow ? 1 : 0;
+            for (int i = 0; i < tailCount; i++) {
+                double t = level.random.nextDouble();
+                Vec3 base = structure.wallCloudCenter().lerp(structure.inflowSource(), t)
+                        .add(structure.right().scale((level.random.nextDouble() - 0.5D) * (20.0D + t * 34.0D)));
+                Vec3 pos = new Vec3(base.x, visualY(level, base, structure.rainFreeBaseY() - wallCloudDepth(structure, state) * 0.35D * (1.0D - t) - level.random.nextDouble() * 5.0D), base.z);
+                spawnStructureParticle(level, pos, inward.scale(0.05D + inflow * 0.08D), ParticleArt.cloud256(),
+                        16.0F + (float) t * 12.0F + level.random.nextFloat() * 7.0F,
+                        0.40F, 0.42F, 0.48F, 0.28F * (1.0F - (float) t * 0.6F), 120, 0.02F, ParticleTypes.CLOUD);
+            }
+        }
+    }
+
+    /** How far the wall cloud hangs below the base. The state's depth was chosen for a base forty-odd blocks up. */
+    private static double wallCloudDepth(SupercellStructureService.StructureSample structure, DynamicStormState state) {
+        return Math.min(state.wallCloudLoweringDepth() * Mth.clamp(structure.rainFreeBaseY() / 44.0D, 1.0D, 3.0D), structure.rainFreeBaseY() * 0.20D);
+    }
+
+    /** How high the storm's rotating tower reaches above the ground: a storm's width or so above its base. */
+    private static double updraftTowerTop(SupercellStructureService.StructureSample structure) {
+        return structure.rainFreeBaseY() + Mth.clamp(90.0D + structure.radius() * 0.55D, 110.0D, 240.0D);
     }
 
     /** Storm-derived but direction-free seed, so the skirt's deterministic slots differ per storm without leaning on position. */
@@ -483,9 +523,9 @@ public final class ClientWeatherEffects {
             return;
         }
         double rotationSign = DynamicStormController.visualRotationSign(storm);
-        int count = Mth.clamp(2 + (int) (meso * 10.0F), 2, 12);
-        double towerRadius = Math.max(18.0D, structure.wallCloudDiameter() * (structure.mode() == SupercellStructureService.SupercellMode.LP ? 0.38D : 0.48D));
-        double top = Mth.clamp(112.0D + structure.radius() * 0.24D, 108.0D, 176.0D);
+        int count = level.random.nextFloat() < meso ? 1 : 0;
+        double towerRadius = Math.max(36.0D, structure.radius() * (structure.mode() == SupercellStructureService.SupercellMode.LP ? 0.32D : 0.40D));
+        double top = updraftTowerTop(structure);
         // A real updraft base is one coherent mass, not a swarm: the storm keeps re-condensing
         // in the same vertical column, so each puff regenerates near where its predecessor sat.
         // Puffs are drawn against a deterministic stem of the storm id (not the game clock), so
@@ -516,7 +556,7 @@ public final class ClientWeatherEffects {
             Vec3 base = structure.updraft()
                     .add(cosAngle * radius, 0.0D, sinAngle * radius)
                     .add(structure.forward().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.05D));
-            double height = Mth.lerp(band, structure.rainFreeBaseY() + 10.0D, top);
+            double height = Mth.lerp(band, structure.rainFreeBaseY() + 6.0D, top);
             // Upward drift carries each lobe slowly into the row above it, which is what makes
             // the stack read as boiling rather than as three static rings of puffs.
             Vec3 tangent = new Vec3(-sinAngle * rotationSign, 0.0D, cosAngle * rotationSign);
@@ -528,11 +568,13 @@ public final class ClientWeatherEffects {
             // reads as rounded knuckles instead of a smooth gradient.
             float crownShade = (float) Mth.lerp(band, 0.46D, 0.80D);
             float underShade = crownShade * 0.72F;
-            float shade = level.random.nextBoolean() ? crownShade : underShade;
+            // The bands: shelves of light and dark that wind round the drum as it turns.
+            float striation = 0.86F + 0.14F * (float) Math.sin(band * Math.PI * 9.0D + angle * rotationSign);
+            float shade = (level.random.nextBoolean() ? crownShade : underShade) * striation;
             Vec3 pos = new Vec3(base.x, visualY(level, base, height), base.z);
             spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(),
-                    (24.0F + meso * 22.0F + level.random.nextFloat() * 14.0F) * (float) (0.88D + 0.24D * band),
-                    shade * 0.58F, shade * 0.60F, shade * 0.68F, 0.36F + meso * 0.22F, 156, 0.07F, ParticleTypes.CLOUD);
+                    (30.0F + meso * 26.0F + level.random.nextFloat() * 16.0F) * (float) (0.88D + 0.30D * band),
+                    shade * 0.80F, shade * 0.82F, shade * 0.90F, 0.36F + meso * 0.22F, 200, 0.07F, ParticleTypes.CLOUD);
         }
     }
 
@@ -541,14 +583,14 @@ public final class ClientWeatherEffects {
         if (rfd <= 0.10F) {
             return;
         }
-        int count = Mth.clamp(1 + (int) (rfd * 4.0F), 1, 5);
+        int count = level.random.nextFloat() < rfd * 0.5F ? 1 : 0;
         for (int i = 0; i < count; i++) {
             Vec3 base = structure.clearSlotCenter()
                     .add(structure.forward().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.22D))
                     .add(structure.right().scale((level.random.nextDouble() - 0.45D) * structure.radius() * 0.18D));
             Vec3 outward = base.subtract(structure.mesocyclone());
             outward = outward.horizontalDistanceSqr() < 1.0E-5D ? structure.forward().add(structure.right()).normalize() : new Vec3(outward.x, 0.0D, outward.z).normalize();
-            Vec3 pos = new Vec3(base.x, visualY(level, base, 14.0D + level.random.nextDouble() * 34.0D), base.z);
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 14.0D + level.random.nextDouble() * structure.rainFreeBaseY() * 0.45D), base.z);
             Vec3 velocity = outward.scale(0.070D + rfd * 0.092D).add(0.0D, -0.018D, 0.0D);
             spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud,
                     5.5F + rfd * 7.5F, 0.42F, 0.40F, 0.36F, 0.24F, 58, 0.18F, ParticleTypes.CLOUD);
@@ -561,7 +603,7 @@ public final class ClientWeatherEffects {
             return;
         }
 
-        int hookCount = Mth.clamp(1 + (int) (meso * 5.0F), 1, 6);
+        int hookCount = level.random.nextFloat() < meso * 0.5F ? 1 : 0;
         for (int i = 0; i < hookCount; i++) {
             double angle = level.random.nextDouble() * Math.PI * 2.0D;
             double cosAngle = Math.cos(angle);
@@ -572,20 +614,22 @@ public final class ClientWeatherEffects {
             towardMeso = towardMeso.horizontalDistanceSqr() < 1.0E-5D ? structure.forward().scale(-1.0D) : new Vec3(towardMeso.x, 0.0D, towardMeso.z).normalize();
             Vec3 hookCurl = structure.right().scale(-0.040D - meso * 0.060D).add(towardMeso.scale(0.035D + meso * 0.050D));
             Vec3 pos = new Vec3(base.x, visualY(level, base, 12.0D + level.random.nextDouble() * Math.max(24.0D, structure.rainFreeBaseY())), base.z);
-            spawnStructureParticle(level, pos, hookCurl.add(0.0D, 0.010D + meso * 0.014D, 0.0D), ParticleRegistry.cloud, 5.6F + meso * 7.8F, 0.30F, 0.32F, 0.37F, 0.50F, 64, 0.20F, ParticleTypes.CLOUD);
+            spawnStructureParticle(level, pos, hookCurl.add(0.0D, 0.010D + meso * 0.014D, 0.0D), ParticleRegistry.cloud, 5.6F + meso * 7.8F, 0.30F, 0.32F, 0.37F, 0.22F, 64, 0.20F, ParticleTypes.CLOUD);
         }
 
         if (structure.mode() == SupercellStructureService.SupercellMode.HP) {
-            int wrapCount = Mth.clamp(2 + (int) ((state.ffdStrength() + state.rfdStrength()) * 5.0F), 2, 9);
+            int wrapCount = Mth.clamp((int) ((state.ffdStrength() + state.rfdStrength()) * 1.5F), 0, 3);
             for (int i = 0; i < wrapCount; i++) {
                 Vec3 base = structure.hookEchoNotch().lerp(structure.rainWrapCurtain(), level.random.nextDouble())
                         .add(structure.forward().scale((level.random.nextDouble() - 0.45D) * structure.radius() * 0.24D))
                         .add(structure.right().scale((level.random.nextDouble() - 0.50D) * structure.radius() * 0.18D));
-                Vec3 pos = new Vec3(base.x, visualY(level, base, 8.0D + level.random.nextDouble() * 52.0D), base.z);
+                Vec3 pos = new Vec3(base.x, visualY(level, base, 8.0D + level.random.nextDouble() * structure.rainFreeBaseY() * 0.92D), base.z);
                 Vec3 velocity = structure.forward().scale(0.038D + state.ffdStrength() * 0.050D)
                         .add(structure.right().scale(-0.024D - state.rfdStrength() * 0.040D))
                         .add(0.0D, -0.042D - state.ffdStrength() * 0.050D, 0.0D);
-                spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), 10.0F + state.ffdStrength() * 13.0F, 0.24F, 0.27F, 0.34F, 0.56F, 72, 0.16F, ParticleTypes.RAIN);
+                // The frayed falling-rain sheet: a rain-wrapped storm's curtain is rain. Drawn in cloud it was a dark cloud of
+                // smoke standing beside the tornado.
+                spawnStructureParticle(level, pos, velocity, RainShaftSprites.virgaSheet(level.random, 0.55F), 18.0F + state.ffdStrength() * 16.0F, 0.52F, 0.56F, 0.64F, 0.24F, 72, 0.16F, ParticleTypes.RAIN);
             }
         } else if (structure.mode() == SupercellStructureService.SupercellMode.LP && state.hailCoreStrength() > 0.24F) {
             int hailCount = Mth.clamp(1 + (int) (state.hailCoreStrength() * 5.0F), 1, 6);
@@ -593,24 +637,27 @@ public final class ClientWeatherEffects {
                 Vec3 base = structure.hailShaft()
                         .add(structure.forward().scale((level.random.nextDouble() - 0.35D) * structure.radius() * 0.36D))
                         .add(structure.right().scale((level.random.nextDouble() - 0.50D) * structure.radius() * 0.28D));
-                Vec3 pos = new Vec3(base.x, visualY(level, base, 32.0D + level.random.nextDouble() * 62.0D), base.z);
+                Vec3 pos = new Vec3(base.x, visualY(level, base, 12.0D + level.random.nextDouble() * structure.rainFreeBaseY() * 0.92D), base.z);
                 Vec3 velocity = structure.forward().scale(0.018D).add(structure.right().scale(-0.010D)).add(0.0D, -0.24D - state.hailCoreStrength() * 0.18D, 0.0D);
                 spawnStructureParticle(level, pos, velocity, ParticleRegistry.groundSplash, 0.80F + state.hailCoreStrength() * 0.95F, 0.86F, 0.92F, 1.00F, 0.62F, 30, 0.02F, ParticleTypes.RAIN);
             }
         }
     }
 
+    private static final int FLANKING_TOWERS = 5;
+
     private static void spawnFlankingLine(ClientLevel level, SupercellStructureService.StructureSample structure, float strength) {
-        int count = Mth.clamp(1 + (int) (strength * 4.0F), 1, 4);
+        int count = strength > 0.2F && level.random.nextBoolean() ? 1 : 0;
         for (int i = 0; i < count; i++) {
-            double t = level.random.nextDouble();
+            double t = (level.random.nextInt(FLANKING_TOWERS) + 0.5D) / FLANKING_TOWERS;
             Vec3 base = structure.flankingLineStart().lerp(structure.flankingLineEnd(), t)
-                    .add(structure.right().scale((level.random.nextDouble() - 0.5D) * (14.0D + t * 18.0D)));
-            double towerHeight = 22.0D + t * 58.0D + level.random.nextDouble() * 26.0D;
+                    .add(structure.right().scale((level.random.nextDouble() - 0.5D) * (10.0D + t * 12.0D)))
+                    .add(structure.forward().scale((level.random.nextDouble() - 0.5D) * (10.0D + t * 12.0D)));
+            double towerHeight = structure.rainFreeBaseY() + level.random.nextDouble() * (18.0D + t * t * (updraftTowerTop(structure) - structure.rainFreeBaseY()) * 0.62D);
             Vec3 pos = new Vec3(base.x, visualY(level, base, towerHeight), base.z);
             Vec3 velocity = structure.forward().scale(0.010D).add(structure.right().scale(-0.006D)).add(0.0D, 0.010D + t * 0.012D, 0.0D);
-            float scale = (float) (6.0D + t * 12.0D + level.random.nextDouble() * 7.0D);
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), scale, 0.70F, 0.70F, 0.76F, 0.30F + (float) t * 0.18F, 96, 0.03F, ParticleTypes.CLOUD);
+            float scale = (float) (14.0D + t * 22.0D + level.random.nextDouble() * 9.0D);
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), scale, 0.74F, 0.74F, 0.80F, 0.32F + (float) t * 0.18F, 150, 0.03F, ParticleTypes.CLOUD);
         }
     }
 
@@ -621,7 +668,7 @@ public final class ClientWeatherEffects {
      */
     private static void spawnForwardFlankPrecip(ClientLevel level, SupercellStructureService.StructureSample structure, float ffdStrength, float hailCoreStrength, float character) {
         float density = Mth.lerp(0.30F, 1.40F, Mth.clamp(character, 0.0F, 1.0F));
-        int count = Mth.clamp((int) Math.round((1 + (int) (ffdStrength * 5.0F)) * density), character < 0.30F ? 0 : 1, 7);
+        int count = Mth.clamp((int) Math.round((1 + (int) (ffdStrength * 2.0F)) * density), 0, 3);
         if (count <= 0) {
             return;
         }
@@ -631,18 +678,18 @@ public final class ClientWeatherEffects {
             Vec3 base = structure.forwardFlank()
                     .add(structure.forward().scale((level.random.nextDouble() - 0.3D) * structure.radius() * 0.62D))
                     .add(structure.right().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.48D));
-            Vec3 pos = new Vec3(base.x, visualY(level, base, 30.0D + level.random.nextDouble() * 46.0D), base.z);
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 12.0D + level.random.nextDouble() * structure.rainFreeBaseY() * 0.92D), base.z);
             Vec3 velocity = structure.forward().scale(0.035D + ffdStrength * 0.045D).add(0.0D, -0.18D - ffdStrength * 0.07D, 0.0D);
             if (hailCoreStrength > 0.30F && level.random.nextFloat() < hailChance * 0.45F) {
                 spawnStructureParticle(level, pos, velocity, ParticleRegistry.groundSplash, 0.65F + hailCoreStrength * 0.75F, 0.86F, 0.90F, 0.96F, 0.55F, 26, 0.02F, ParticleTypes.RAIN);
             } else {
-                spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud, 3.0F + ffdStrength * 4.0F, 0.46F, 0.50F, 0.58F, 0.46F, 46, 0.12F, ParticleTypes.RAIN);
+                spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud, 3.0F + ffdStrength * 4.0F, 0.46F, 0.50F, 0.58F, 0.26F, 46, 0.12F, ParticleTypes.RAIN);
             }
         }
     }
 
     private static void spawnRearFlankGustFront(ClientLevel level, SupercellStructureService.StructureSample structure, float rfdStrength) {
-        int count = Mth.clamp(1 + (int) (rfdStrength * 4.0F), 1, 5);
+        int count = level.random.nextFloat() < rfdStrength * 0.12F ? 1 : 0;
         for (int i = 0; i < count; i++) {
             Vec3 base = structure.gustFrontLeft().lerp(structure.gustFrontRight(), level.random.nextDouble());
             Vec3 outward = new Vec3(base.x - structure.mesocyclone().x, 0.0D, base.z - structure.mesocyclone().z);
@@ -653,7 +700,7 @@ public final class ClientWeatherEffects {
             }
             Vec3 pos = new Vec3(base.x, visualY(level, base, 1.2D + level.random.nextDouble() * 4.0D), base.z);
             Vec3 velocity = outward.scale(0.09D + rfdStrength * 0.15D).add(0.0D, 0.012D, 0.0D);
-            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud, 5.0F + rfdStrength * 6.0F, 0.50F, 0.48F, 0.44F, 0.44F, 54, 0.20F, ParticleTypes.CLOUD);
+            spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud, 12.0F + rfdStrength * 8.0F, 0.50F, 0.48F, 0.44F, 0.10F, 60, 0.20F, ParticleTypes.CLOUD);
         }
     }
 
@@ -688,7 +735,7 @@ public final class ClientWeatherEffects {
         Vec3 base = structure.anvilCore()
                 .add(structure.forward().scale((level.random.nextDouble() - 0.35D) * structure.radius() * 1.12D))
                 .add(structure.right().scale((level.random.nextDouble() - 0.5D) * structure.radius() * 0.86D));
-        Vec3 pos = new Vec3(base.x, visualY(level, base, 74.0D + level.random.nextDouble() * 26.0D), base.z);
+        Vec3 pos = new Vec3(base.x, visualY(level, base, updraftTowerTop(structure) - 44.0D - level.random.nextDouble() * 26.0D), base.z);
         Vec3 velocity = new Vec3(0.0D, -0.035D - level.random.nextDouble() * 0.035D, 0.0D).add(structure.forward().scale(0.008D));
         if (level.random.nextFloat() < 0.62F) {
             // A shaft: the frayed falling-rain texture, so it reads as precipitation dissolving rather
@@ -890,17 +937,17 @@ public final class ClientWeatherEffects {
                 * (float) Mth.lerp(0.55D, 1.0D, condensationReach);
         double visibleRadius = Math.max(6.0D, state.visibleFunnelWidth() * 0.5D);
         double radiusOfMaxWind = Math.max(4.0D, DynamicStormController.radiusOfMaxWind(storm));
-        double clearRadius = Mth.clamp(Math.max(visibleRadius + 10.0D, radiusOfMaxWind * 0.28D), 9.0D, 512.0D);
-        double cloudRadius = clearRadius + Mth.clamp(Math.max(22.0D, visibleRadius * 0.64D + maxWind / 14.0D), 22.0D, 145.0D) * sizeFactor;
+        double clearRadius = Mth.clamp(Math.max(visibleRadius + 3.0D, radiusOfMaxWind * 0.28D), 6.0D, 512.0D);
+        double cloudRadius = clearRadius + Mth.clamp(Math.max(12.0D, visibleRadius * 0.70D + maxWind / 24.0D), 12.0D, 90.0D) * sizeFactor;
         // A forming tornado's whirl is thin and faint; it only fills out into the mature debris cloud as
         // the condensation comes down. At full reach this is 1.0, so a formed tornado's dust cloud is
         // exactly what it was before the genesis timeline existed.
         float genesisDimming = 0.30F + 0.70F * condensationReach;
         float density = Config.TORNADO_DEBRIS_CLOUD_DENSITY.get().floatValue() * context.gust() * densityFactor;
-        int attempts = Mth.clamp((int) Math.round((12.0D + maxWind / 17.0D + (cloudRadius - clearRadius) / 3.6D) * density * genesisDimming), 6, 74);
+        int attempts = Mth.clamp((int) Math.round((12.0D + maxWind / 17.0D + (cloudRadius - clearRadius) / 3.6D) * density * genesisDimming * 0.27D), 3, 20);
         if (!DynamicStormController.suppressMultivortexParentDust(storm)) {
             double coreRadius = Mth.clamp(Math.max(visibleRadius * 0.76D, radiusOfMaxWind * 0.42D), 4.0D, 96.0D);
-            int coreAttempts = Mth.clamp((int) Math.round((8.0D + maxWind / 20.0D + coreRadius / 6.0D) * density * genesisDimming), 4, 44);
+            int coreAttempts = Mth.clamp((int) Math.round((8.0D + maxWind / 20.0D + coreRadius / 6.0D) * density * genesisDimming * 0.19D), 1, 8);
             spawnDebrisCloudCore(level, storm, storm.pos, coreRadius, maxWind, coreAttempts, (float) formation, heightFactor, genesisDimming, context);
             spawnDebrisCloudAround(level, storm, storm.pos, clearRadius, cloudRadius, maxWind, attempts, (float) formation, heightFactor, genesisDimming, context);
             if (!water) {
@@ -1047,8 +1094,8 @@ public final class ClientWeatherEffects {
             double wallBias = level.random.nextFloat() < 0.72F ? 0.60D + 0.40D * level.random.nextDouble() : 0.22D + 0.38D * level.random.nextDouble();
             // How far up the funnel this dust particle sits: concentrated near the ground, but the
             // luckiest particles climb 55-75% of the funnel - the tall collar in the reference.
-            double climbCap = funnelShaped ? (0.30D + wallBias * 0.60D) * heightFactor : 0.0D;
-            double heightFraction = Math.pow(level.random.nextDouble(), 2.1D) * Mth.clamp(climbCap, 0.04D, 0.75D);
+            double climbCap = funnelShaped ? (0.10D + wallBias * 0.18D) * heightFactor : 0.0D;
+            double heightFraction = Math.pow(level.random.nextDouble(), 2.1D) * Mth.clamp(climbCap, 0.03D, 0.30D);
             double wallRadiusAt = funnelShaped
                     ? Math.max(2.0D, DynamicStormController.funnelWallRadiusAt(storm, (float) heightFraction))
                     : Math.max(1.0D, coreRadius);
@@ -1061,7 +1108,7 @@ public final class ClientWeatherEffects {
             double sampleX = axisX + cosAngle * distance;
             double sampleZ = axisZ + sinAngle * distance;
             Vec3 groundSample = new Vec3(sampleX, center.y, sampleZ);
-            int groundY = vortexGroundY(level, groundSample);
+            int groundY = dustGroundY(level, storm, groundSample);
             boolean raining = level.isRainingAt(BlockPos.containing(sampleX, groundY + 1, sampleZ));
             float rainFactor = raining ? 0.50F : 1.0F;
             double wall = Mth.clamp(wallBias, 0.0D, 1.0D);
@@ -1070,17 +1117,9 @@ public final class ClientWeatherEffects {
             double height = funnelShaped
                     ? Math.max(0.4D, (funnelTopY - groundY) * heightFraction)
                     : Math.pow(level.random.nextDouble(), 1.9D) * Mth.clamp(3.0D + maxWind / 34.0D + wall * 3.6D, 3.6D, 13.5D) * heightFactor;
-            Vec3 pos = new Vec3(sampleX, groundY + 0.28D + height, sampleZ);
             boolean dustyFoot = heightFraction < 0.08D || wall > 0.85D;
-            Vec3 radial = new Vec3(cosAngle, 0.0D, sinAngle);
-            Vec3 tangent = new Vec3(-sinAngle * rotationSign, 0.0D, cosAngle * rotationSign);
-            // Spin eases slightly with height (wind falls off aloft); inflow stays gentle and inward.
-            double spinFade = 1.0D - heightFraction * 0.35D;
-            Vec3 velocity = tangent.scale((0.055D + maxWind * 0.00070D + wall * 0.045D) * spinFade)
-                    .add(radial.scale(-0.012D - wall * 0.016D))
-                    .add(0.0D, dustyFoot ? 0.008D + wall * 0.020D : 0.014D + wall * 0.030D + heightFraction * 0.012D, 0.0D);
             // Puffs grow slightly as they climb - the sheath feathers out instead of staying a tube.
-            float scale = (float) Mth.clamp(8.0D + wallRadiusAt * 0.20D + wall * 12.0D + heightFraction * 26.0D + level.random.nextDouble() * 9.0D, 7.0D, 44.0D) * heightFactor;
+            float scale = (float) Mth.clamp(wallRadiusAt * (0.42D + wall * 0.26D) + heightFraction * 10.0D + level.random.nextDouble() * 3.0D, 2.5D, 22.0D) * heightFactor;
             // Denser at the foot, thinning with height: the dark debris collar fading into condensation.
             float altitudeFade = (float) Mth.clamp(1.0D - heightFraction * 0.55D, 0.45D, 1.0D);
             float alpha = (float) Mth.clamp((0.24D + wall * 0.14D + maxWind / 1600.0D + (dustyFoot ? 0.10D : 0.0D)) * altitudeFade * intensityScale * context.gust() * rainFactor, 0.16D, 0.48D);
@@ -1090,7 +1129,13 @@ public final class ClientWeatherEffects {
             }
             alpha *= debrisCloudOpacity() * genesisDimming;
             DustTone tone = toneFor(level, groundSample, dustyFoot, false, context);
-            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 36 + level.random.nextInt(48));
+            int maxAge = 44 + level.random.nextInt(52);
+            // A share of the climb left to do, over the life it has to do it in, so the luckiest puffs get furthest up.
+            double funnelHeight = funnelShaped ? Math.max(8.0D, funnelTopY - groundY) : 28.0D;
+            double climbTo = funnelHeight * Mth.clamp(climbCap, 0.03D, 0.30D);
+            spawnSpiralDust(level, storm, angle, distance, groundY + 0.28D, height, funnelHeight,
+                    dustWallSpeed(maxWind, wallRadiusAt), rotationSign, 2.4D / maxAge, Math.max(0.0D, climbTo - height) * 1.3D / maxAge,
+                    0.74D + wall * 0.34D, scale, alpha, tone, maxAge);
         }
     }
 
@@ -1127,7 +1172,7 @@ public final class ClientWeatherEffects {
                     ? clearRadius + Math.pow(level.random.nextDouble(), 1.75D) * bearingRing * 0.52D
                     : clearRadius + Math.sqrt(level.random.nextDouble()) * bearingRing;
             Vec3 groundSample = center.add(cosAngle * distance, 0.0D, sinAngle * distance);
-            int groundY = vortexGroundY(level, groundSample);
+            int groundY = dustGroundY(level, storm, groundSample);
             boolean raining = level.isRainingAt(BlockPos.containing(groundSample.x, groundY + 1, groundSample.z));
             float rainFactor = raining ? 0.50F : 1.0F;
             double nearWall = Mth.clamp(1.0D - (distance - clearRadius) / ringWidth, 0.0D, 1.0D);
@@ -1147,16 +1192,10 @@ public final class ClientWeatherEffects {
                 heightLimit = Math.max(heightLimit, 6.0D);
             }
             double height = Math.pow(level.random.nextDouble(), lowGroundBowl ? 2.3D : loftedCurtain ? 1.08D : 1.35D) * heightLimit;
-            Vec3 pos = new Vec3(groundSample.x, groundY + 0.35D + height, groundSample.z);
-            Vec3 radialOut = new Vec3(cosAngle, 0.0D, sinAngle);
-            Vec3 tangent = new Vec3(-sinAngle * rotationSign, 0.0D, cosAngle * rotationSign);
-            Vec3 velocity = tangent.scale(0.040D + maxWind * 0.00052D + nearWall * 0.032D)
-                    .add(radialOut.scale(0.010D + outerShelf * 0.020D))
-                    .add(0.0D, lowGroundBowl ? 0.006D + nearWall * 0.014D : loftedCurtain ? 0.024D + nearWall * 0.032D : 0.016D + nearWall * 0.030D, 0.0D);
-            float scale = (float) Mth.clamp((lowGroundBowl ? 13.0D : loftedCurtain ? 10.0D : 7.0D) + ringWidth * 0.22D + outerShelf * 8.0D + level.random.nextDouble() * 10.0D, 7.0D, 40.0D) * heightFactor;
+            float scale = (float) Mth.clamp(clearRadius * (lowGroundBowl ? 0.42D : loftedCurtain ? 0.34D : 0.26D) + outerShelf * 4.0D + level.random.nextDouble() * 4.0D, 3.0D, 20.0D) * heightFactor;
             float alpha = (float) Mth.clamp(((lowGroundBowl ? 0.34D : loftedCurtain ? 0.22D : 0.20D) + nearWall * 0.13D - outerShelf * 0.10D + maxWind / 1500.0D) * intensityScale * context.gust() * rainFactor, 0.12D, 0.52D);
             if (lowGroundBowl) {
-                scale = Mth.clamp(scale * 1.15F, 9.0F, 46.0F);
+                scale = Mth.clamp(scale * 1.15F, 3.0F, 23.0F);
                 alpha = Mth.clamp(alpha + 0.07F, 0.16F, 0.60F);
             }
             if (water) {
@@ -1164,7 +1203,13 @@ public final class ClientWeatherEffects {
             }
             alpha *= debrisCloudOpacity() * genesisDimming;
             DustTone tone = toneFor(level, groundSample, lowGroundBowl, loftedCurtain, context);
-            spawnDebrisCloudParticle(level, pos, velocity, scale, alpha, tone, 30 + level.random.nextInt(52));
+            int maxAge = 48 + level.random.nextInt(64);
+            double funnelHeight = funnelShaped ? Math.max(8.0D, funnelTopY - groundY) : 28.0D;
+            // Slow enough that the ones born at the edge die part of the way in, so there is always a skirt out there
+            // and it is always on its way toward the wall.
+            spawnSpiralDust(level, storm, angle, distance, groundY + 0.35D, height, funnelHeight,
+                    dustWallSpeed(maxWind, clearRadius), rotationSign, 1.5D / maxAge, heightLimit * (lowGroundBowl ? 0.5D : 1.6D) / maxAge,
+                    1.05D, scale, alpha, tone, maxAge);
         }
     }
 
@@ -1176,7 +1221,7 @@ public final class ClientWeatherEffects {
      */
     private static void spawnSurfaceDirtKickup(ClientLevel level, StormObject storm, Vec3 center, double coreRadius, double clearRadius, double maxWind, double formation, float dryness) {
         double kickupFactor = formation * (0.30D + 0.70D * dryness) * Config.TORNADO_DEBRIS_CLOUD_KICKUP_DENSITY.get();
-        int attempts = Mth.clamp((int) Math.round((2.5D + maxWind / 26.0D) * kickupFactor), 1, 14);
+        int attempts = Mth.clamp((int) Math.round((2.5D + maxWind / 26.0D) * kickupFactor * 0.35D), 0, 5);
         double rotationSign = DynamicStormController.visualRotationSign(storm);
         long gameTime = level.getGameTime();
         double footprintBearing = TornadoFootprint.motionBearing(storm.motion);
@@ -1244,6 +1289,31 @@ public final class ClientWeatherEffects {
         spawnDustCloudParticle(level, pos, velocity, scale, alpha, tone, maxAge, ParticleTypes.POOF);
     }
 
+    /**
+     * How fast dust goes round at the funnel's wall, in blocks a tick. A turn takes about the same time on any funnel of
+     * a given strength up to thirty blocks or so, and past that a wider funnel turns more slowly, because a mile-wide
+     * wedge going round in two seconds looks like a toy.
+     */
+    private static double dustWallSpeed(double maxWind, double wallRadius) {
+        double perTick = (0.055D + maxWind * 0.00040D) * Mth.clamp(30.0D / Math.max(1.0D, wallRadius), 0.42D, 1.0D);
+        return perTick * Math.max(1.0D, wallRadius);
+    }
+
+    /** One puff of a tornado's dust on its way round the foot. See {@link SpiralPuff}. */
+    private static void spawnSpiralDust(ClientLevel level, StormObject storm, double angle, double radius, double groundY, double height, double funnelHeight,
+                                        double wallSpeed, double rotationSign, double inflow, double climb, double wallShare,
+                                        float scale, float alpha, DustTone tone, int maxAge) {
+        if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get() || ParticleArt.cloud256() == null || SoftPuffs.crowded()) {
+            return;
+        }
+        debrisCloudSpawnedThisTick++;
+        float soilGrey = (tone.red() + tone.green() + tone.blue()) / 3.0F;
+        DustTone muted = storm.isFirenado ? tone : new DustTone(
+                Math.min(1.0F, Mth.lerp(FUNNEL_FOOT_GREYING, tone.red(), soilGrey) * DUST_LIFT), Math.min(1.0F, Mth.lerp(FUNNEL_FOOT_GREYING, tone.green(), soilGrey) * DUST_LIFT), Math.min(1.0F, Mth.lerp(FUNNEL_FOOT_GREYING, tone.blue(), soilGrey) * DUST_LIFT));
+        dressDustPuff(new SpiralPuff(level, storm, angle, radius, groundY, height, funnelHeight, wallSpeed, rotationSign, inflow, climb, wallShare),
+                scale, alpha, muted, maxAge);
+    }
+
     private static void spawnDustCloudParticle(ClientLevel level, Vec3 pos, Vec3 velocity, float scale, float alpha, DustTone tone, int maxAge, ParticleOptions fallback) {
         if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get()) {
             return;
@@ -1253,12 +1323,15 @@ public final class ClientWeatherEffects {
             level.addParticle(fallback, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
             return;
         }
-        EntityRotFX particle = new EntityRotFX(level, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
+        dressDustPuff(new EntityRotFX(level, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z), scale, alpha, tone, maxAge);
+    }
+
+    private static void dressDustPuff(EntityRotFX particle, float scale, float alpha, DustTone tone, int maxAge) {
         particle.setSprite(ParticleArt.cloud256());
         particle.setScale(Mth.clamp(scale, 0.05F, 180.0F));
         particle.setColor(tone.red(), tone.green(), tone.blue());
-        float clampedAlpha = Mth.clamp((Mth.clamp(alpha * 1.32F + 0.12F, 0.24F, 0.96F)
-                * cloud256AlphaCompensation()), 0.0F, 0.96F);
+        float clampedAlpha = Mth.clamp((Mth.clamp(alpha * 1.10F + 0.04F, 0.08F, 0.90F)
+                * cloud256AlphaCompensation()), 0.0F, 0.90F);
         particle.setAlpha(clampedAlpha);
         particle.setFullAlphaTarget(clampedAlpha);
         particle.setTicksFadeInMax(Math.min(16.0F, maxAge * 0.30F));
@@ -1453,7 +1526,7 @@ public final class ClientWeatherEffects {
         double maxRadius = Math.max(Math.max(radius + 2.0D, DynamicStormController.baseRadiusForWind(storm) * 0.72D),
                 Math.min(stormState.damagePathWidth() * 0.5D, 512.0D));
         int attempts = Mth.clamp((int) (TornadoWindField.maxWindMph(storm) / 85.0D), 1, 4);
-        float density = Config.SUB_VORTEX_STICK_DENSITY.get().floatValue() * 0.55F;
+        float density = Config.SUB_VORTEX_STICK_DENSITY.get().floatValue() * 0.20F;
         double rotationSign = DynamicStormController.rotationSign(storm);
         for (int i = 0; i < attempts; i++) {
             double angle = level.random.nextDouble() * Math.PI * 2.0D;
@@ -1532,16 +1605,22 @@ public final class ClientWeatherEffects {
             for (int i = 0; i < count; i++) {
                 Vec3 pos = event.isLine() ? randomLineParticle(level, event) : randomVortexParticle(level, event);
                 Vec3 velocity = event.isLine() ? lineVelocity(level, event) : swirlVelocity(event, pos);
+                // Most of a dust whirl's body is its own rings. These are only the loose edge of it, and at the old rate they
+                // heaped up round the foot into a solid brown dome.
+                if (event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.GUSTNADO) {
+                    continue;
+                }
                 if (event.type() == StormSubtype.WATERSPOUT) {
                     Vec3 sprayVelocity = new Vec3(velocity.x * 0.45D, 0.035D + level.random.nextDouble() * 0.035D, velocity.z * 0.45D);
-                    spawnCloud256Particle(level, pos, sprayVelocity, 1.35F + level.random.nextFloat() * 0.85F, 0.62F, 0.70F, 0.80F, 0.38F, 22, 0.02F);
+                    // Spray is the brightest thing in the scene, so it takes the lighter sheet.
+                    spawnWeather2ParticleDirect(level, pos, sprayVelocity, ParticleArt.funnelSprite(), 1.35F + level.random.nextFloat() * 0.85F, 0.94F, 0.97F, 1.00F, 0.34F, 22, 0.02F);
                     Vec3 mistPos = pos.add(0.0D, 0.18D + level.random.nextDouble() * 0.65D, 0.0D);
                     Vec3 mistVelocity = new Vec3(velocity.x * 0.22D, 0.018D, velocity.z * 0.22D);
-                    spawnCloud256Particle(level, mistPos, mistVelocity, 2.1F + level.random.nextFloat() * 1.7F, 0.62F, 0.66F, 0.74F, 0.24F, 28, 0.03F);
+                    spawnWeather2ParticleDirect(level, mistPos, mistVelocity, ParticleArt.funnelSprite(), 2.1F + level.random.nextFloat() * 1.7F, 0.90F, 0.93F, 0.98F, 0.20F, 28, 0.03F);
                 } else if (event.type() == StormSubtype.DUST_DEVIL) {
                     Vec3 dustVelocity = new Vec3(velocity.x, 0.02D + level.random.nextDouble() * 0.03D, velocity.z);
                     DustTone tone = dustTone(level, pos);
-                    if (!spawnWeather2Particle(level, pos, dustVelocity, ParticleArt.cloud256(), 4.6F + level.random.nextFloat() * 3.8F, tone.red(), tone.green(), tone.blue(), 0.48F, 60, 0.12F)) {
+                    if (!spawnWeather2Particle(level, pos, dustVelocity, ParticleArt.cloud256(), 1.8F + level.random.nextFloat() * 1.6F, Math.min(1.0F, tone.red() * DUST_LIFT), Math.min(1.0F, tone.green() * DUST_LIFT), Math.min(1.0F, tone.blue() * DUST_LIFT), 0.48F, 60, 0.12F)) {
                         level.addParticle(ParticleTypes.POOF, pos.x, pos.y, pos.z, dustVelocity.x, dustVelocity.y, dustVelocity.z);
                     }
                 } else if (event.type() == StormSubtype.SNOW_DEVIL) {
@@ -1555,10 +1634,10 @@ public final class ClientWeatherEffects {
                             : new Vec3(event.motion().x, 0.0D, event.motion().z).normalize().scale(0.09D + event.maxWindMph() * 0.0012D);
                     Vec3 gustVelocity = new Vec3(velocity.x * 0.42D + forward.x, 0.010D + level.random.nextDouble() * 0.026D, velocity.z * 0.42D + forward.z);
                     float darkBlend = level.random.nextFloat();
-                    float red = Mth.lerp(darkBlend, 0.22F, 0.52F);
-                    float green = Mth.lerp(darkBlend, 0.22F, 0.46F);
-                    float blue = Mth.lerp(darkBlend, 0.21F, 0.39F);
-                    if (!spawnWeather2Particle(level, pos, gustVelocity, ParticleArt.cloud256(), 8.5F + level.random.nextFloat() * 7.5F, red, green, blue, 0.58F, 70, 0.22F)) {
+                    float red = Mth.lerp(darkBlend, 0.46F, 0.70F);
+                    float green = Mth.lerp(darkBlend, 0.42F, 0.62F);
+                    float blue = Mth.lerp(darkBlend, 0.36F, 0.52F);
+                    if (!spawnWeather2Particle(level, pos, gustVelocity, ParticleArt.cloud256(), 3.6F + level.random.nextFloat() * 3.4F, red, green, blue, 0.22F, 70, 0.22F)) {
                         level.addParticle(ParticleTypes.POOF, pos.x, pos.y, pos.z, gustVelocity.x, gustVelocity.y, gustVelocity.z);
                     }
                 } else if (event.type() == StormSubtype.FIRE_WHIRL) {
@@ -1593,11 +1672,11 @@ public final class ClientWeatherEffects {
     }
 
     private static void spawnWildfireVisual(ClientLevel level, AddonWeatherEvent event) {
-        int count = Mth.clamp((int) (event.radius() / 8.0F), 6, 26);
+        int count = Mth.clamp((int) (event.radius() / 45.0F), 1, 4);
         for (int i = 0; i < count; i++) {
             Vec3 pos = randomFireWeatherParticle(level, event, 0.0D, Math.max(10.0D, event.radius()));
             Vec3 velocity = new Vec3((level.random.nextDouble() - 0.5D) * 0.035D, 0.035D + level.random.nextDouble() * 0.095D, (level.random.nextDouble() - 0.5D) * 0.035D);
-            if (!spawnWeather2Particle(level, pos, velocity, ParticleArt.cloud256(), 8.0F + level.random.nextFloat() * 12.0F, 0.16F, 0.15F, 0.14F, 0.52F, 80, 0.05F)) {
+            if (!spawnWeather2Particle(level, pos, velocity, ParticleArt.cloud256(), 6.0F + level.random.nextFloat() * 9.0F, 0.50F, 0.48F, 0.46F, 0.13F, 80, 0.05F)) {
                 level.addParticle(ParticleTypes.LARGE_SMOKE, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
             }
             if (level.random.nextFloat() < 0.24F) {
@@ -1607,7 +1686,7 @@ public final class ClientWeatherEffects {
     }
 
     private static void spawnFlammagenitusVisual(ClientLevel level, AddonWeatherEvent event) {
-        int count = Mth.clamp((int) (event.radius() / 10.0F), 10, 34);
+        int count = Mth.clamp((int) (event.radius() / 70.0F), 1, 4);
         for (int i = 0; i < count; i++) {
             double height = 18.0D + Math.pow(level.random.nextDouble(), 0.62D) * 120.0D;
             Vec3 pos = randomFireWeatherParticle(level, event, height, event.radius());
@@ -1876,7 +1955,7 @@ public final class ClientWeatherEffects {
         double radiusMultiplier = event.type() == StormSubtype.GUSTNADO ? 2.85D : event.type() == StormSubtype.FIRE_WHIRL ? 1.45D : event.type() == StormSubtype.DUST_DEVIL || event.type() == StormSubtype.SNOW_DEVIL ? 1.15D : 1.0D;
         double radius = Math.sqrt(level.random.nextDouble()) * event.radius() * radiusMultiplier;
         double y = vortexGroundY(level, event.position());
-        double baseOffset = event.type() == StormSubtype.LANDSPOUT ? Math.max(5.5D, event.radius() * 0.72D) : event.type() == StormSubtype.FLOATER_TORNADO ? Math.max(12.0D, event.position().y - y) : 0.2D;
+        double baseOffset = event.type() == StormSubtype.LANDSPOUT ? 0.45D : event.type() == StormSubtype.FLOATER_TORNADO ? Math.max(12.0D, event.position().y - y) : 0.2D;
         Vec3 horizontal = new Vec3(cosAngle * radius, 0.0D, sinAngle * radius);
         if (event.type() == StormSubtype.GUSTNADO && event.motion() != null && event.motion().horizontalDistanceSqr() > 1.0E-5D) {
             Vec3 forward = new Vec3(event.motion().x, 0.0D, event.motion().z).normalize();
@@ -1988,8 +2067,27 @@ public final class ClientWeatherEffects {
     }
 
     private static double visualY(ClientLevel level, Vec3 base, double offset) {
-        int groundY = vortexGroundY(level, base);
+        // While a storm's structure is being laid out, everything is measured from the ground under that storm. A storm
+        // spreads well past the loaded chunks, and an unloaded column answers the bottom of the world, which was putting
+        // whole sheets of its cloud at head height. A base that is flat is also what a base should be.
+        int groundY = structureFunnelStorm != null ? structureGroundY : vortexGroundY(level, base);
         return Mth.clamp(groundY + offset, level.getMinBuildHeight() + 1.0D, level.getMaxBuildHeight() - 4.0D);
+    }
+
+    /** The ground a puff of dust stands on: under it where that is loaded, under the storm where it is not. */
+    private static int dustGroundY(ClientLevel level, StormObject storm, Vec3 sample) {
+        int ground = vortexGroundY(level, sample);
+        return ground > level.getMinBuildHeight() + 1 ? ground : stormGroundY(level, storm);
+    }
+
+    /** The ground under a storm, taken from its funnel's foot where the chunk under it is not loaded. */
+    private static int stormGroundY(ClientLevel level, StormObject storm) {
+        int ground = vortexGroundY(level, storm.pos);
+        if (ground > level.getMinBuildHeight() + 1) {
+            return ground;
+        }
+        var funnel = storm.getTornadoFunnelSimple();
+        return funnel != null && funnel.pos != null && funnel.pos.y > level.getMinBuildHeight() + 1 ? Mth.floor(funnel.pos.y) : level.getSeaLevel();
     }
 
     private static int vortexGroundY(ClientLevel level, Vec3 pos) {
@@ -2001,7 +2099,7 @@ public final class ClientWeatherEffects {
     }
 
     private static void spawnStructureParticle(ClientLevel level, Vec3 pos, Vec3 velocity, TextureAtlasSprite sprite, float scale, float red, float green, float blue, float alpha, int maxAge, float windWeight, ParticleOptions fallback) {
-        if (structureParticlesSpawnedThisTick >= Config.SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK.get()) {
+        if (structureParticlesSpawnedThisTick >= Config.SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK.get() || SoftPuffs.crowded() || inFunnelsClearAir(pos, scale)) {
             return;
         }
         structureParticlesSpawnedThisTick++;
@@ -2064,11 +2162,9 @@ public final class ClientWeatherEffects {
 
     /**
      * The ratio between the mean alpha of the sheet this class' dust alphas were tuned against and the
-     * mean of the sheet actually selected. About 0.43 while this mod's regenerated sheet is in use - the
-     * author's puff is 2.3 times the density the dust alphas were written against, so they come down with
-     * it - and about 5.7 while Weather2's own 1.12.2 sheet is, and every call site clamps the product to
-     * full opacity, so the soft sheet recovers the weight it would otherwise lose rather than
-     * over-brightening the dense one. Read live, so flipping {@code storm_look.originalTextures} changes
+     * mean of the sheet actually selected. About 1 while this mod's regenerated sheet is in use and about 5.7
+     * while Weather2's own 1.12.2 sheet is, and every call site clamps the product to full opacity, so the
+     * faint sheet recovers the weight it would otherwise lose. Read live, so flipping {@code storm_look.originalTextures} changes
      * this on the next particle.
      */
     public static float cloud256AlphaCompensation() {
@@ -2224,7 +2320,7 @@ public final class ClientWeatherEffects {
             return;
         }
         stickDebrisSpawnedThisTick++;
-        if (spawnGroundChunkDebris(level, pos, velocity)) {
+        if (spawnGroundChunkDebris(level, pos, velocity, 0.6F)) {
             return;
         }
         double wobbleX = (level.random.nextDouble() - 0.5D) * 0.05D;
@@ -2252,7 +2348,7 @@ public final class ClientWeatherEffects {
      * <p>False when the column's surface is air or a fluid - there is nothing there a storm could tear, and the
      * caller falls back to a loose stick, which is what a waterspout over open water has to throw.
      */
-    private static boolean spawnGroundChunkDebris(ClientLevel level, Vec3 pos, Vec3 velocity) {
+    private static boolean spawnGroundChunkDebris(ClientLevel level, Vec3 pos, Vec3 velocity, float scale) {
         if (!Config.EXTENDED_RENDERING_ENABLED.get()) {
             return false;
         }
@@ -2261,7 +2357,7 @@ public final class ClientWeatherEffects {
             return false;
         }
         ParticleCube chunk = new ParticleCube(level, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z, ground);
-        chunk.setScale(CHUNK_MIN_SCALE + level.random.nextFloat() * (CHUNK_MAX_SCALE - CHUNK_MIN_SCALE));
+        chunk.setScale((CHUNK_MIN_SCALE + level.random.nextFloat() * (CHUNK_MAX_SCALE - CHUNK_MIN_SCALE)) * scale);
         chunk.setAlpha(1.0F);
         chunk.setFullAlphaTarget(1.0F);
         chunk.setMaxAge(26 + level.random.nextInt(24));
@@ -2359,13 +2455,13 @@ public final class ClientWeatherEffects {
         if (storm == null || storm.isFirenado) {
             return 0.0F; // never fight Weather2's own fire colours
         }
-        float dustHeight = (float) Mth.clamp(Config.FUNNEL_DUST_GRADIENT_HEIGHT.get(), 0.05D, 0.90D);
+        float dustHeight = (float) Mth.clamp(Config.FUNNEL_DUST_GRADIENT_HEIGHT.get() * FUNNEL_DIRT_HEIGHT_SHARE, 0.05D, 0.90D);
         float t = Mth.clamp(heightFraction / dustHeight, 0.0F, 1.0F);
         float falloff = 1.0F - t * t * (3.0F - 2.0F * t);
         float wet = Mth.clamp(stormHumidity(storm), 0.0F, 1.0F);
         float wetFade = 1.0F - Mth.clamp((wet - 0.55F) / 0.45F, 0.0F, 1.0F);
         return falloff * wetFade * Mth.clamp(formation, 0.0F, 1.0F)
-                * (float) Mth.clamp(Config.FUNNEL_DUST_TINT_STRENGTH.get(), 0.0D, 1.0D);
+                * (float) Mth.clamp(Config.FUNNEL_DUST_TINT_STRENGTH.get() * FUNNEL_DIRT_TINT_SHARE, 0.0D, 1.0D);
     }
 
     /**
@@ -2392,13 +2488,26 @@ public final class ClientWeatherEffects {
             funnelTintCacheTone = funnelFootTone(level, storm, footPos);
         }
         FunnelTint footTone = funnelTintCacheTone;
-        float mottle = 0.80F + 0.20F * s;
+        float mottle = (0.80F + 0.20F * s) * FUNNEL_FOOT_TONE_SCALE;
+        // Soil in the air is a dirty grey with some brown in it. At full strength a funnel's foot turns bright rust.
+        float soilGrey = (footTone.red() + footTone.green() + footTone.blue()) / 3.0F;
         return new FunnelTint(
-                Mth.lerp(dust, s, footTone.red() * mottle),
-                Mth.lerp(dust, s, footTone.green() * mottle),
-                Mth.lerp(dust, s, footTone.blue() * mottle)
+                Mth.lerp(dust, s, Mth.lerp(FUNNEL_FOOT_GREYING, footTone.red(), soilGrey) * mottle),
+                Mth.lerp(dust, s, Mth.lerp(FUNNEL_FOOT_GREYING, footTone.green(), soilGrey) * mottle),
+                Mth.lerp(dust, s, Mth.lerp(FUNNEL_FOOT_GREYING, footTone.blue(), soilGrey) * mottle)
         );
     }
+
+    /**
+     * What the soil's colour is multiplied by on the funnel's foot, before the sheet's own grey multiplies it again.
+     */
+    private static final float FUNNEL_FOOT_TONE_SCALE = 1.05F;
+    /** How far up the configured height the funnel's dirt actually climbs, and how strong it is when it gets there. */
+    private static final double FUNNEL_DIRT_HEIGHT_SHARE = 0.55D;
+    private static final double FUNNEL_DIRT_TINT_SHARE = 0.60D;
+    private static final float FUNNEL_FOOT_GREYING = 0.45F;
+    /** Dust in the air is pale. A tint can only multiply the sheet's mid grey, so the tone has to start higher than the soil's. */
+    private static final float DUST_LIFT = 1.45F;
 
     /** Per-particle colour of a funnel billboard. */
     public record FunnelTint(float red, float green, float blue) {
@@ -2417,7 +2526,7 @@ public final class ClientWeatherEffects {
         hash ^= hash >>> 17;
         hash *= 0x9E3779B1;
         hash ^= hash >>> 13;
-        return 0.10F + ((hash >>> 8) & 0xFFFF) / 65535.0F * 0.60F;
+        return 0.44F + ((hash >>> 8) & 0xFFFF) / 65535.0F * 0.46F;
     }
 
     /** One-entry memo for {@link #funnelColumnTint}: the foot tone can only change once per tick. */

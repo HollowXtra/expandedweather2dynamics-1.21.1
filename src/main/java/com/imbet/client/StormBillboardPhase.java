@@ -16,8 +16,8 @@ package com.imbet.client;
  * frames later. A billboard picked a variant when it was made and kept it for its whole life, and the two ways
  * of picking are the whole of this class:
  *
- * <p><strong>Dormant.</strong> None of that is shipping now. The art is the author's own puffs, each supplied
- * as a single still frame and used as it was given - see {@code GenStormArt} - so there is no animation to
+ * <p><strong>Dormant.</strong> None of that is shipping now. The art is a single still frame per role, drawn by
+ * {@code tools/TextureGen.java}, so there is no animation to
  * phase: the three sibling files per role are gone, their atlas entries are gone, and every phase resolves to
  * its own role's sheet through the provider's own fallback. The offsets are written down anyway, and the model still
  * answers them, because they are the only thing that ever made a storm stop breathing in lockstep and they

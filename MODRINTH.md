@@ -137,6 +137,6 @@ Modrinth wants the first image set as the featured image, so lead with a hero sh
 - **Loaders**: NeoForge. **Versions**: 1.21.1.
 - **License**: the project has no license yet - `neoforge.mods.toml` ships `All Rights Reserved` and there is no LICENSE file in the tree. Modrinth requires one, so pick it deliberately (All Rights Reserved is a valid choice, ARR is the default here) before publishing if you have not already.
 
-## Version changelog for 1.06.3
+## Version changelog for 1.07
 
-The body of `## 1.06.3` in `CHANGELOG.md` is the text for the version's changelog field: eclipses that survive a shader pack, storms spawned and kept out over LOD terrain, and the small whirls allowed there too - four paragraphs, no headings needed.
+The body of `## 1.07` in `CHANGELOG.md` is the text for the version's changelog field: a tornado you can actually see, a funnel that reaches a flat cloud base, soft clouds, a supercell with a shape, less dirt, remastered small whirls, new sirens and a new radar display.

@@ -16,9 +16,8 @@ import net.minecraft.resources.ResourceLocation;
  * scatter funnel and its debris all drew the replacement without anyone choosing it. The two sets are also
  * far apart rather than a refinement of each other. Measured over one frame each, Weather2's {@code cloud256}
  * is a single 256x256 sheet with a mean alpha of 13.2 of 255 and a brightest texel of 81; this mod's is a
- * single 256x256 frame too - the author's own cloud, put in as supplied - with a mean alpha of 176 and a
- * brightest texel of 255. That
- * is a thirteen-fold difference in the body of a puff, which is the difference between hundreds of stacked
+ * single 256x256 frame too, drawn by {@code tools/TextureGen.java}, with a mean alpha of 74. That
+ * is a several-fold difference in the body of a puff, which is the difference between hundreds of stacked
  * billboards summing into cloud and the same billboards solidifying into a faceted slab.
  *
  * <p>So the two sets now live in different places and this class picks between them:
@@ -30,6 +29,9 @@ import net.minecraft.resources.ResourceLocation;
  *   <li>{@code coroutil:particles/modern/<name>} - this mod's regenerated sheets, stitched through the atlas
  *       entries in {@code assets/minecraft/atlases/particles.json}.</li>
  * </ul>
+ *
+ * <p>The debris is the one exception to keeping the two sets apart. This mod ships {@code debris_1/2/3} at Weather2's
+ * own path as well as under {@code modern}, so a tornado's debris is this mod's art whichever way the switch is set.
  *
  * <p>{@link Config#originalParticleArt()} decides, and it is off by default: this mod's own sheets are the
  * modern art and are what a storm is drawn in unless a player asks for the old one. Our own spawn sites never

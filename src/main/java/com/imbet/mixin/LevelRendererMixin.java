@@ -21,6 +21,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(LevelRenderer.class)
 public abstract class LevelRendererMixin {
 
+    /**
+     * Takes vanilla's clouds away under a storm. They sit below Weather2's deck and write depth, so from underneath a
+     * storm they are bright white slabs cut into the dark of it, hiding everything behind them.
+     */
+    @Inject(method = "renderClouds(Lcom/mojang/blaze3d/vertex/PoseStack;Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;FDDD)V", at = @At("HEAD"), cancellable = true)
+    private void expandedweather2dynamics$hideVanillaCloudsUnderStorm(com.mojang.blaze3d.vertex.PoseStack poseStack, org.joml.Matrix4f frustum, org.joml.Matrix4f projection,
+                                                                       float partialTick, double camX, double camY, double camZ, CallbackInfo ci) {
+        if (StormSkyClient.darkness() > 0.12D) {
+            ci.cancel();
+        }
+    }
+
     /** The rain pass's camera, captured once at its head for {@link RainWindBend} to put its vertices back in the world. */
     @Inject(method = "renderSnowAndRain(Lnet/minecraft/client/renderer/LightTexture;FDDD)V", at = @At("HEAD"))
     private void expandedweather2dynamics$beginRainPass(LightTexture lightTexture, float partialTick, double camX, double camY, double camZ, CallbackInfo ci) {

@@ -182,55 +182,51 @@ public final class DynamicStormController {
         return Mth.clamp(Math.round(originalSize * state.widthMultiplier()), 3, visibleCap);
     }
 
-    public static Vec3 bendFunnelLayer(StormObject storm, Vec3 basePos, Vec3 layerPos, int layerIndex, int layerCount) {
-        if (!Config.TORNADO_FUNNEL_BEND_ENABLED.get() || storm == null || basePos == null || layerPos == null || !isDynamicVortex(storm) || layerCount <= 1) {
-            return layerPos;
-        }
+    /**
+     * Where the shear wants the top of the funnel, against its foot, in blocks. It leans along the storm's own motion,
+     * because the foot is held back by the ground while the cloud above carries on. A rope leans hard and a wedge stands
+     * nearly upright, and a funnel on its way out leans furthest of all: the foot is left behind and the column is
+     * stretched into the long thin line a rope-out is known for.
+     */
+    public static Vec3 funnelLean(StormObject storm) {
         DynamicStormState state = stateFor(storm);
-        float fraction = layerFraction(storm, layerIndex, layerCount);
-        float motionAngle = motionAngleDegrees(storm);
         float bendAngle = state.bendAngle();
         if (storm.motion != null && storm.motion.horizontalDistanceSqr() > 0.0004D) {
-            bendAngle = Mth.rotLerp(0.42F, bendAngle, motionAngle);
+            bendAngle = Mth.rotLerp(0.42F, bendAngle, motionAngleDegrees(storm));
         }
         double radians = Math.toRadians(bendAngle);
-        double anchor = Math.min(Config.TORNADO_FUNNEL_BEND_ANCHOR_FRACTION.get(), 0.08D);
-        if (fraction <= anchor) {
-            return layerPos;
-        }
-        double effectiveFraction = Mth.clamp((fraction - anchor) / Math.max(0.05D, 1.0D - anchor), 0.0D, 1.0D);
-        double sidewinding = Mth.clamp(state.sidewindingBendBlend(), 0.0F, 1.0F);
-        double phase = state.bendPhase();
         double strength = Mth.clamp(state.bendStrength(), 0.0D, 1.0D);
+        double tilt = Math.max(20.0D, Config.TORNADO_FUNNEL_TILT_BLOCKS.get()) * strength
+                * (1.0D + funnelWeakness(state) * Config.TORNADO_FUNNEL_TILT_WEAKNESS_SCALE.get())
+                * (1.0D + funnelRopeOut(storm) * 1.25D);
+        return new Vec3(Math.cos(radians) * tilt, 0.0D, Math.sin(radians) * tilt);
+    }
 
-        // Downshear tilt: the dominant shape. The funnel leans over along its
-        // motion direction, growing top-heavy with height (the top lags
-        // downwind). Weak and rope tornadoes lean much harder than violent
-        // wedges, which stay near vertical.
-        double weakness = Mth.clamp(1.0D - (state.damagePathWidth() - 12.0D) / 450.0D, 0.0D, 1.0D);
-        double weaknessScale = Config.TORNADO_FUNNEL_TILT_WEAKNESS_SCALE.get();
-        double tiltMax = Math.max(20.0D, Config.TORNADO_FUNNEL_TILT_BLOCKS.get()) * strength * (1.0D + weakness * weaknessScale);
-        double tilt = tiltMax * Math.pow(effectiveFraction, 1.6D);
+    /** How far the column may wander either side of its lean, in blocks: a rope dances, a wedge barely moves. */
+    public static double funnelSway(StormObject storm) {
+        DynamicStormState state = stateFor(storm);
+        double sidewinding = Mth.clamp(state.sidewindingBendBlend(), 0.0F, 1.0F);
+        return Math.max(14.0D, Config.TORNADO_FUNNEL_BEND_SWAY_BLOCKS.get())
+                * (0.45D + sidewinding * 0.55D)
+                * (0.30D + funnelWeakness(state) * 0.70D)
+                * (1.0D + funnelRopeOut(storm) * 0.60D);
+    }
 
-        // Bend: ONE clean traveling sway mode drifting up the funnel, plus a
-        // slow whole-funnel lateral sweep. No competing snake modes fighting
-        // the lean. Rope/weak funnels dance a bit more, wedges stay straight.
-        double sway = Math.max(14.0D, Config.TORNADO_FUNNEL_BEND_SWAY_BLOCKS.get()) * (0.30D + sidewinding * 0.70D);
-        double wave = Math.sin(phase * 0.55D + effectiveFraction * Math.PI * 2.3D) * Math.sin(effectiveFraction * Math.PI);
-        double sweep = Math.sin(phase * 0.90D) * effectiveFraction * effectiveFraction;
-        double bend = (wave * 0.85D + sweep * 0.45D) * sway * (0.65D + weakness * 0.35D);
+    /** 1 for a thread of a funnel, 0 for one a quarter-mile across. */
+    private static double funnelWeakness(DynamicStormState state) {
+        return Mth.clamp(1.0D - (state.damagePathWidth() - 12.0D) / 450.0D, 0.0D, 1.0D);
+    }
 
-        Vec3 leanDir = new Vec3(Math.cos(radians), 0.0D, Math.sin(radians));
-        Vec3 cross = new Vec3(-leanDir.z, 0.0D, leanDir.x);
-        double offsetX = leanDir.x * tilt + cross.x * bend;
-        double offsetZ = leanDir.z * tilt + cross.z * bend;
-        double cap = Math.max(36.0D, Config.TORNADO_FUNNEL_BEND_MAX_BLOCKS.get());
-        double length = Math.hypot(offsetX, offsetZ);
-        if (length > cap) {
-            offsetX *= cap / length;
-            offsetZ *= cap / length;
-        }
-        return new Vec3(basePos.x + offsetX, layerPos.y, basePos.z + offsetZ);
+    /** How far through roping out this funnel is: nought until the storm has peaked and started to fail. */
+    public static float funnelRopeOut(StormObject storm) {
+        float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
+        boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
+        return decaying ? Mth.clamp((1.0F - Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F)) * 1.55F, 0.0F, 1.0F) : 0.0F;
+    }
+
+    /** A layer's height up the column, 0 at the foot and 1 at the cloud base. */
+    public static float funnelLayerFraction(StormObject storm, int layerIndex, int layerCount) {
+        return layerFraction(storm, layerIndex, layerCount);
     }
 
     public static Vec3 funnelLayerMorphologyOffset(StormObject storm, int layerIndex, int layerCount) {
@@ -340,6 +336,9 @@ public final class DynamicStormController {
         return state.funnelPinchAt(fraction, storm.manager.getWorld().getGameTime());
     }
 
+    /** How much wider than Weather2's taper a plain funnel is where it meets the cloud, on top of 1. */
+    private static final float DEFAULT_FUNNEL_FLARE = 0.95F;
+
     private static float funnelMorphologyRadiusScale(StormObject storm, int layerIndex, int layerCount) {
         float multivortexScale = multivortexParentLowerScale(storm, layerIndex, layerCount);
         if (storm == null || !storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout || layerCount <= 1) {
@@ -348,7 +347,10 @@ public final class DynamicStormController {
         DynamicStormState state = stateFor(storm);
         FunnelMorphology morphology = state.funnelMorphologyInForce();
         if (morphology == FunnelMorphology.DEFAULT) {
-            return multivortexScale;
+            // The shape everyone draws when asked to draw a tornado: a slender trunk that opens out fast as it nears the
+            // cloud. Weather2's own straight taper reads as a tube standing under the storm.
+            float up = layerFraction(storm, layerIndex, layerCount);
+            return multivortexScale * (1.0F + DEFAULT_FUNNEL_FLARE * up * up * up);
         }
         if (morphology == FunnelMorphology.ELEPHANT_TRUNK && (!Config.TORNADO_ELEPHANT_TRUNK_ENABLED.get() || !canUseElephantTrunkVisuals(state))) {
             return multivortexScale;
@@ -526,6 +528,21 @@ public final class DynamicStormController {
         float baseWiden = Mth.lerp(descend, 0.45F, 1.0F);
         float overall = Mth.lerp(Mth.clamp(stage * 0.55F + intensity * 0.45F, 0.0F, 1.0F), 0.78F, 1.0F);
         return Mth.clamp(overall * baseWiden, 0.30F, 1.25F);
+    }
+
+    /**
+     * The funnel's width through its life. Condensation comes down out of the cloud as a thin tip, each layer widening
+     * only after the tip has gone past it, and a dying tornado draws in along its whole length into a thin rope.
+     */
+    public static float funnelLayerFormationRadius(StormObject storm, float ageTicks, int layerIndex, int layerCount) {
+        if (storm == null || layerCount <= 1 || !Config.TORNADO_FORMING_ANIMATION_ENABLED.get() || storm.attrib_waterSpout) {
+            return 1.0F;
+        }
+        float rope = funnelRopeOut(storm);
+        if (rope > 0.0F) {
+            return Mth.lerp(rope, 1.0F, 0.32F);
+        }
+        return Mth.lerp(condensationDescent(storm, ageTicks, layerFraction(storm, layerIndex, layerCount)), 0.30F, 1.0F);
     }
 
     public static float funnelParticleScale(StormObject storm, int layerIndex, int layerCount) {
@@ -1398,9 +1415,29 @@ public final class DynamicStormController {
         if (storm == null) {
             return Double.NaN;
         }
-        TornadoFunnelSimple funnel = storm.getTornadoFunnelSimple();
-        Vec3 top = funnel == null ? null : funnel.getPosTop();
-        return top == null ? Double.NaN : top.y;
+        return storm.getTornadoFunnelSimple() == null ? Double.NaN : cloudBaseWorldY(storm);
+    }
+
+    /** How far under the height of a storm's deck its flat cloud base hangs, in blocks. */
+    private static final double CLOUD_BASE_BELOW_DECK_BLOCKS = 40.0D;
+    /** The least room a funnel gets under the cloud, over high ground, in blocks. */
+    private static final double CLOUD_BASE_MIN_CLEARANCE_BLOCKS = 56.0D;
+    /** The ground over a column that is not loaded, which answers the bottom of the world. */
+    private static final int UNLOADED_GROUND_Y = 64;
+
+    /**
+     * The underside of a storm's cloud, in world height: the one level the funnel ends at, the deck's puffs stop at, and
+     * the wall cloud hangs from. They used to disagree by a hundred blocks, with a funnel ending in mid air inside a
+     * deck whose biggest puffs hung almost to the ground.
+     */
+    public static double cloudBaseWorldY(StormObject storm) {
+        Level world = storm.manager == null ? null : storm.manager.getWorld();
+        int ground = world == null ? UNLOADED_GROUND_Y
+                : world.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, Mth.floor(storm.pos.x), Mth.floor(storm.pos.z));
+        if (world != null && ground <= world.getMinBuildHeight() + 1) {
+            ground = UNLOADED_GROUND_Y;
+        }
+        return Math.max(ground + CLOUD_BASE_MIN_CLEARANCE_BLOCKS, storm.pos.y - CLOUD_BASE_BELOW_DECK_BLOCKS);
     }
 
     /**

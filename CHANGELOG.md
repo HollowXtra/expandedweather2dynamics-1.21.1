@@ -4,6 +4,44 @@ What changed in this release, written for the people who play it rather than for
 source. The long version of every one of these - what was wrong, what it was measured against, and what is
 still an honest unknown - is in the README.
 
+## 1.07
+
+**You can see the tornado.** Several things were hiding it at once, and they are all gone. A dark cloud spawned just above your head whenever a severe storm was within 700 blocks. Weather2's deck sagged far down over the funnel. Rain curtains and scud were drawn as dark smoke right around it. The dread fog closed in to 170 blocks when the tornado was 300 away, and vanilla's clouds cut bright slabs through the underside of the storm. Rain is now drawn as rain, and the air around a funnel is kept clear.
+
+**The funnel reaches the cloud.** It used to stop in mid-air up to a hundred blocks short. It now runs from the ground to a flat cloud base, as a slender trunk that opens out fast near the top, in new fibrous textures in the style of Weather2 Remastered. It comes down out of the cloud as a thin tip that widens behind it, and a dying tornado draws in along its whole length into a thin leaning rope.
+
+**It bends properly.** The funnel used to be bent by a formula, so when a storm turned the whole column swung round at once like a stick. Its centreline now has a history: the foot moves first and the top follows later, so a tall funnel curves through a turn and a kink climbs the column.
+
+**Clouds are soft.** These are still Weather2's particles, with no volumetric rendering. They are now drawn back to front instead of cutting straight lines through each other, they feather into the ground, and they fade as you fly through them. Deck puffs face you rather than turning into black needles when seen from the side. The `softPuffs` setting under `storm_look` turns all of this off.
+
+**A supercell has a shape.** Its parts were placed for a much lower cloud, so the tower and anvil stood inside the deck and could not be seen. There is now a flat rain-free base, a wall cloud directly over the tornado, a banded rotating tower above it, an anvil streaming downwind, a stair of flanking towers, an inflow tail, and rain shafts that look like rain.
+
+**Less dirt, and it moves.** Dust used to fly off in straight lines like an explosion that never ended. It now goes round the foot, is drawn in along the ground and climbs a little way up the wall, in puffs sized to the funnel rather than up to ninety blocks across. There is much less of it, along with fewer specks and clods, and the brown on the funnel's foot is shorter and greyer. Wildfire smoke is thinner too, and Weather2's ring of little domes of ground fog is gone.
+
+**Flying debris has real textures.** The sprites were a few small grey shards in an otherwise empty square. There is now a splintered plank, a handful of soil clods and a torn roof shingle.
+
+**Dust devils, landspouts and waterspouts remastered.** They are thin and lighter, and you can see through the dust. A dust devil takes the colour of the ground it is on instead of being a dark pillar, and a spout's top dissolves rather than ending at a flat lid. Waterspout spray is bright.
+
+**The sirens are machines.** Each one now stands on a creosoted utility pole with a control cabinet, conduit and a ground wire. The mechanical siren has a louvred drum and two flared bells, the electronic one a four-sided horn array with a solar panel and Yagi antenna, and the two-tone a yellow head with a big and a small bell. They are lit by the world, carry a real texture, and the item is the same model as the block.
+
+**The portable radar is a real display.** It has a new rugged case, the NWS reflectivity and velocity colours, a map under the data, range labels, a colour key, and a sweep that paints each new scan in behind the beam. The weather radar block's face uses the same picture.
+
+**The weather forecaster is a projector.** The "?" cube is now a console with a lens on top, and it throws the actual radar composite over a map up on beams of light, instead of a pile of rain icons.
+
+**New textures.** The machine and handheld item textures were regenerated at higher resolution by `tools/TextureGen.java`.
+
+**The anemometer, weather vane and alert siren dish were rebuilt** the same way as the sirens: three real cups, a copper arrow over lettered arms, and a dish that now curves the right way, toward its feed horn.
+
+**Bugs fixed.**
+- Every new world had a total eclipse at its first noon, which dimmed the world to half for four minutes.
+- Waterspouts hovered above the water for their whole life, because the client never knew how long they had left.
+- Landspouts floated at least five blocks off the ground.
+- The meteorologist villager had no texture and drew as a magenta checker.
+- The charred log item had no model.
+- The `weatherDrone` config switch did nothing. It now blocks new launches, and a drone already flying can still be recalled.
+- The portable radar drew its title twice and let long storm names run off the screen.
+- Parts of a storm's structure over unloaded chunks were placed from the bottom of the world, which put whole sheets of cloud at head height.
+
 ## 1.06.3
 
 **The eclipse works under a shader pack now.** Before, the moment a pack was active the mod handed the whole sky over and the eclipse went with it - no dimming, nothing at all. The darkening is not part of the sky the pack draws, though: it is the same reading a storm's deck already produces, the value the game's own lightmap is built from, so the eclipse's is folded into it. The sky's colour, the cloud deck, the fog and the world's own light all dim together as the moon crosses the sun, and because that reading is one the game itself consumes rather than a program the mod has to draw, it arrives under a pack the same as without one. The throw of the sun and the light the world is drawn with still compose under a storm's own deck, so standing in a storm during an eclipse is darker than either alone.

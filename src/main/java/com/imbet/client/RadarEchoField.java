@@ -26,8 +26,8 @@ final class RadarEchoField {
     static final float SCOPE_RADIUS = 0.43F;
 
     /** NEXRAD-style reflectivity ramp: the dBZ at each stop and the colour a return takes there. */
-    private static final float[] DBZ_STOPS = { 5.0F, 10.0F, 18.0F, 27.0F, 36.0F, 44.0F, 51.0F, 59.0F, 67.0F, 74.0F };
-    private static final int[] DBZ_COLORS = { 0x3A6EE8, 0x04E9E7, 0x02FD02, 0x008E00, 0xFDF802, 0xFD9500, 0xFD0000, 0xBC0000, 0xF800FD, 0xFDFDFD };
+    private static final float[] DBZ_STOPS = { 5.0F, 10.0F, 15.0F, 20.0F, 25.0F, 30.0F, 35.0F, 40.0F, 45.0F, 50.0F, 55.0F, 60.0F, 65.0F, 70.0F, 75.0F };
+    private static final int[] DBZ_COLORS = { 0x04E9E7, 0x019FF4, 0x0300F4, 0x02FD02, 0x01C501, 0x008E00, 0xFDF802, 0xE5BC00, 0xFD9500, 0xFD0000, 0xD40000, 0xBC0000, 0xF800FD, 0x9854C6, 0xFDFDFD };
     private static final int ECHO_ALPHA = 230;
 
     /**
@@ -103,6 +103,11 @@ final class RadarEchoField {
     }
 
     /** A fraction of the radar's full range, as a signed offset from the scope centre in panel units. */
+    /** A world coordinate as a panel offset from the centre, with no clamp: for fields that clip themselves. */
+    static float scopeOffsetUnclamped(double world, double origin, int range) {
+        return (float) ((world - (origin + 0.5D)) / Math.max(1, range) * SCOPE_RADIUS);
+    }
+
     static float scopeOffset(double rangeFraction) {
         return Mth.clamp((float) (rangeFraction * SCOPE_RADIUS), -SCOPE_RADIUS, SCOPE_RADIUS);
     }
@@ -337,8 +342,24 @@ final class RadarEchoField {
      */
     static double reflectivityAt(RadarStormSnapshot storm, float forward, float right, float size,
                                  EchoAnchors anchors, int gridX, int gridZ) {
+        return reflectivityAt(storm, forward, right, size, anchors);
+    }
+
+    /**
+     * The field itself, at any point rather than at a lattice cell.
+     *
+     * <p>The texture is smooth fractal noise anchored in the storm's own frame, and the outline is pushed around by
+     * a second, broader noise. A real echo is a mass of embedded cells with a torn edge, and a smooth ellipse with
+     * per-cell static on it read as concentric stripes the moment it was drawn finely enough to see.
+     */
+    static double reflectivityAt(RadarStormSnapshot storm, float forward, float right, float size, EchoAnchors anchors) {
+        float u = forward / Math.max(size, 1.0E-4F);
+        float v = right / Math.max(size, 1.0E-4F);
+        forward += echoNoise(storm.id() ^ 0x31L, u * 0.9F, v * 0.9F, 2) * size * 0.42F;
+        right += echoNoise(storm.id() ^ 0x77L, u * 0.9F + 7.0F, v * 0.9F, 2) * size * 0.42F;
+        float cells = echoNoise(storm.id(), u * 1.7F, v * 1.7F, 3);
         double core = Math.pow((forward - size * 0.20F) / (size * 1.42F), 2.0D) + Math.pow(right / (size * 0.76F), 2.0D);
-        double dbz = storm.reflectivityDbz() - core * 26.0D + pixelNoise(storm.id(), gridX, gridZ) * 4.0D;
+        double dbz = storm.reflectivityDbz() - core * 26.0D + cells * 9.0D;
         // Strengths come from the storm's own structure where there is one, so the forward-flank core and the
         // hail core sit and read where the storm actually has them. The old fixed shape is the fallback, and
         // the scaling below is tuned so that fallback value (0.55 ffd) reproduces it exactly.
@@ -349,7 +370,7 @@ final class RadarEchoField {
             // a structured storm instead gets its forward-flank core where its own ffd puts it.
             double flankOffset = size * (0.208D + 0.24D * ffd);
             double forwardFlank = Math.pow((forward - flankOffset) / (size * 1.08F), 2.0D) + Math.pow((right + size * 0.22F) / (size * 0.56F), 2.0D);
-            dbz = Math.max(dbz, storm.reflectivityDbz() + (-14.6D + 12.0D * ffd) - forwardFlank * 17.0D + pixelNoise(storm.id() ^ 0x51A7L, gridX, gridZ) * 3.0D);
+            dbz = Math.max(dbz, storm.reflectivityDbz() + (-14.6D + 12.0D * ffd) - forwardFlank * 17.0D + cells * 6.0D);
             double hailCore = Math.pow((forward - size * 0.40F) / (size * 0.38F), 2.0D) + Math.pow((right + size * 0.08F) / (size * 0.26F), 2.0D);
             if (hailCore < 1.0D && hail > 0.25D) {
                 dbz = Math.max(dbz, storm.reflectivityDbz() + (1.0D - hailCore) * (2.3D + 11.0D * hail));
@@ -387,7 +408,7 @@ final class RadarEchoField {
                 double ballR = right - (anchors.real() ? anchors.hookRight() : size * 0.82F);
                 double debris = Math.sqrt(ballF * ballF + ballR * ballR);
                 if (debris < size * 0.20D) {
-                    dbz = Math.max(dbz, 67.0D + pixelNoise(storm.id() ^ 0xD36B, gridX, gridZ) * 8.0D);
+                    dbz = Math.max(dbz, 67.0D + echoNoise(storm.id() ^ 0xD36BL, u * 9.0F, v * 9.0F, 1) * 8.0D);
                 }
             }
         }
@@ -540,6 +561,28 @@ final class RadarEchoField {
         int g = Mth.clamp(Math.round((rgb >> 8 & 255) * scale), 0, 255);
         int b = Mth.clamp(Math.round((rgb & 255) * scale), 0, 255);
         return r << 16 | g << 8 | b;
+    }
+
+    /** Smooth fractal noise in [-1, 1] over a storm's own frame: octaves of {@link #pixelNoise}, interpolated. */
+    static float echoNoise(long stormId, float u, float v, int octaves) {
+        float sum = 0.0F;
+        float amplitude = 0.56F;
+        for (int octave = 0; octave < octaves; octave++) {
+            int ix = Mth.floor(u);
+            int iz = Mth.floor(v);
+            float fx = u - ix;
+            float fz = v - iz;
+            fx = fx * fx * (3.0F - 2.0F * fx);
+            fz = fz * fz * (3.0F - 2.0F * fz);
+            long seed = stormId + octave * 1031L;
+            sum += amplitude * Mth.lerp(fz,
+                    Mth.lerp(fx, pixelNoise(seed, ix, iz), pixelNoise(seed, ix + 1, iz)),
+                    Mth.lerp(fx, pixelNoise(seed, ix, iz + 1), pixelNoise(seed, ix + 1, iz + 1)));
+            u = u * 2.17F + 3.1F;
+            v = v * 2.17F + 1.7F;
+            amplitude *= 0.54F;
+        }
+        return sum;
     }
 
     /** A stable value in [-1, 1] for a lattice point of a storm's field, seeded by the storm. */

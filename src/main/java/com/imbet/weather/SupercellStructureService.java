@@ -7,6 +7,9 @@ import net.minecraft.world.phys.Vec3;
 import weather2.weathersystem.storm.StormObject;
 
 public final class SupercellStructureService {
+    /** A storm's cloud base over a column that is not loaded: the height it has over a sea-level plain. */
+    private static final double DEFAULT_DECK_HEIGHT_BLOCKS = 160.0D;
+
     private SupercellStructureService() {
     }
 
@@ -304,22 +307,37 @@ public final class SupercellStructureService {
         };
     }
 
+    /** How far above the ground under it a storm's cloud base is, in blocks. */
+    private static double deckHeightAboveGround(StormObject storm) {
+        if (storm == null || storm.pos == null || storm.manager == null || storm.manager.getWorld() == null) {
+            return DEFAULT_DECK_HEIGHT_BLOCKS;
+        }
+        Level world = storm.manager.getWorld();
+        int ground = world.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, Mth.floor(storm.pos.x), Mth.floor(storm.pos.z));
+        // An unloaded column answers the bottom of the world.
+        return ground <= world.getMinBuildHeight() + 1 ? DEFAULT_DECK_HEIGHT_BLOCKS : Math.max(20.0D, DynamicStormController.cloudBaseWorldY(storm) - ground);
+    }
+
     public static StructureSample sample(StormObject storm, DynamicStormState state) {
-        Vec3 center = storm == null || storm.pos == null ? Vec3.ZERO : storm.pos;
+        Vec3 stormPos = storm == null || storm.pos == null ? Vec3.ZERO : storm.pos;
         Vec3 forward = motionDirection(storm);
         Vec3 right = new Vec3(-forward.z, 0.0D, forward.x).scale(DynamicStormController.visualRotationSign(storm)).normalize();
         double radius = structureRadius(storm, state);
-        Vec3 mesocyclone = center.add(forward.scale(-radius * 0.36D)).add(right.scale(radius * 0.48D));
+        // The storm's position is where the tornado stands, so that is where the mesocyclone has to be, with the rest of
+        // the storm laid out around it. The whole plan is moved rather than only the mesocyclone, so every part keeps its
+        // place relative to every other: the rain still falls ahead of it and the hook still wraps it.
+        Vec3 mesocyclone = stormPos;
+        Vec3 center = mesocyclone.add(forward.scale(radius * 0.36D)).add(right.scale(-radius * 0.48D));
         Vec3 updraft = center.add(forward.scale(-radius * 0.16D)).add(right.scale(radius * 0.26D));
         Vec3 forwardFlank = center.add(forward.scale(radius * 0.46D)).add(right.scale(-radius * 0.16D));
         Vec3 rearFlank = center.add(forward.scale(-radius * 0.50D)).add(right.scale(radius * 0.72D));
         Vec3 inflowSource = center.add(forward.scale(radius * 0.82D)).add(right.scale(radius * 0.96D));
-        Vec3 wallCloudCenter = mesocyclone.add(forward.scale(-radius * 0.08D)).add(right.scale(radius * 0.06D));
-        // The rain-free base follows the storm's own size, then the cloud-base offset lifts or lowers
-        // it further - a high-based supercell keeps its wall cloud and anvil proportional to a taller
-        // column rather than flattening them onto the deck.
-        double rainFreeBaseY = Math.max(20.0D, Mth.clamp(34.0D + radius * 0.045D, 32.0D, 54.0D)
-                + Config.SUPERCELL_STRUCTURE_CLOUD_BASE_OFFSET_BLOCKS.get());
+        Vec3 wallCloudCenter = mesocyclone;
+        // The rain-free base is the underside of Weather2's own deck, because that is the cloud base everything else
+        // in the sky already agrees on: it is where the funnel ends. The parts used to be placed by height above the
+        // ground in numbers chosen for a much lower cloud, so the tower and the anvil stood underneath the deck they
+        // were meant to rise out of, and could not be seen as anything.
+        double rainFreeBaseY = Math.max(20.0D, deckHeightAboveGround(storm) + Config.SUPERCELL_STRUCTURE_CLOUD_BASE_OFFSET_BLOCKS.get());
         double wallCloudCap = Config.SUPERCELL_STRUCTURE_WALL_CLOUD_MAX_DIAMETER_BLOCKS.get()
                 * Config.SUPERCELL_STRUCTURE_SCALE.get().doubleValue();
         double wallCloudDiameter = Mth.clamp(46.0D + radius * 0.52D, 46.0D, wallCloudCap);

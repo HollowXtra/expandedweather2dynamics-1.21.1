@@ -5,6 +5,7 @@ import com.imbet.client.ClientWeatherEffects;
 import com.imbet.client.CloudDeckSpriteProvider;
 import com.imbet.client.LodViewDistance;
 import com.imbet.client.StormBillboardPhase;
+import com.imbet.client.VortexSpine;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.DynamicStormState;
 import extendedrenderer.particle.ParticleRegistry;
@@ -65,6 +66,12 @@ public abstract class TornadoFunnelSimpleMixin {
     @Shadow
     private float renderDistCutoff;
 
+    /** The funnel's centreline. See {@link VortexSpine} for why it is a thing with a history and not a formula. */
+    @Unique
+    private VortexSpine expandedweather2dynamics$spine;
+    @Unique
+    private long expandedweather2dynamics$spineTick = Long.MIN_VALUE;
+    /** Layer-by-layer offsets on top of the spine: the eased part of a morphology's shape. */
     @Unique
     private List<Vec3> expandedweather2dynamics$smoothedOffsets;
     @Unique
@@ -107,6 +114,18 @@ public abstract class TornadoFunnelSimpleMixin {
     /** How far up the funnel the sub-vortex lumps reach, as a fraction of its height. */
     @Unique
     private static final double LUMP_HEIGHT_FRACTION = 0.60D;
+    /**
+     * Weather2 sizes these for a sprite whose visible part is a blob in the middle of its square. This sheet fills the
+     * square, so at Weather2's size the puffs spill far outside the wall and the funnel's shape is lost in them.
+     */
+    @Unique
+    private static final float expandedweather2dynamics$FILLED_SHEET_SCALE = 0.58F;
+    @Unique
+    private static final float expandedweather2dynamics$MIN_PUFF_SCALE = 1.5F;
+    @Unique
+    private static final float expandedweather2dynamics$SHEATH_PUFF_SCALE = 2.4F;
+    @Unique
+    private static final float expandedweather2dynamics$SHEATH_ALPHA = 0.30F;
     /** Angular width of one lobe, in degrees. Wide enough to read as a lump instead of a spike. */
     @Unique
     private static final double LUMP_SIGMA_DEGREES = 30.0D;
@@ -177,6 +196,9 @@ public abstract class TornadoFunnelSimpleMixin {
             float smoothing = Mth.clamp(Math.max(0.080F, Config.TORNADO_FUNNEL_BEND_SMOOTHING.get().floatValue()), 0.0F, 1.0F);
             expandedweather2dynamics$ensureParticleState();
             expandedweather2dynamics$activeParticles.clear();
+            double cloudBase = DynamicStormController.cloudBaseWorldY(storm);
+            VortexSpine spine = expandedweather2dynamics$advanceSpine(storm, world, base, cloudBase);
+            double anchorFraction = Math.min(Config.TORNADO_FUNNEL_BEND_ANCHOR_FRACTION.get(), 0.08D);
             for (int i = 0; i < count; i++) {
                 Layer layer = funnel.listLayers.get(i);
                 if (layer == null || layer.getPos() == null) {
@@ -190,12 +212,9 @@ public abstract class TornadoFunnelSimpleMixin {
                     continue;
                 }
                 Vec3 layerPos = layer.getPos();
-                Vec3 target = DynamicStormController.bendFunnelLayer(storm, base, layerPos, i, count);
-                if (target == null) {
-                    target = layerPos;
-                }
-                Vec3 morphologyOffset = DynamicStormController.funnelLayerMorphologyOffset(storm, i, count);
-                Vec3 targetOffset = new Vec3(target.x - base.x + morphologyOffset.x, 0.0D, target.z - base.z + morphologyOffset.z);
+                float fraction = DynamicStormController.funnelLayerFraction(storm, i, count);
+                spine.sample((float) Mth.clamp((fraction - anchorFraction) / Math.max(0.05D, 1.0D - anchorFraction), 0.0D, 1.0D));
+                Vec3 targetOffset = DynamicStormController.funnelLayerMorphologyOffset(storm, i, count);
                 Vec3 previousOffset = smoothedOffsets.get(i);
                 if (previousOffset == null) {
                     previousOffset = Vec3.ZERO;
@@ -204,11 +223,13 @@ public abstract class TornadoFunnelSimpleMixin {
                 Vec3 smoothedOffset = expandedweather2dynamics$limitBendStep(previousOffset, desiredOffset, targetOffset);
                 smoothedOffsets.set(i, smoothedOffset);
                 double previousLift = smoothedVerticalOffsets.get(i) == null ? 0.0D : smoothedVerticalOffsets.get(i);
-                double rawLayerY = layerPos.y - previousLift;
                 double smoothedLift = Mth.lerp(Mth.clamp(smoothing * 0.92D, 0.0D, 1.0D), previousLift, targetLift);
                 smoothedLift = expandedweather2dynamics$limitVerticalStep(previousLift, smoothedLift, targetLift);
                 smoothedVerticalOffsets.set(i, smoothedLift);
-                layer.setPos(new Vec3(base.x + smoothedOffset.x, rawLayerY + smoothedLift, base.z + smoothedOffset.z));
+                // Evenly up the whole way to the cloud. Weather2 stacks its layers by how wide the funnel is, which leaves a
+                // young funnel stopping in mid air a hundred blocks short of the cloud it should be coming out of.
+                double layerY = Mth.lerp(fraction, base.y, cloudBase);
+                layer.setPos(new Vec3(base.x + spine.sampleX + smoothedOffset.x, layerY + smoothedLift, base.z + spine.sampleZ + smoothedOffset.z));
                 expandedweather2dynamics$scaleLayerParticles(storm, layer, i, count);
                 layer.setRotation(layer.getRotation() + DynamicStormController.extraFunnelLayerSpinDegrees(storm, i, count));
             }
@@ -218,6 +239,30 @@ public abstract class TornadoFunnelSimpleMixin {
         } catch (RuntimeException exception) {
             expandedweather2dynamics$clearState(smoothedOffsets, smoothedVerticalOffsets);
         }
+    }
+
+    /**
+     * Moves the centreline on one tick. The top takes longer to follow the taller the column is, which is what makes a
+     * tall funnel curve through a turn and a short one snap round it. With the bend switched off the spine just goes
+     * on sitting at the foot.
+     */
+    @Unique
+    private VortexSpine expandedweather2dynamics$advanceSpine(StormObject storm, Level world, Vec3 base, double cloudBase) {
+        if (expandedweather2dynamics$spine == null) {
+            expandedweather2dynamics$spine = new VortexSpine();
+        }
+        long gameTime = world.getGameTime();
+        float dt = expandedweather2dynamics$spineTick == Long.MIN_VALUE ? 1.0F : Mth.clamp(gameTime - expandedweather2dynamics$spineTick, 0L, 20L);
+        expandedweather2dynamics$spineTick = gameTime;
+        float height = (float) Math.max(16.0D, cloudBase - base.y);
+        boolean bend = Config.TORNADO_FUNNEL_BEND_ENABLED.get();
+        Vec3 lean = bend ? DynamicStormController.funnelLean(storm) : Vec3.ZERO;
+        float sway = bend ? (float) DynamicStormController.funnelSway(storm) : 0.0F;
+        double phase = DynamicStormController.stateFor(storm).bendPhase();
+        float maxTop = bend ? (float) Math.max(36.0D, Config.TORNADO_FUNNEL_BEND_MAX_BLOCKS.get()) : 0.0F;
+        expandedweather2dynamics$spine.advance(base.x, base.z, Mth.clamp(height * 0.35F, 30.0F, 130.0F), dt, height,
+                (float) lean.x, (float) lean.z, sway, phase, Math.min(0.92F, maxTop / height));
+        return expandedweather2dynamics$spine;
     }
 
     @Inject(method = "tickClient", at = @At("HEAD"))
@@ -410,7 +455,8 @@ public abstract class TornadoFunnelSimpleMixin {
         } else {
             ageTicks = 0.0F;
         }
-        particleScale *= DynamicStormController.funnelLayerFormationScale(storm, ageTicks, layerIndex, layerCount);
+        particleScale *= DynamicStormController.funnelLayerFormationScale(storm, ageTicks, layerIndex, layerCount) * expandedweather2dynamics$FILLED_SHEET_SCALE;
+        radiusScale *= DynamicStormController.funnelLayerFormationRadius(storm, ageTicks, layerIndex, layerCount);
         alphaScale *= DynamicStormController.funnelLayerFormationAlpha(storm, ageTicks, layerIndex, layerCount);
         // The base layer's formation alpha doubles as the funnel's "condensation has reached the
         // ground" signal. That is what gates the dust gradient: a funnel still filling downward has
@@ -425,7 +471,10 @@ public abstract class TornadoFunnelSimpleMixin {
         boolean cullLayer = hideParentFunnel || DynamicStormController.shouldCullMultivortexParentLayer(storm, layerIndex, layerCount);
         float lumpTaper = expandedweather2dynamics$lumpTaper(storm, layerIndex, layerCount);
         expandedweather2dynamics$scaleParticleList(layer.getListParticles(), radiusScale, particleScale, alphaScale, cullLayer, lumpTaper);
-        expandedweather2dynamics$scaleParticleList(layer.getListParticlesExtra(), radiusScale, particleScale, alphaScale, cullLayer, lumpTaper);
+        // Weather2's second ring stands just outside the wall. At the wall's own puff size it is a shell of separate dots round
+        // the funnel; large and faint, it is the soft sheath of cloud a funnel has round it.
+        expandedweather2dynamics$scaleParticleList(layer.getListParticlesExtra(), radiusScale, particleScale * expandedweather2dynamics$SHEATH_PUFF_SCALE,
+                alphaScale * expandedweather2dynamics$SHEATH_ALPHA, cullLayer, lumpTaper);
         // Weather2 spawns fresh layer particles at funnel.pos (the funnel base) and only snaps them
         // to the layer anchor on the NEXT tick. In a bent/leaning funnel the top layer's anchor can be
         // tens of blocks away, so every new top particle visibly pops and teleports - the top-layer
@@ -507,9 +556,8 @@ public abstract class TornadoFunnelSimpleMixin {
     /**
      * Puts the combined look's funnel on its own funnel sheet, one animation phase per puff.
      *
-     * <p>The sheet is what makes the column read as condensation: the second of the two puffs the author
-     * supplied, a single 256x256 frame with a mean alpha of 0.466, a peak of 255, 43% of it above 200 and a mid
-     * grey of 104. Weather2's own sheet peaks at 81 of 255, so a funnel drawn on it can only ever be a haze -
+     * <p>The sheet is what makes the column read as condensation: a single 256x256 frame of long soft fibres.
+     * Weather2's own sheet peaks at 81 of 255, so a funnel drawn on it can only ever be a haze -
      * the art is the ceiling - which is why this sheet is not part of the art switch.
      *
      * <p>The phase is dormant: the art is a still frame per role, so the three sibling sheets per role are not
@@ -682,6 +730,9 @@ public abstract class TornadoFunnelSimpleMixin {
                 continue;
             }
             expandedweather2dynamics$activeParticles.add(particle);
+            // Weather2 tilts each of these by its place in the ring, so from most angles it is a thin flat chip. The place in
+            // the ring is what makes the funnel turn, and the tilt adds nothing the sprite's own fibres do not already show.
+            particle.facePlayer = Config.STORM_SOFT_PUFFS.get();
             ParticleMorphState previous = expandedweather2dynamics$particleMorphStates.get(particle);
             float appliedRadiusScale = radiusScale;
             if (lumpTaper > 0.0F && radiusScale > 1.0E-4F) {
@@ -719,14 +770,14 @@ public abstract class TornadoFunnelSimpleMixin {
             float baseScale = previous != null && previous.matchesScale(currentScale)
                     ? previous.unscaleParticle(currentScale)
                     : currentScale;
-            float newScale = Mth.clamp(baseScale * particleScale, 0.05F, 64.0F);
+            // Never so small that the layers show as separate rungs up the funnel's thin foot.
+            float newScale = Mth.clamp(baseScale * particleScale, expandedweather2dynamics$MIN_PUFF_SCALE, 64.0F);
             particle.setScale(newScale);
             float alpha = alphaScale < 0.995F
                     ? Mth.clamp(alphaScale * 0.94F, 0.0F, 0.94F)
                     : Mth.clamp(0.86F + (particleScale - 1.0F) * 0.06F, 0.78F, 0.98F);
-            // The sheet carries a body of its own now - a 0.466 frame mean against the 0.052 of the art these
-            // alphas were first written against - so the particle's own opacity comes down to keep the
-            // column's weight under control while still reading solid.
+            // The sheet carries a body of its own, against the faint art these alphas were first written for, so
+            // the particle's own opacity comes down to keep the column's weight under control.
             alpha = Mth.clamp(alpha * ClientWeatherEffects.FUNNEL_SPRITE_DENSITY_ALLOWANCE, 0.0F, 0.94F);
             particle.setAlpha(alpha);
             particle.setFullAlphaTarget(alpha);

@@ -18,18 +18,11 @@ import net.neoforged.neoforge.client.event.TextureAtlasStitchedEvent;
  * cloud deck, the lower cloud layer, the funnel and the tornado's ground fog. The deck is thousands of
  * ~30-block billboards, so it gets a sheet of its own.
  *
- * <p>That sheet is the author's own cloud puff: a single 256x256 frame with a mean alpha of 0.683 of 255, a
- * brightest texel of 255, 59% of the frame above 200 and a neutral grey tone of 127. The cloud deck, the structure
- * particles and the loose dust draw that file; the funnel's two sheets draw the second puff the author
- * supplied, which is darker, softer and measured where it is used. Both are put in as they were
- * given rather than redrawn from, and the whole of the art decision is the two puffs themselves. What that
- * means where it is felt: the cloud's alpha is a feathered puff, near full across its middle and then away
- * over a soft rim at 28 levels a texel, filling 94% of its square, so on a thirty-block billboard a puff
- * reads as a soft mass that dissolves into the one behind it, and a stack of them reads as one body of cloud
- * rather than a pile of discs. That is a known trade - the
- * numbers are in {@code GenStormArt}'s own notes, and the disc this replaces is still measured and
- * argued over there - and it is the author's call rather than a measurement's, which is why nothing reshapes
- * either file.
+ * <p>That sheet is a single 256x256 frame drawn by {@code tools/TextureGen.java}: a soft round puff with an even
+ * body that dissolves in a fine grain toward the edge of its square. The structure particles and the loose dust
+ * draw its darker sibling, and the funnel's two sheets draw long vertical fibres instead. A puff has to fill its
+ * square: on a thirty-block billboard it reads as a soft mass that dissolves into the one behind it, and a stack
+ * of them reads as one body of cloud rather than a pile of discs.
  *
  * <p>The phase-aware accessors fall back to the first sheet whenever a sibling is missing from the atlas, and
  * no sibling is shipped: the animation is retired (see {@link StormBillboardPhase}), so every phase answers
@@ -149,12 +142,8 @@ public final class CloudDeckSpriteProvider {
      * The layered funnel's own sheet, and the single asset a storm's look turns on hardest: this is the
      * condensation column itself, and Weather2 draws a ring of these per block of height.
      *
-     * <p>It is the second of the author's puffs, the one supplied for the tornado, and it is not the cloud the
-     * deck and the dust draw: a single 256x256 frame, a mean alpha of 0.466, a peak of 255, 43% of it above
-     * 200, 59% of its square covered and a mid grey of 103, with a harder edge than the cloud's and far less
-     * alpha left at its outer ring. The rings therefore draw the puff's own mottled body across rather less of the
-     * billboard, which on a ring that overlaps its neighbours the whole way up is what a column is built from -
-     * so the edge it has is the edge of a ring rather than of the column.
+     * <p>It is drawn in long vertical fibres, because a funnel is air being pulled up and round, and it is lighter
+     * than the cloud behind it, so the column stands out from the storm it is coming out of.
      *
      * <p>Unlike the deck, the rain, the debris and the dust, this one ignores the art switch: a funnel has to
      * read solid, and Weather2's own sheet peaks at 81 of 255, so no alpha written against it can draw one. See

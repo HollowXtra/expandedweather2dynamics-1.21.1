@@ -1,0 +1,22 @@
+{
+  "vertex": "expandedweather2dynamics:radar_scope",
+  "fragment": "expandedweather2dynamics:radar_scope",
+  "samplers": [
+    { "name": "Sampler0" }
+  ],
+  "uniforms": [
+    { "name": "ModelViewMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ProjMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+    { "name": "ColorModulator", "type": "float", "count": 4, "values": [ 1.0, 1.0, 1.0, 1.0 ] },
+    { "name": "GameTime", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "WorldCentre", "type": "float", "count": 2, "values": [ 0.0, 0.0 ] },
+    { "name": "RangeBlocks", "type": "float", "count": 1, "values": [ 1024.0 ] },
+    { "name": "Product", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "SweepAngle", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "ScanStart", "type": "float", "count": 1, "values": [ 0.0 ] },
+    { "name": "ScanCovered", "type": "float", "count": 1, "values": [ 7.0 ] },
+    { "name": "RingRadius", "type": "float", "count": 1, "values": [ 0.96 ] },
+    { "name": "GlassAmount", "type": "float", "count": 1, "values": [ 1.0 ] },
+    { "name": "Chart", "type": "float", "count": 1, "values": [ 0.0 ] }
+  ]
+}

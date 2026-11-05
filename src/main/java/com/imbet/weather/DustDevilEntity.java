@@ -21,10 +21,25 @@ public class DustDevilEntity extends Entity {
     private static final EntityDataAccessor<Float> DATA_MAX_WIND_MPH = SynchedEntityData.defineId(DustDevilEntity.class, EntityDataSerializers.FLOAT);
     private static final EntityDataAccessor<Float> DATA_MOTION_X = SynchedEntityData.defineId(DustDevilEntity.class, EntityDataSerializers.FLOAT);
     private static final EntityDataAccessor<Float> DATA_MOTION_Z = SynchedEntityData.defineId(DustDevilEntity.class, EntityDataSerializers.FLOAT);
+    /**
+     * How long it has left, and had to begin with.
+     *
+     * <p>The client draws from these: a vortex forms and decays over its life, and a client that first sees one in
+     * the middle of that has to know how far through it is. The remaining count used to live only on the server, so
+     * on the client {@link #lifeTicksRemaining} answered the field's default of 240 for ever - which a waterspout read
+     * as "in its last twelve seconds" and hovered itself clear of the water for its entire life.
+     */
+    private static final EntityDataAccessor<Integer> DATA_LIFE_TICKS = SynchedEntityData.defineId(DustDevilEntity.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Integer> DATA_LIFE_TOTAL = SynchedEntityData.defineId(DustDevilEntity.class, EntityDataSerializers.INT);
+    /** How often the remaining count is sent; the client runs its own count down in between. */
+    private static final int LIFE_SYNC_TICKS = 20;
 
     private int lifeTicks = 240;
+    private int lifeTotal = 240;
     private float radius = 3.0F;
     private float maxWindMph = 38.0F;
+    private int clientLifeTicks = -1;
+    private int lastSyncedLife = -1;
 
     public DustDevilEntity(EntityType<? extends DustDevilEntity> type, Level level) {
         super(type, level);
@@ -35,10 +50,13 @@ public class DustDevilEntity extends Entity {
         this(type, level);
         setPos(position);
         this.lifeTicks = Math.max(20, lifeTicks);
+        this.lifeTotal = this.lifeTicks;
         this.radius = Math.max(1.0F, radius);
         this.maxWindMph = Math.max(0.0F, maxWindMph);
         entityData.set(DATA_RADIUS, this.radius);
         entityData.set(DATA_MAX_WIND_MPH, this.maxWindMph);
+        entityData.set(DATA_LIFE_TICKS, this.lifeTicks);
+        entityData.set(DATA_LIFE_TOTAL, this.lifeTotal);
     }
 
     public DustDevilEntity(Level level, Vec3 position, int lifeTicks, float radius, float maxWindMph) {
@@ -54,11 +72,21 @@ public class DustDevilEntity extends Entity {
                 super.setDeltaMovement(syncedMotion);
             }
             moveWithStormMotion();
+            int synced = entityData.get(DATA_LIFE_TICKS);
+            if (synced != lastSyncedLife) {
+                lastSyncedLife = synced;
+                clientLifeTicks = synced;
+            } else if (clientLifeTicks > 0) {
+                clientLifeTicks--;
+            }
             return;
         }
         if (--lifeTicks <= 0 || !(level() instanceof ServerLevel level)) {
             discard();
             return;
+        }
+        if (tickCount % LIFE_SYNC_TICKS == 0) {
+            entityData.set(DATA_LIFE_TICKS, lifeTicks);
         }
         moveWithStormMotion();
         clampToBoundary(level);
@@ -180,7 +208,15 @@ public class DustDevilEntity extends Entity {
     }
 
     public int lifeTicksRemaining() {
+        if (level().isClientSide()) {
+            return clientLifeTicks >= 0 ? clientLifeTicks : entityData.get(DATA_LIFE_TICKS);
+        }
         return lifeTicks;
+    }
+
+    /** How long it had to live when it formed. */
+    public int lifeTicksTotal() {
+        return level().isClientSide() ? entityData.get(DATA_LIFE_TOTAL) : lifeTotal;
     }
 
     @Override
@@ -189,21 +225,29 @@ public class DustDevilEntity extends Entity {
         builder.define(DATA_MAX_WIND_MPH, 38.0F);
         builder.define(DATA_MOTION_X, 0.0F);
         builder.define(DATA_MOTION_Z, 0.0F);
+        builder.define(DATA_LIFE_TICKS, 240);
+        builder.define(DATA_LIFE_TOTAL, 240);
     }
 
     @Override
     protected void readAdditionalSaveData(CompoundTag compound) {
         lifeTicks = compound.getInt("LifeTicks");
+        // Worlds saved before the total was kept: treat what is left as the whole of it, which at worst replays the
+        // forming seconds of a vortex that is already standing.
+        lifeTotal = compound.contains("LifeTotal") ? compound.getInt("LifeTotal") : lifeTicks;
         radius = compound.getFloat("Radius");
         maxWindMph = compound.getFloat("MaxWindMph");
         entityData.set(DATA_RADIUS, Math.max(1.0F, radius));
         entityData.set(DATA_MAX_WIND_MPH, Math.max(0.0F, maxWindMph));
+        entityData.set(DATA_LIFE_TICKS, lifeTicks);
+        entityData.set(DATA_LIFE_TOTAL, lifeTotal);
         setDeltaMovement(new Vec3(compound.getFloat("MotionX"), 0.0D, compound.getFloat("MotionZ")));
     }
 
     @Override
     protected void addAdditionalSaveData(CompoundTag compound) {
         compound.putInt("LifeTicks", lifeTicks);
+        compound.putInt("LifeTotal", lifeTotal);
         compound.putFloat("Radius", radius);
         compound.putFloat("MaxWindMph", maxWindMph);
         Vec3 motion = getDeltaMovement();

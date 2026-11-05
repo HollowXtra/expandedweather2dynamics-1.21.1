@@ -109,7 +109,7 @@ public final class SatelliteTornadoFunnelRenderer {
     private static final class MiniFunnel {
         private static final float HEIGHT_PER_LAYER = 1.35F;
         /** Width of one debris puff. Small, because dust belongs on the ground rather than above it. */
-        private static final float DEBRIS_SCALE = 1.15F;
+        private static final float DEBRIS_SCALE = 0.70F;
 
         /**
          * The ground under the foot, bearing by bearing: the condensation's lowest ring first, then the
@@ -394,7 +394,7 @@ public final class SatelliteTornadoFunnelRenderer {
                             ? Mth.clamp((int) (7.0F + intensity * 18.0F), 6, 26)
                             : 0;
                 } else {
-                    targetDebris = reveal > 0.58D && fraction < 0.38D ? Mth.clamp((int) (3.0F + intensity * 10.0F), 3, 14) : 0;
+                    targetDebris = reveal > 0.58D && fraction < 0.25D ? Mth.clamp((int) (1.0F + intensity * 3.0F), 1, 4) : 0;
                 }
                 cleanup(layer.debris, targetDebris);
                 while (layer.debris.size() < targetDebris) {
@@ -483,7 +483,7 @@ public final class SatelliteTornadoFunnelRenderer {
                         SubVortexFunnel.condensationAlpha((float) reveal));
                 // A whirl is thinner stuff than a funnel: its haze is drawn back so the swirl reads as
                 // dust hanging in the air rather than as a solid column of condensation.
-                float haze = Mth.clamp(0.40F + 0.50F * (float) visibility, 0.30F, 0.86F);
+                float haze = Mth.clamp(0.22F + 0.28F * (float) visibility, 0.18F, 0.50F);
                 for (PivotingParticle particle : layer.clouds) {
                     float faded = Mth.clamp(particle.getAlphaF() * haze, 0.05F, 0.88F);
                     particle.setAlpha(faded);
@@ -616,7 +616,7 @@ public final class SatelliteTornadoFunnelRenderer {
                 positionHorizontalClouds(layer, targetClouds, side, normal, tangent, radius, reveal);
 
                 int targetDebris = reveal > 0.62D && fraction < 0.62D
-                        ? Mth.clamp((int) ((1.0F + intensity * 3.0F) * (1.0F - 0.75F * (float) freeProgress)), 0, 4)
+                        ? (lastSeenTick + i & 3L) == 0L ? 1 : 0
                         : 0;
                 cleanup(layer.debris, targetDebris);
                 while (layer.debris.size() < targetDebris) {
@@ -1058,12 +1058,14 @@ public final class SatelliteTornadoFunnelRenderer {
         }
 
         private static PivotingParticle createCloud(ClientLevel level, Vec3 pos, float renderCull) {
-            PivotingParticle particle = new PivotingParticle(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D, ParticleArt.cloud256());
+            // The parent funnel's own sheet, so a sub-vortex looks like more of the same air rather than a ball of smoke.
+            PivotingParticle particle = new PivotingParticle(level, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D, ParticleArt.funnelSprite());
+            particle.facePlayer = Config.STORM_SOFT_PUFFS.get();
             particle.setMaxAge(25000);
             particle.setTicksFadeInMax(18);
             particle.setParticleSpeed(0.0D, 0.0D, 0.0D);
-            float baseBright = 0.34F;
-            float finalBright = Math.min(1.0F, baseBright + level.random.nextFloat() * 0.45F);
+            float baseBright = 0.58F;
+            float finalBright = Math.min(1.0F, baseBright + level.random.nextFloat() * 0.36F);
             particle.setColor(finalBright - 0.14F, finalBright - 0.14F, finalBright - 0.10F);
             // The sheet's body is denser now, so the mini funnels scale their opacity back the same way
             // the parent funnel does - see ClientWeatherEffects.FUNNEL_SPRITE_DENSITY_ALLOWANCE.

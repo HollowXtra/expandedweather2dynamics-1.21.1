@@ -147,7 +147,10 @@ public final class BlockGrabSafety {
         }
         BlockPos surface = safeSurface(level, column, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
         if (surface == null) {
-            surface = safeSurface(level, column, Heightmap.Types.WORLD_SURFACE_WG);
+            // WORLD_SURFACE, not WORLD_SURFACE_WG: the _WG maps only exist while a chunk is being generated. On
+            // a loaded chunk this fallback answered null on the server, and on the client it primed a map that
+            // nothing keeps current, so a vortex could anchor to ground that had since been built on or dug out.
+            surface = safeSurface(level, column, Heightmap.Types.WORLD_SURFACE);
         }
         if (surface == null) {
             return null;

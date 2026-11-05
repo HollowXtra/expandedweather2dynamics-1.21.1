@@ -4,6 +4,7 @@ import com.imbet.Config;
 import com.imbet.client.CloudDeckSpriteProvider;
 import com.imbet.client.LineStormDeck;
 import com.imbet.client.StormBillboardPhase;
+import com.imbet.weather.DynamicStormController;
 import extendedrenderer.particle.entity.EntityRotFX;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.world.phys.Vec3;
@@ -35,7 +36,7 @@ import weather2.weathersystem.storm.StormObject;
  *
  * <p>The same moment is where each deck puff would be given one of the deck sheet's animation phases, and it is
  * still the right moment for it - the only one at which a puff exists without having been made. Nothing is
- * phased at present: the deck's art is a single still frame of the author's own cloud, so the siblings are not
+ * phased at present: the deck's art is a single still frame, so the siblings are not
  * shipped and every phase answers the sheet itself. See {@link StormBillboardPhase}.
  *
  * <p>Both branches route rather than stand down: the geometry still has to be Weather2's own, but the art has to
@@ -64,6 +65,9 @@ public abstract class StormObjectCloudDeckMixin {
     /** Weather2's scatter funnel is the one 4-argument caller that asks for render order 1. */
     private static final int SCATTER_FUNNEL_RENDER_ORDER = 1;
 
+    /** A deck puff is never made this far under the cloud base: what is down here is ground fog. */
+    private static final double GROUND_FOG_BELOW_BASE_BLOCKS = 100.0D;
+
     /** True only inside this mixin's own delegate call, so placing a puff cannot recurse into placing it. */
     @Unique
     private boolean expandedweather2dynamics$placingLineDeck;
@@ -83,6 +87,30 @@ public abstract class StormObjectCloudDeckMixin {
         // is off by default now and there is nothing to phase: the art is one still frame.
         int phase = Config.billboardPhases() ? StormBillboardPhase.forPoint(x, y, z) : 0;
         cir.setReturnValue(storm.spawnFogParticle(x, y, z, type, CloudDeckSpriteProvider.deckSprite(phase)));
+    }
+
+    /**
+     * Turns every puff to face the eye. Weather2 lays its deck out in flat, slowly tilting quads, which is fine from
+     * below and a row of black needles from anywhere near level, and level is where a storm chaser's eye spends its
+     * time. The field is read at draw time and beats whatever yaw and pitch Weather2 goes on writing, so nothing else
+     * about the puff has to change.
+     */
+    @Inject(method = "spawnFogParticle(DDDILnet/minecraft/client/renderer/texture/TextureAtlasSprite;)Lextendedrenderer/particle/entity/EntityRotFX;",
+            at = @At("RETURN"))
+    private void expandedweather2dynamics$faceTheEye(double x, double y, double z, int type, TextureAtlasSprite sprite, CallbackInfoReturnable<EntityRotFX> cir) {
+        EntityRotFX puff = cir.getReturnValue();
+        if (puff == null || !Config.STORM_SOFT_PUFFS.get()) {
+            return;
+        }
+        puff.facePlayer = true;
+        // Weather2's ground fog: a ring of small dark domes standing on the field round the storm, reading as nothing in
+        // particular. The dust at the foot is what the ground has to show now. Weather2 would only replace them if they
+        // were removed, so they are kept and left unseen.
+        StormObject storm = (StormObject) (Object) this;
+        if (!Config.classicLook() && y < DynamicStormController.cloudBaseWorldY(storm) - GROUND_FOG_BELOW_BASE_BLOCKS) {
+            puff.setFullAlphaTarget(0.0F);
+            puff.setAlpha(0.0F);
+        }
     }
 
     /**

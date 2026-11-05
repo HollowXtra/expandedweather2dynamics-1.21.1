@@ -27,6 +27,11 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
      */
     private static final int SCOPE_PASS = 0x2A020303;
 
+    /** The box the display is drawn in on the block's top face, and the range circle as a share of it. */
+    private static final float FACE_MIN = 0.055F;
+    private static final float FACE_MAX = 0.945F;
+    private static final float RING_RADIUS = RadarEchoField.SCOPE_RADIUS / 0.445F;
+
 
     /**
      * Reflectivity samples for the cell corners currently being drawn. Reused between calls because the render
@@ -49,14 +54,6 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
         if (!Config.RADAR_WORLD_PANEL_ENABLED.get()) {
             return;
         }
-        VertexConsumer consumer = PanelRenderPath.consumer(buffer, RadarShader.radarPanel(), packedLight);
-        PoseStack.Pose pose = stack.last();
-        float y = 1.014F;
-        // The face goes down first: the map, the returns and the markers are all drawn over it, and the
-        // buffer keeps the order the vertices went in.
-        RenderQuads.topQuadUv(consumer, pose, 0.055F, 0.055F, 0.945F, 0.945F, y, PanelRenderPath.screenPass(SCOPE_PASS));
-        drawRadarMapGrid(consumer, pose, y + 0.001F);
-
         // The feed says which product it was swept in and how far it reaches, so this panel and a handheld
         // showing the same radar cannot disagree; the block entity is only the fallback before the first sweep
         // lands, or with the radar switched off.
@@ -64,6 +61,31 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
         List<RadarStormSnapshot> storms = feed == null ? List.of() : feed.storms();
         int range = feed != null ? Math.max(64, feed.range()) : Math.max(64, radar.getRange());
         int mode = feed != null ? feed.mode() : radar.getMode();
+        float y = 1.014F;
+
+        // The face and the product are one quad through the display program, which is the same picture the handheld
+        // shows. Under a pack that program is gone, so the older path below draws them as geometry instead.
+        boolean program = RadarScopeShader.ready() && !RenderingCompat.isShaderPackActive();
+        if (program) {
+            long tick = radar.getLevel() == null ? 0L : radar.getLevel().getGameTime();
+            RadarFieldTexture field = RadarFieldTexture.forRadar(radar.getBlockPos(), storms, mode, range, tick, partialTick);
+            field.display(radar.getBlockPos().getX() + 0.5D, radar.getBlockPos().getZ() + 0.5D, range, mode, RING_RADIUS, 0.55F, false);
+            VertexConsumer face = buffer.getBuffer(RadarScopeShader.type(field));
+            PoseStack.Pose facePose = stack.last();
+            face.addVertex(facePose, FACE_MIN, y, FACE_MAX).setUv(0.0F, 1.0F).setColor(0xFFFFFFFF);
+            face.addVertex(facePose, FACE_MAX, y, FACE_MAX).setUv(1.0F, 1.0F).setColor(0xFFFFFFFF);
+            face.addVertex(facePose, FACE_MAX, y, FACE_MIN).setUv(1.0F, 0.0F).setColor(0xFFFFFFFF);
+            face.addVertex(facePose, FACE_MIN, y, FACE_MIN).setUv(0.0F, 0.0F).setColor(0xFFFFFFFF);
+        }
+
+        VertexConsumer consumer = PanelRenderPath.consumer(buffer, RadarShader.radarPanel(), packedLight);
+        PoseStack.Pose pose = stack.last();
+        if (!program) {
+            // The face goes down first: the map, the returns and the markers are all drawn over it, and the
+            // buffer keeps the order the vertices went in.
+            RenderQuads.topQuadUv(consumer, pose, 0.055F, 0.055F, 0.945F, 0.945F, y, PanelRenderPath.screenPass(SCOPE_PASS));
+            drawRadarMapGrid(consumer, pose, y + 0.001F);
+        }
         for (RadarStormSnapshot storm : storms) {
             float rx = RadarEchoField.scopeCoord(storm.x(), radar.getBlockPos().getX(), range);
             float rz = RadarEchoField.scopeCoord(storm.z(), radar.getBlockPos().getZ(), range);
@@ -87,7 +109,7 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
             // reflectivity return - but it does have a velocity signature, so the other two products still
             // give it an extent.
             float markerSize = Math.max(size, 0.030F);
-            if (returnInside) {
+            if (returnInside && !program) {
                 if (mode == 1) {
                     drawVelocityReturn(consumer, pose, storm, hookX, hookZ, markerSize, y + 0.007F);
                 } else if (mode == 2) {

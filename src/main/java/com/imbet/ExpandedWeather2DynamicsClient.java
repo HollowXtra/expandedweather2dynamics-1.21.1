@@ -13,6 +13,9 @@ import com.imbet.client.WeatherDroneClient;
 import com.imbet.client.WeatherDroneRenderer;
 import com.imbet.client.TornadoSirenSound;
 import com.imbet.client.VanillaRainMode;
+import com.imbet.client.MachineItemRenderer;
+import com.imbet.client.RadarScopeShader;
+import com.imbet.client.SoftPuffs;
 import com.imbet.client.WeatherAlertSirenRenderer;
 import com.imbet.client.WeatherComputerScreen;
 import com.imbet.client.config.EwdConfigScreen;
@@ -58,6 +61,7 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 import net.neoforged.neoforge.client.event.RegisterShadersEvent;
+import net.neoforged.neoforge.client.extensions.common.RegisterClientExtensionsEvent;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.common.NeoForge;
 
@@ -207,8 +211,18 @@ public class ExpandedWeather2DynamicsClient {
     }
 
     @SubscribeEvent
+    static void registerClientExtensions(RegisterClientExtensionsEvent event) {
+        event.registerItem(MachineItemRenderer.EXTENSIONS,
+                ModContent.MECHANICAL_SIREN_BLOCK_ITEM.get(),
+                ModContent.ELECTRONIC_SIREN_BLOCK_ITEM.get(),
+                ModContent.HILO_SIREN_BLOCK_ITEM.get());
+    }
+
+    @SubscribeEvent
     static void registerShaders(RegisterShadersEvent event) throws IOException {
         RadarShader.register(event);
+        SoftPuffs.register(event);
+        RadarScopeShader.register(event);
         InstrumentPanelShader.register(event);
         LightningBoltShader.register(event);
         RainVolumeShader.register(event);

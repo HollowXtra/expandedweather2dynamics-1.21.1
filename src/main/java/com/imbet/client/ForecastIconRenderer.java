@@ -131,7 +131,12 @@ public final class ForecastIconRenderer {
         stack.translate(display.origin().getX() + 0.5D - camera.x, display.origin().getY() + 1.04D - camera.y, display.origin().getZ() + 0.5D - camera.z);
         boolean trackMode = display.mode() == ForecastSnapshotPayload.MODE_TRACKS;
         boolean riskMode = display.mode() == ForecastSnapshotPayload.MODE_RISK;
-        renderScanPlate(stack, buffer, trackMode ? 0x4A0B090F : riskMode ? 0x4A040806 : storms.isEmpty() ? 0x36000000 : 0x52000000);
+        boolean chart = RadarScopeShader.ready() && !RenderingCompat.isShaderPackActive();
+        if (chart) {
+            renderChartPlate(minecraft, stack, buffer, display);
+        } else {
+            renderScanPlate(stack, buffer, trackMode ? 0x4A0B090F : riskMode ? 0x4A040806 : storms.isEmpty() ? 0x36000000 : 0x52000000);
+        }
         if (riskMode) {
             PlatePolygonRenderer.renderRisk(stack, buffer, display, polygons);
         } else if (!trackMode) {
@@ -207,6 +212,38 @@ public final class ForecastIconRenderer {
         return 3;
     }
 
+    /**
+     * The plate as a forecaster's working chart: a real composite of what is on the scan, over a map, in the same
+     * colour tables the radar uses, thrown up by the block on four beams of light.
+     *
+     * <p>The chart reaches as far as the plate's own mapping does, so a storm's echo lands exactly under its marker.
+     */
+    private static void renderChartPlate(Minecraft minecraft, PoseStack stack, MultiBufferSource.BufferSource buffer, ClientForecastStore.Display display) {
+        float half = PLATE_HALF;
+        VertexConsumer beams = buffer.getBuffer(FORECAST_PLATE);
+        PoseStack.Pose beamPose = stack.last();
+        float[][] corners = {{-half, -half}, {half, -half}, {half, half}, {-half, half}};
+        for (int i = 0; i < 4; i++) {
+            float[] from = corners[i];
+            float[] to = corners[(i + 1) % 4];
+            beams.addVertex(beamPose, 0.0F, -0.06F, 0.0F).setColor(0, 228, 255, 54);
+            beams.addVertex(beamPose, 0.0F, -0.06F, 0.0F).setColor(0, 228, 255, 54);
+            beams.addVertex(beamPose, to[0], 0.012F, to[1]).setColor(0, 228, 255, 6);
+            beams.addVertex(beamPose, from[0], 0.012F, from[1]).setColor(0, 228, 255, 6);
+        }
+        int rim = Math.max(1, Math.round(half / 3.0F * Math.max(128, display.range())));
+        long tick = minecraft.level == null ? 0L : minecraft.level.getGameTime();
+        RadarFieldTexture field = RadarFieldTexture.forRadar(display.origin(), display.storms() == null ? List.of() : display.storms(), 0, rim, tick, 0.0F);
+        field.display(display.origin().getX() + 0.5D, display.origin().getZ() + 0.5D, rim, 0, 1.0F, 0.35F, true);
+        VertexConsumer face = buffer.getBuffer(RadarScopeShader.type(field));
+        PoseStack.Pose pose = stack.last();
+        face.addVertex(pose, -half, 0.015F, half).setUv(0.0F, 1.0F).setColor(1.0F, 1.0F, 1.0F, 0.90F);
+        face.addVertex(pose, half, 0.015F, half).setUv(1.0F, 1.0F).setColor(1.0F, 1.0F, 1.0F, 0.90F);
+        face.addVertex(pose, half, 0.015F, -half).setUv(1.0F, 0.0F).setColor(1.0F, 1.0F, 1.0F, 0.90F);
+        face.addVertex(pose, -half, 0.015F, -half).setUv(0.0F, 0.0F).setColor(1.0F, 1.0F, 1.0F, 0.90F);
+        buffer.endBatch();
+    }
+
     private static void renderScanPlate(PoseStack stack, MultiBufferSource.BufferSource buffer, int color) {
         VertexConsumer consumer = buffer.getBuffer(FORECAST_PLATE);
         PoseStack.Pose pose = stack.last();
@@ -220,10 +257,13 @@ public final class ForecastIconRenderer {
     }
 
     private static void renderWeather2IconScan(Minecraft minecraft, PoseStack stack, MultiBufferSource.BufferSource buffer, ClientForecastStore.Display display, List<RadarStormSnapshot> storms) {
-        renderRadarRangeMarks(stack, buffer);
-        if (storms.isEmpty()) {
-            renderIdleWeatherIcons(minecraft, stack, buffer, display);
-            return;
+        boolean chart = RadarScopeShader.ready() && !RenderingCompat.isShaderPackActive();
+        if (!chart) {
+            renderRadarRangeMarks(stack, buffer);
+            if (storms.isEmpty()) {
+                renderIdleWeatherIcons(minecraft, stack, buffer, display);
+                return;
+            }
         }
         int count = Math.min(storms.size(), 8);
         for (int i = 0; i < count; i++) {
@@ -237,7 +277,13 @@ public final class ForecastIconRenderer {
             }
             float y = 0.31F + (i % 3) * 0.045F;
             float size = storm.hasConfirmedCirculation() ? 0.30F : storm.hookEcho() ? 0.27F : storm.severity() >= 3 ? 0.24F : 0.21F;
-            drawBillboard(minecraft, stack, buffer, iconFor(storm), x, y, z, size, colorFor(storm));
+            ResourceLocation icon = iconFor(storm);
+            // Ordinary rain is on the chart already as an echo. A symbol is for what a forecaster would flag on top of
+            // it, and a pile of raindrops over every shower was hiding the very picture it was describing.
+            if (chart && (icon == ICON_RAIN || icon == ICON_RAIN2) && !storm.vortex() && !storm.hookEcho()) {
+                continue;
+            }
+            drawBillboard(minecraft, stack, buffer, icon, x, y, z, size, colorFor(storm));
             if (i < 4) {
                 renderFlatText(minecraft, stack, buffer, stageShort(storm), x - 0.075F, z - 0.16F, 0.060F + i * 0.001F, 0.0062F, 0xFFFFFFFF);
             }

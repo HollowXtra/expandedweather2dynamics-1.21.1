@@ -48,6 +48,8 @@ public final class StormDeckCauliflower {
     private static final double VERTICAL_PULL = 0.45D;
     /** Per-lobe radial spread around the band ring. */
     private static final double LOBE_SPREAD = 0.36D;
+    /** How far below its centre a puff's visible body reaches, as a share of its half width. */
+    private static final double PUFF_VISIBLE_HALF_HEIGHT = 0.80D;
 
     // ---- Hurricane shield ----
     /** How hard the shield is flattened vertically: the deck is a slab, not a crown. */
@@ -193,6 +195,28 @@ public final class StormDeckCauliflower {
             particle.setPosX(bounds.centreX() + dx * scale);
             particle.setPosZ(bounds.centreZ() + dz * scale);
             particle.setPosY(Mth.lerp(VERTICAL_PULL * 0.6D, y, bounds.upperMinY() - 4.0D));
+        }
+
+        double cloudBase = DynamicStormController.cloudBaseWorldY(storm);
+        holdAboveCloudBase(upper.values(), cloudBase);
+        holdAboveCloudBase(lower.values(), cloudBase);
+    }
+
+    /**
+     * Gives the storm a flat underside. Each puff is held up by its own width, so the biggest stand highest and every
+     * one of them stops at the same level: a sky-filling puff is well over a hundred blocks across, and without this
+     * the deck sagged nearly to the ground on top of the tornado. A flat base is also simply what one looks like.
+     */
+    private static void holdAboveCloudBase(Iterable<EntityRotFX> puffs, double cloudBase) {
+        for (EntityRotFX puff : puffs) {
+            if (puff == null) {
+                continue;
+            }
+            double floor = cloudBase + puff.getScale() * PUFF_VISIBLE_HALF_HEIGHT;
+            if (puff.getPosY() < floor) {
+                puff.setPosY(floor);
+                puff.setPrevPosY(floor);
+            }
         }
     }
 

@@ -1,108 +1,84 @@
 package com.imbet.client;
 
 import com.imbet.Config;
+import com.imbet.ExpandedWeather2Dynamics;
+import com.imbet.network.RadarSnapshotPayload;
 import com.imbet.radar.ClientRadarStore;
 import com.imbet.radar.RadarBlockEntity;
 import com.imbet.radar.RadarMenu;
-import com.imbet.network.RadarSnapshotPayload;
 import com.imbet.radar.RadarStormSnapshot;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.BufferUploader;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.Tesselator;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Inventory;
+import org.joml.Matrix4f;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Locale;
 
 /**
- * The portable radar's screen: a plan-position indicator for whatever radar it is showing.
+ * The portable radar: a ruggedised handheld with a real radar display on it.
  *
- * <p>It is not a radar of its own. Everything on the scope - where a storm sits, how wide its echo is, where
- * its hook and inflow notch curl, whether the return is a hail core or a debris ball - comes from
- * {@link RadarEchoField}, the same maths the weather radar block draws on its face, and the feed being shown
- * is a weather radar block's own feed when one was in reach. A handheld and a block therefore show one
- * picture rather than two, which they did not while each carried a private copy of the product maths: the
- * panel drew a smooth echo at the storm's true position and this screen drew a flat square near it.
+ * <p>It is not a radar of its own. Everything on the scope comes from {@link RadarEchoField}, through the same
+ * {@link RadarFieldTexture} and the same {@code radar_scope} program the weather radar block draws its face with, and
+ * the feed being shown is a weather radar block's own feed when one was in reach. A handheld and a block therefore show
+ * one picture rather than two.
  *
- * <p>Drawn with plain fills because a GUI has no vertex colours to interpolate; the field is sampled two
- * pixels a cell, close to the resolution the block's face uses, so it reads as the same shield.
+ * <p>The scope used to be plain fills in a small flat panel, a colour per two-pixel cell. Now the product is drawn by
+ * the program, and everything drawn over it is vector geometry at the screen's own resolution rather than at the GUI's
+ * coarse one, so a track is a line and a ring is round. Text that does not fit is cut to fit rather than left to run off
+ * the display, which it used to do on any storm with a long name.
+ *
+ * <p>Under a shader pack the GUI is untouched - a pack does not replace programs for the 2D pass - so this one path
+ * holds everywhere.
  */
 public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
-    private static final int PANEL = 0xEE0A1513;
-    private static final int BORDER = 0xFF5DB6B2;
-    private static final int TEXT = 0xFFE6F3F1;
-    private static final int DIM_TEXT = 0xFF9FD5D1;
+    private static final ResourceLocation DEVICE = ResourceLocation.fromNamespaceAndPath(ExpandedWeather2Dynamics.MODID, "textures/gui/radar_device.png");
 
-    /** The box the round screen fills, and where it sits inside the panel. */
-    private static final int SCOPE_SIZE = 144;
-    private static final int SCOPE_INSET_X = 12;
-    private static final int SCOPE_INSET_Y = 20;
+    /** The whole device, in GUI units. The texture is authored at twice this, so it is crisp at the usual GUI scales. */
+    private static final int DEVICE_WIDTH = 316;
+    private static final int DEVICE_HEIGHT = 208;
+
+    /** The screen inside the case. */
+    private static final int LCD_X = 18;
+    private static final int LCD_Y = 16;
+    private static final int LCD_WIDTH = 280;
+    private static final int LCD_HEIGHT = 168;
+
+    /** The square the round scope fills, flush with the left of the screen. */
+    private static final int SCOPE_SIZE = 168;
     private static final float SCOPE_RADIUS_PX = SCOPE_SIZE / 2.0F;
 
-    /**
-     * The pixel radius the configured range lands on.
-     *
-     * <p>From the block program's own proportions: the radar range is mapped onto 0.43 of the panel while the
-     * screen under it reaches 0.445, so the range circle sits just inside the rim - the same margin the block
-     * face has, which is what keeps a distance on this screen meaning the same distance as on that one.
-     */
-    private static final float RANGE_RADIUS_PX = SCOPE_RADIUS_PX * (RadarEchoField.SCOPE_RADIUS / 0.445F);
+    /** The rim as a share of the box: the same share the block face has, so a distance means the same on both. */
+    private static final float RING_RADIUS = RadarEchoField.SCOPE_RADIUS / 0.445F;
+    private static final float RANGE_RADIUS_PX = SCOPE_RADIUS_PX * RING_RADIUS;
 
-    /** Side of one field cell in pixels - near the resolution the block face samples at. */
-    private static final int CELL_PX = 2;
+    /** The data column to the right of the scope. */
+    private static final int DATA_X = LCD_X + SCOPE_SIZE + 6;
+    private static final int DATA_WIDTH = LCD_WIDTH - SCOPE_SIZE - 10;
 
-    private static final int SCREEN_FACE = 0xFF04100E;
-    private static final int RING = 0x7A2FA98C;
-    private static final int RIM = 0xFF1E6353;
-    private static final int CROSSHAIR = 0x55257F6B;
-    private static final int GRATICULE = 0x331C6B57;
-    private static final int BEAM = 0x4CE6BC;
+    private static final int INK = 0xFFE9F1F0;
+    private static final int INK_DIM = 0xFF8FA6A4;
+    private static final int INK_ACCENT = 0xFF5FE0C2;
+    private static final int RULE = 0x663C5552;
 
-    /**
-     * A storm's sampled product field, kept between frames.
-     *
-     * <p>Sampling is the expensive part - every corner evaluates the reflectivity function, powers included -
-     * and the answer only changes when the radar sweeps again, once a second or slower. So the lattice is
-     * rebuilt when the storm, the product or the range differs from the last one and drawn from memory
-     * otherwise, which is what keeps a screen open in front of a supercell from costing what the sweep costs.
-     */
-    private static final class Lattice {
-        private RadarStormSnapshot storm;
-        private int mode;
-        private int range;
-        private int cells;
-        private int side;
-        private float[] values = new float[0];
-
-        private boolean matches(RadarStormSnapshot candidate, int candidateMode, int candidateRange) {
-            return mode == candidateMode && range == candidateRange && storm != null && storm.equals(candidate);
-        }
-
-        private void mark(RadarStormSnapshot candidate, int candidateMode, int candidateRange) {
-            storm = candidate;
-            mode = candidateMode;
-            range = candidateRange;
-        }
-
-        private float[] reserve(int side) {
-            this.side = side;
-            if (values.length < side * side) {
-                values = new float[side * side];
-            }
-            return values;
-        }
-    }
-
-    private final Map<Long, Lattice> lattices = new HashMap<>();
+    private static final float[] LEGEND_DBZ = {5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75};
 
     public RadarScreen(RadarMenu menu, Inventory playerInventory, Component title) {
         super(menu, playerInventory, title);
-        imageWidth = 238;
-        imageHeight = 184;
-        inventoryLabelY = imageHeight + 1000;
+        imageWidth = DEVICE_WIDTH;
+        imageHeight = DEVICE_HEIGHT;
     }
 
     @Override
@@ -112,15 +88,22 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         renderTooltip(graphics, mouseX, mouseY);
     }
 
+    /**
+     * Nothing: the display draws its own title.
+     *
+     * <p>The inherited labels drew the menu's title a second time underneath, dark on dark, a pixel off from the real
+     * one, which is why the handheld's name always looked smeared.
+     */
+    @Override
+    protected void renderLabels(GuiGraphics graphics, int mouseX, int mouseY) {
+    }
+
     @Override
     protected void renderBg(GuiGraphics graphics, float partialTick, int mouseX, int mouseY) {
         int x = leftPos;
         int y = topPos;
-        graphics.fill(x, y, x + imageWidth, y + imageHeight, PANEL);
-        graphics.renderOutline(x, y, imageWidth, imageHeight, BORDER);
-
-        int centerX = x + SCOPE_INSET_X + SCOPE_SIZE / 2;
-        int centerY = y + SCOPE_INSET_Y + SCOPE_SIZE / 2;
+        RenderSystem.enableBlend();
+        graphics.blit(DEVICE, x, y, DEVICE_WIDTH, DEVICE_HEIGHT, 0.0F, 0.0F, DEVICE_WIDTH * 2, DEVICE_HEIGHT * 2, DEVICE_WIDTH * 2, DEVICE_HEIGHT * 2);
 
         RadarSnapshotPayload feed = ClientRadarStore.feedFor(menu.radarPos());
         List<RadarStormSnapshot> storms = feed == null ? List.of() : feed.storms();
@@ -129,338 +112,131 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         double originX = menu.radarPos().getX();
         double originZ = menu.radarPos().getZ();
 
-        drawScopeFace(graphics, centerX, centerY, partialTick);
-        drawGraticule(graphics, centerX, centerY);
-        for (RadarStormSnapshot storm : storms) {
-            switch (mode) {
-                case 1 -> drawVelocityReturn(graphics, storm, originX, originZ, range, mode, centerX, centerY);
-                case 2 -> drawRiskArea(graphics, storm, originX, originZ, range, centerX, centerY);
-                default -> drawReflectivityReturn(graphics, storm, originX, originZ, range, mode, centerX, centerY);
-            }
-        }
-        // Tracks and markers go over the products, in the order the block face draws them, so a tornado stays
-        // readable on top of whatever its own echo or risk area is doing.
-        for (RadarStormSnapshot storm : storms) {
-            drawMotionTrack(graphics, storm, originX, originZ, range, centerX, centerY);
-            drawMarkers(graphics, storm, originX, originZ, range, centerX, centerY);
-        }
+        graphics.fill(x + LCD_X, y + LCD_Y, x + LCD_X + LCD_WIDTH, y + LCD_Y + LCD_HEIGHT, 0xFF03060A);
 
-        drawHeader(graphics, x, y, feed, range, mode, storms.size());
-        drawStormList(graphics, x, y, storms);
+        int scopeX = x + LCD_X;
+        int scopeY = y + LCD_Y;
+        drawScope(graphics, scopeX, scopeY, storms, mode, range, originX, originZ, partialTick);
+
+        float centerX = scopeX + SCOPE_RADIUS_PX;
+        float centerY = scopeY + SCOPE_RADIUS_PX;
+        VertexConsumer lines = graphics.bufferSource().getBuffer(RenderType.gui());
+        Matrix4f pose = graphics.pose().last().pose();
+        for (RadarStormSnapshot storm : storms) {
+            drawMotionTrack(lines, pose, storm, originX, originZ, range, centerX, centerY);
+        }
+        for (RadarStormSnapshot storm : storms) {
+            drawMarkers(lines, pose, storm, originX, originZ, range, centerX, centerY);
+        }
+        graphics.flush();
+
+        drawRangeLabels(graphics, scopeX, scopeY, range);
+        drawData(graphics, x, y, feed, storms, range, mode);
     }
 
     // ------------------------------------------------------------------------------------------------
-    // The scope itself.
+    // The scope.
     // ------------------------------------------------------------------------------------------------
 
-    private void drawScopeFace(GuiGraphics graphics, int centerX, int centerY, float partialTick) {
-        fillDisc(graphics, centerX, centerY, Math.round(SCOPE_RADIUS_PX), SCREEN_FACE);
-        // Rings at quarter, half and three quarters of the range, as the block's face places them, so the gap
-        // between two rings is a quarter of whatever range this radar is set to.
-        strokeCircle(graphics, centerX, centerY, Math.round(RANGE_RADIUS_PX * 0.25F), RING);
-        strokeCircle(graphics, centerX, centerY, Math.round(RANGE_RADIUS_PX * 0.50F), RING);
-        strokeCircle(graphics, centerX, centerY, Math.round(RANGE_RADIUS_PX * 0.75F), RING);
-        int reach = Math.round(RANGE_RADIUS_PX);
-        graphics.fill(centerX, centerY - reach, centerX + 1, centerY + reach, CROSSHAIR);
-        graphics.fill(centerX - reach, centerY, centerX + reach, centerY + 1, CROSSHAIR);
-        drawSweep(graphics, centerX, centerY, partialTick);
-        strokeCircle(graphics, centerX, centerY, Math.round(SCOPE_RADIUS_PX) - 1, RIM);
-    }
-
-    /**
-     * The beam and its afterglow, on the block program's own terms: the same rate around the screen and the
-     * same exponential decay behind it, so the two displays sweep together rather than at their own speeds.
-     */
-    private void drawSweep(GuiGraphics graphics, int centerX, int centerY, float partialTick) {
+    private void drawScope(GuiGraphics graphics, int x, int y, List<RadarStormSnapshot> storms, int mode, int range,
+                           double originX, double originZ, float partialTick) {
         Minecraft minecraft = Minecraft.getInstance();
-        long ticks = minecraft.level == null ? 0L : minecraft.level.getGameTime();
-        float angle = (ticks + partialTick) * 0.055F;
-        for (int i = -12; i <= 12; i++) {
-            float delta = i * 0.07F;
-            double intensity = Math.exp(-Math.abs(delta) * 3.2D) * 0.42D + (i == 0 ? 0.55D : 0.0D);
-            if (intensity < 0.03D) {
-                continue;
-            }
-            drawRay(graphics, centerX, centerY, angle + delta, (int) Mth.clamp(intensity * 190.0D, 0.0D, 255.0D));
-        }
-    }
-
-    private void drawRay(GuiGraphics graphics, int centerX, int centerY, float angle, int alpha) {
-        float length = RANGE_RADIUS_PX * 0.98F;
-        int steps = 16;
-        for (int i = 1; i <= steps; i++) {
-            float t = i / (float) steps;
-            // Power falls with range, as it does on the face: the beam fades as it runs out to the rim.
-            int faded = Math.round(alpha * (1.0F - t * t * t) * 0.85F);
-            if (faded <= 2) {
-                continue;
-            }
-            int px = centerX + Math.round(Mth.cos(angle) * length * t);
-            int py = centerY + Math.round(Mth.sin(angle) * length * t);
-            fillOnScope(graphics, centerX, centerY, px, py, px + 1, py + 1, RadarEchoField.withAlpha(BEAM, faded));
-        }
-    }
-
-    /** The faint graticule the returns are drawn over, at the same spacing the block face uses. */
-    private void drawGraticule(GuiGraphics graphics, int centerX, int centerY) {
-        int reach = Math.round(RANGE_RADIUS_PX);
-        for (int i = -4; i <= 4; i++) {
-            int offset = Math.round(reach * i / 4.0F);
-            fillOnScope(graphics, centerX, centerY, centerX + offset, centerY - reach, centerX + offset + 1, centerY + reach, GRATICULE);
-            fillOnScope(graphics, centerX, centerY, centerX - reach, centerY + offset, centerX + reach, centerY + offset + 1, GRATICULE);
-        }
-    }
-
-    // ------------------------------------------------------------------------------------------------
-    // The products, sampled through the shared field.
-    // ------------------------------------------------------------------------------------------------
-
-    private void drawReflectivityReturn(GuiGraphics graphics, RadarStormSnapshot storm, double originX, double originZ,
-                                        int range, int mode, int centerX, int centerY) {
-        float size = RadarEchoField.panelToScreen(RadarEchoField.returnSize(storm, range), RANGE_RADIUS_PX);
-        if (size <= 0.0F) {
-            // A circulation riding inside a parent storm's shield has no shield of its own to draw.
+        long tick = minecraft.level == null ? 0L : minecraft.level.getGameTime();
+        RadarFieldTexture field = RadarFieldTexture.forRadar(menu.radarPos(), storms, mode, range, tick, partialTick);
+        if (!RadarScopeShader.ready()) {
             return;
         }
-        float rx = screenX(storm.x(), originX, range);
-        float rz = screenZ(storm.z(), originZ, range);
-        Lattice lattice = latticeFor(storm);
-        if (!lattice.matches(storm, mode, range)) {
-            float angle = RadarEchoField.motionAngle(storm);
-            float cos = Mth.cos(angle);
-            float sin = Mth.sin(angle);
-            RadarEchoField.EchoAnchors anchors = anchors(storm, originX, originZ, range, rx, rz, cos, sin);
-            int cells = RadarEchoField.echoCells(size, CELL_PX);
-            int side = cells * 2 + 1;
-            float[] values = lattice.reserve(side);
-            for (int ix = 0; ix < side; ix++) {
-                for (int iz = 0; iz < side; iz++) {
-                    float dx = (ix - cells) * CELL_PX;
-                    float dz = (iz - cells) * CELL_PX;
-                    values[iz * side + ix] = (float) RadarEchoField.reflectivityAt(storm,
-                            dx * cos + dz * sin, -dx * sin + dz * cos, size, anchors, ix - cells, iz - cells);
-                }
-            }
-            lattice.cells = cells;
-            lattice.mark(storm, mode, range);
-        }
-        drawLattice(graphics, lattice, storm, centerX, centerY, rx, rz, false);
+        RadarScopeShader.configure(field, originX + 0.5D, originZ + 0.5D, range, mode, RING_RADIUS, 1.0F, false);
+        RenderSystem.setShader(RadarScopeShader::instance);
+        RenderSystem.setShaderTexture(0, field.textureId());
+        RenderSystem.disableBlend();
+        Matrix4f pose = graphics.pose().last().pose();
+        BufferBuilder builder = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
+        builder.addVertex(pose, x, y + SCOPE_SIZE, 0.0F).setUv(0.0F, 1.0F).setColor(0xFFFFFFFF);
+        builder.addVertex(pose, x + SCOPE_SIZE, y + SCOPE_SIZE, 0.0F).setUv(1.0F, 1.0F).setColor(0xFFFFFFFF);
+        builder.addVertex(pose, x + SCOPE_SIZE, y, 0.0F).setUv(1.0F, 0.0F).setColor(0xFFFFFFFF);
+        builder.addVertex(pose, x, y, 0.0F).setUv(0.0F, 0.0F).setColor(0xFFFFFFFF);
+        BufferUploader.drawWithShader(builder.buildOrThrow());
+        RenderSystem.enableBlend();
     }
 
-    private void drawVelocityReturn(GuiGraphics graphics, RadarStormSnapshot storm, double originX, double originZ,
-                                    int range, int mode, int centerX, int centerY) {
-        float rx = screenX(storm.x(), originX, range);
-        float rz = screenZ(storm.z(), originZ, range);
-        float size = Math.max(RadarEchoField.panelToScreen(RadarEchoField.returnSize(storm, range), RANGE_RADIUS_PX),
-                RadarEchoField.panelToScreen(0.030F, RANGE_RADIUS_PX));
-        Lattice lattice = latticeFor(storm);
-        if (!lattice.matches(storm, mode, range)) {
-            float rangeDistance = Math.max(0.001F, Mth.sqrt(rx * rx + rz * rz));
-            float beamX = rx / rangeDistance;
-            float beamZ = rz / rangeDistance;
-            int cells = RadarEchoField.velocityCells(size, CELL_PX);
-            int side = cells * 2 + 1;
-            float[] values = lattice.reserve(side);
-            for (int ix = 0; ix < side; ix++) {
-                for (int iz = 0; iz < side; iz++) {
-                    values[iz * side + ix] = RadarEchoField.radialVelocityAt(storm, (ix - cells) * CELL_PX, (iz - cells) * CELL_PX,
-                            size, beamX, beamZ, -beamZ, beamX);
-                }
-            }
-            lattice.cells = cells;
-            lattice.mark(storm, mode, range);
+    /** The compass points and the range of each ring, in the corners where they cover nothing. */
+    private void drawRangeLabels(GuiGraphics graphics, int x, int y, int range) {
+        graphics.pose().pushPose();
+        graphics.pose().translate(x, y, 0.0F);
+        graphics.pose().scale(0.5F, 0.5F, 1.0F);
+        int half = SCOPE_SIZE;
+        graphics.drawCenteredString(font, "N", half, 2, INK_DIM);
+        graphics.drawCenteredString(font, "S", half, SCOPE_SIZE * 2 - 10, INK_DIM);
+        graphics.drawString(font, "W", 2, half - 4, INK_DIM, false);
+        graphics.drawString(font, "E", SCOPE_SIZE * 2 - 8, half - 4, INK_DIM, false);
+        for (int ring = 1; ring <= 4; ring++) {
+            String label = Integer.toString(range * ring / 4);
+            float at = RANGE_RADIUS_PX * ring / 4.0F * 2.0F;
+            float ox = half + at * 0.7071F;
+            float oy = half + at * 0.7071F;
+            graphics.drawString(font, label, Math.round(ox) - font.width(label) - 1, Math.round(oy) - 8, 0xB0A6BDBC, false);
         }
-        drawLattice(graphics, lattice, storm, centerX, centerY, rx, rz, true);
-    }
-
-    /**
-     * Paints a sampled lattice over the scope.
-     *
-     * <p>One fill per cell, coloured by the mean of its four corners - a GUI fill carries one colour where the
-     * block's cells carry four - so the ramp still varies smoothly across a shield and the picture is the same
-     * shield, a pixel coarser.
-     */
-    private void drawLattice(GuiGraphics graphics, Lattice lattice, RadarStormSnapshot storm,
-                             int centerX, int centerY, float rx, float rz, boolean velocity) {
-        int cells = lattice.cells;
-        int side = lattice.side;
-        float[] values = lattice.values;
-        int baseX = Math.round(centerX + rx);
-        int baseZ = Math.round(centerY + rz);
-        for (int ix = 0; ix < side - 1; ix++) {
-            for (int iz = 0; iz < side - 1; iz++) {
-                float minMin = values[iz * side + ix];
-                float maxMin = values[iz * side + ix + 1];
-                float minMax = values[(iz + 1) * side + ix];
-                float maxMax = values[(iz + 1) * side + ix + 1];
-                float mean = (minMin + maxMin + minMax + maxMax) * 0.25F;
-                int color;
-                if (velocity) {
-                    float peak = Math.max(Math.max(Math.abs(minMin), Math.abs(maxMin)), Math.max(Math.abs(minMax), Math.abs(maxMax)));
-                    if (peak < RadarEchoField.VELOCITY_FLOOR_MPS) {
-                        continue;
-                    }
-                    color = RadarEchoField.velocityColor(mean);
-                } else {
-                    float peak = Math.max(Math.max(minMin, maxMin), Math.max(minMax, maxMax));
-                    if (peak < RadarEchoField.ECHO_FLOOR_DBZ) {
-                        continue;
-                    }
-                    color = RadarEchoField.sampleColor(Math.max(mean, RadarEchoField.ECHO_FLOOR_DBZ));
-                }
-                int px = baseX + (ix - cells) * CELL_PX;
-                int pz = baseZ + (iz - cells) * CELL_PX;
-                fillOnScope(graphics, centerX, centerY, px, pz, px + CELL_PX, pz + CELL_PX, color);
-            }
-        }
-    }
-
-    private void drawRiskArea(GuiGraphics graphics, RadarStormSnapshot storm, double originX, double originZ,
-                              int range, int centerX, int centerY) {
-        float size = Math.max(RadarEchoField.panelToScreen(RadarEchoField.returnSize(storm, range), RANGE_RADIUS_PX),
-                RadarEchoField.panelToScreen(0.030F, RANGE_RADIUS_PX));
-        int cells = RadarEchoField.riskCells(size, CELL_PX);
-        int color = RadarEchoField.riskColor(storm);
-        int baseX = Math.round(centerX + screenX(storm.x(), originX, range));
-        int baseZ = Math.round(centerY + screenZ(storm.z(), originZ, range));
-        for (int ix = -cells; ix <= cells; ix++) {
-            for (int iz = -cells; iz <= cells; iz++) {
-                float radial = Mth.sqrt((float) (ix * ix + iz * iz)) / cells;
-                if (radial > 1.0F) {
-                    continue;
-                }
-                // Solid through the middle, dithered only where the disc is running out.
-                float edge = Mth.clamp((1.0F - radial) / 0.28F, 0.0F, 1.0F);
-                if (edge < 0.999F && RadarEchoField.pixelNoise(storm.id(), ix, iz) * 0.5F + 0.5F > edge) {
-                    continue;
-                }
-                int px = baseX + ix * CELL_PX;
-                int pz = baseZ + iz * CELL_PX;
-                fillOnScope(graphics, centerX, centerY, px, pz, px + CELL_PX, pz + CELL_PX, color);
-            }
-        }
-    }
-
-    private Lattice latticeFor(RadarStormSnapshot storm) {
-        // Only the storms on the current sweep are ever asked for, so the cache cannot grow without bound.
-        return lattices.computeIfAbsent(storm.id(), id -> new Lattice());
+        graphics.pose().popPose();
     }
 
     // ------------------------------------------------------------------------------------------------
-    // Tracks and markers.
+    // Tracks and markers, drawn as vectors over the product.
     // ------------------------------------------------------------------------------------------------
 
-    private void drawMotionTrack(GuiGraphics graphics, RadarStormSnapshot storm, double originX, double originZ,
-                                 int range, int centerX, int centerY) {
+    private void drawMotionTrack(VertexConsumer out, Matrix4f pose, RadarStormSnapshot storm, double originX, double originZ, int range, float centerX, float centerY) {
         float mx = RadarEchoField.panelToScreen(RadarEchoField.motionTrackX(storm, range, 0.07F), RANGE_RADIUS_PX);
         float mz = RadarEchoField.panelToScreen(RadarEchoField.motionTrackZ(storm, range, 0.07F), RANGE_RADIUS_PX);
         if (mx == 0.0F && mz == 0.0F) {
             return;
         }
-        float x = markerX(storm, originX, range);
-        float z = markerZ(storm, originZ, range);
-        line(graphics, centerX, centerY, x - mx, z - mz, x, z, RadarEchoField.withAlpha(0xFFFFFF, 170));
+        float x = centerX + markerX(storm, originX, range);
+        float y = centerY + markerZ(storm, originZ, range);
+        line(out, pose, x - mx, y - mz, x, y, 0.6F, 0xB4FFFFFF);
     }
 
-    private void drawMarkers(GuiGraphics graphics, RadarStormSnapshot storm, double originX, double originZ,
-                             int range, int centerX, int centerY) {
+    private void drawMarkers(VertexConsumer out, Matrix4f pose, RadarStormSnapshot storm, double originX, double originZ, int range, float centerX, float centerY) {
         float size = RadarEchoField.panelToScreen(RadarEchoField.returnSize(storm, range), RANGE_RADIUS_PX);
-        float circulationX = screenX(storm.circulationX(), originX, range);
-        float circulationZ = screenZ(storm.circulationZ(), originZ, range);
+        float circulationX = centerX + screenX(storm.circulationX(), originX, range);
+        float circulationY = centerY + screenZ(storm.circulationZ(), originZ, range);
 
         if (storm.subVortices() > 0) {
             int count = Mth.clamp(storm.subVortices(), 1, 10);
+            float dot = Math.max(0.8F, size * 0.10F);
             for (int i = 0; i < count; i++) {
                 float angle = (float) (i * Math.PI * 2.0D / count);
-                float ox = Mth.cos(angle) * size * 1.55F;
-                float oz = Mth.sin(angle) * size * 1.55F;
-                int dot = Math.max(1, Math.round(Math.max(1.0F, size * 0.22F)));
-                int px = Math.round(centerX + circulationX + ox) - dot;
-                int pz = Math.round(centerY + circulationZ + oz) - dot;
-                fillOnScope(graphics, centerX, centerY, px, pz, px + dot * 2, pz + dot * 2, 0xFFFFF4B8);
+                float ox = Mth.cos(angle) * Math.max(size * 0.8F, 3.5F);
+                float oy = Mth.sin(angle) * Math.max(size * 0.8F, 3.5F);
+                disc(out, pose, circulationX + ox, circulationY + oy, dot, 0xFFFFF4B8);
             }
         }
         boolean confirmed = storm.hasConfirmedCirculation();
         if (confirmed) {
-            // A confirmed tornado: the cross and ring the block face draws, at the circulation itself - and
-            // drawn first, so a signature icon over it still leaves the cross's arms reading.
-            float arm = Math.max(size * 1.35F, 7.0F);
-            int color = 0xFFFFF9C8;
-            line(graphics, centerX, centerY, circulationX - arm, circulationZ, circulationX + arm, circulationZ, color);
-            line(graphics, centerX, centerY, circulationX, circulationZ - arm, circulationX, circulationZ + arm, color);
-            ring(graphics, centerX, centerY, circulationX, circulationZ, Math.max(size * 0.42F, 3.0F), color);
+            float arm = Math.max(size * 0.9F, 5.0F);
+            line(out, pose, circulationX - arm, circulationY, circulationX + arm, circulationY, 0.55F, 0xFFFFF9C8);
+            line(out, pose, circulationX, circulationY - arm, circulationX, circulationY + arm, 0.55F, 0xFFFFF9C8);
+            ring(out, pose, circulationX, circulationY, Math.max(size * 0.32F, 2.6F), 0.5F, 0xFFFFF9C8);
         }
         // The velocity product's own read, at the point the rotation is at: the couplet for a TVS, the
         // resolved mesocyclone for a diamond.
         int signature = Config.RADAR_VORTEX_ICONS.get()
                 ? RadarEchoField.vortexSignatureTier(storm) : RadarEchoField.SIGNATURE_NONE;
         if (signature == RadarEchoField.SIGNATURE_TVS) {
-            drawVortexIcon(graphics, centerX, centerY, circulationX, circulationZ, RadarEchoField.SIGNATURE_TVS);
+            triangle(out, pose, circulationX, circulationY, 4.6F, 7.6F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+            triangle(out, pose, circulationX, circulationY, 3.2F, 5.6F, RadarEchoField.TVS_ICON_COLOR);
         } else if (signature == RadarEchoField.SIGNATURE_MESO) {
-            float mesoX = screenX(storm.mesoX(), originX, range);
-            float mesoZ = screenZ(storm.mesoZ(), originZ, range);
-            drawVortexIcon(graphics, centerX, centerY, mesoX, mesoZ, RadarEchoField.SIGNATURE_MESO);
+            float mesoX = centerX + screenX(storm.mesoX(), originX, range);
+            float mesoY = centerY + screenZ(storm.mesoZ(), originZ, range);
+            diamond(out, pose, mesoX, mesoY, 3.8F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+            diamond(out, pose, mesoX, mesoY, 2.8F, RadarEchoField.MESO_ICON_COLOR);
         } else if (!confirmed && storm.hookEcho()) {
-            float hookX = screenX(RadarEchoField.hookWorldX(storm), originX, range);
-            float hookZ = screenZ(RadarEchoField.hookWorldZ(storm), originZ, range);
-            ring(graphics, centerX, centerY, hookX, hookZ, Math.max(size * 0.34F, 3.0F), 0xFFC6F6FF);
+            float hookX = centerX + screenX(RadarEchoField.hookWorldX(storm), originX, range);
+            float hookY = centerY + screenZ(RadarEchoField.hookWorldZ(storm), originZ, range);
+            ring(out, pose, hookX, hookY, Math.max(size * 0.26F, 2.6F), 0.5F, 0xFFC6F6FF);
         }
     }
 
-    /**
-     * The signature icon, at the same size the block face draws it, with its tag beside it.
-     *
-     * <p>Sized from the shared panel-unit constants rather than from the storm, so the two displays show the
-     * same symbol and a TVS does not grow and shrink as the storm widens.
-     */
-    private void drawVortexIcon(GuiGraphics graphics, int centerX, int centerY, float x, float z, int tier) {
-        float half = RadarEchoField.panelToScreen(RadarEchoField.signatureHalf(tier), RANGE_RADIUS_PX);
-        float axis = half * 1.55F;
-        if (tier == RadarEchoField.SIGNATURE_TVS) {
-            float height = half * (RadarEchoField.SIGNATURE_HEIGHT / RadarEchoField.SIGNATURE_HALF);
-            triangle(graphics, centerX, centerY, x, z, half * 1.34F, height * 1.16F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
-            triangle(graphics, centerX, centerY, x, z, half, height, RadarEchoField.TVS_ICON_COLOR);
-        } else {
-            diamond(graphics, centerX, centerY, x, z, axis * 1.30F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
-            diamond(graphics, centerX, centerY, x, z, axis, RadarEchoField.MESO_ICON_COLOR);
-        }
-        // The tag goes beside the icon, the way a real scope labels one - but only when the whole label has
-        // room inside the round screen, since a GUI drawString is not clipped to it the way the fills are.
-        String label = RadarEchoField.signatureLabel(tier);
-        float fromCentre = Mth.sqrt(x * x + z * z);
-        if (!label.isEmpty() && fromCentre < RANGE_RADIUS_PX - 26.0F) {
-            int px = Math.round(centerX + x + half + 2.0F);
-            int pz = Math.round(centerY + z - 4.0F);
-            graphics.drawString(font, label, px, pz, RadarEchoField.signatureColor(tier), false);
-        }
-    }
-
-    /** An upward triangle centred on {@code (x, z)} in scope offsets: apex above, base below. */
-    private void triangle(GuiGraphics graphics, int centerX, int centerY, float x, float z, float half, float height, int color) {
-        int top = Math.round(centerY + z - height);
-        int bottom = Math.round(centerY + z + height * 0.42F);
-        int rows = Math.max(1, bottom - top);
-        for (int py = top; py <= bottom; py++) {
-            float t = (py - top) / (float) rows;
-            int w = Math.max(1, Math.round(half * t));
-            int px = Math.round(centerX + x);
-            fillOnScope(graphics, centerX, centerY, px - w, py, px + w, py + 1, color);
-        }
-    }
-
-    /** A diamond centred on {@code (x, z)} in scope offsets, corners {@code axis} out along each axis. */
-    private void diamond(GuiGraphics graphics, int centerX, int centerY, float x, float z, float axis, int color) {
-        int radius = Math.max(1, Math.round(axis));
-        for (int dy = -radius; dy <= radius; dy++) {
-            float taper = 1.0F - Math.abs(dy) / (float) radius;
-            int w = Math.max(0, Math.round(axis * taper));
-            int px = Math.round(centerX + x);
-            int py = Math.round(centerY + z) + dy;
-            fillOnScope(graphics, centerX, centerY, px - w, py, px + w + 1, py + 1, color);
-        }
-    }
-
-    /** The point a storm's track and markers are anchored to: its circulation, else its hook, else itself. */
+    /** The point a storm's track is anchored to: its circulation, else its hook, else itself. */
     private static float markerX(RadarStormSnapshot storm, double originX, int range) {
         return storm.hasConfirmedCirculation() ? screenX(storm.circulationX(), originX, range)
                 : storm.hookEcho() ? screenX(storm.hookX(), originX, range) : screenX(storm.x(), originX, range);
@@ -472,22 +248,124 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // Text.
+    // The data column.
     // ------------------------------------------------------------------------------------------------
 
-    private void drawHeader(GuiGraphics graphics, int x, int y, RadarSnapshotPayload feed, int range, int mode, int returns) {
-        int textX = x + SCOPE_INSET_X;
-        graphics.drawString(font, title, textX, y + 8, TEXT, false);
+    private void drawData(GuiGraphics graphics, int x, int y, RadarSnapshotPayload feed, List<RadarStormSnapshot> storms, int range, int mode) {
+        int left = x + DATA_X;
+        int right = left + DATA_WIDTH;
+        int top = y + LCD_Y + 4;
+
+        small(graphics, fit(title.getString().toUpperCase(Locale.ROOT), DATA_WIDTH * 2), left, top, INK_ACCENT);
         String product = switch (mode) {
-            case 1 -> "Velocity";
-            case 2 -> "SPC risk";
-            default -> "Reflectivity";
+            case 1 -> "BASE VELOCITY";
+            case 2 -> "SPC RISK";
+            default -> "BASE REFLECTIVITY";
         };
+        graphics.drawString(font, fit(product, DATA_WIDTH), left, top + 7, INK, false);
+        small(graphics, "RANGE " + range + " BLK", left, top + 17, INK_DIM);
         boolean linked = (feed != null && feed.radarBlock()) || linkedBlock();
-        graphics.drawString(font, product + "  -  range " + range + " blocks", textX, y + imageHeight - 21, DIM_TEXT, false);
-        graphics.drawString(font, linked ? "Linked weather radar" : "Local sweep - no weather radar in range",
-                textX, y + imageHeight - 11, linked ? 0xFF7FE3B4 : 0xFFE3C77F, false);
-        graphics.drawString(font, returns + (returns == 1 ? " return" : " returns"), x + 166, y + 20, DIM_TEXT, false);
+        small(graphics, linked ? "LINKED TO RADAR" : "LOCAL SWEEP - NO RADAR", left, top + 22, linked ? 0xFF7FE3B4 : 0xFFE3C77F);
+        small(graphics, clock(), right - font.width(clock()) / 2, top + 17, INK_DIM);
+        graphics.fill(left, top + 28, right, top + 29, RULE);
+
+        drawLegend(graphics, left, top + 31, DATA_WIDTH, mode);
+        graphics.fill(left, top + 44, right, top + 45, RULE);
+
+        drawStormList(graphics, left, top + 48, DATA_WIDTH, y + LCD_Y + LCD_HEIGHT - 4, storms);
+    }
+
+    /** The product's colour scale, because a colour on a radar only means something against the key. */
+    private void drawLegend(GuiGraphics graphics, int x, int y, int width, int mode) {
+        if (mode == 2) {
+            small(graphics, "CATEGORICAL OUTLOOK", x, y + 2, INK_DIM);
+            return;
+        }
+        int bars = LEGEND_DBZ.length;
+        float step = width / (float) bars;
+        for (int i = 0; i < bars; i++) {
+            int color = mode == 1
+                    ? 0xFF000000 | RadarEchoField.velocityColor((i - bars / 2) * 7.0F) & 0xFFFFFF
+                    : 0xFF000000 | RadarEchoField.rampColor(LEGEND_DBZ[i]);
+            graphics.fill(x + Math.round(i * step), y, x + Math.round((i + 1) * step), y + 5, color);
+        }
+        if (mode == 1) {
+            small(graphics, "IN", x, y + 7, INK_DIM);
+            small(graphics, "M/S", x + width / 2 - 3, y + 7, INK_DIM);
+            small(graphics, "OUT", x + width - 7, y + 7, INK_DIM);
+        } else {
+            small(graphics, "5", x, y + 7, INK_DIM);
+            small(graphics, "DBZ", x + width / 2 - 3, y + 7, INK_DIM);
+            small(graphics, "75", x + width - 5, y + 7, INK_DIM);
+        }
+    }
+
+    /**
+     * The storm table, in as many rows as fit and with a count of the rest, strongest first.
+     *
+     * <p>Rows are laid out against the width they really have. They used to be drawn at a fixed position and left to
+     * overrun, so a storm named Thunderstorm ran straight off the right edge of the display.
+     */
+    private void drawStormList(GuiGraphics graphics, int x, int y, int width, int bottom, List<RadarStormSnapshot> storms) {
+        if (storms.isEmpty()) {
+            graphics.drawString(font, "No returns", x, y, INK_DIM, false);
+            return;
+        }
+        List<RadarStormSnapshot> ranked = storms.stream()
+                .sorted((a, b) -> Double.compare(b.severity() * 1000.0D + b.windMph(), a.severity() * 1000.0D + a.windMph()))
+                .toList();
+        int rowHeight = 15;
+        int rows = Math.max(1, (bottom - y) / rowHeight);
+        boolean overflow = ranked.size() > rows;
+        int shown = overflow ? rows - 1 : ranked.size();
+        for (int i = 0; i < shown; i++) {
+            RadarStormSnapshot storm = ranked.get(i);
+            int rowY = y + i * rowHeight;
+            graphics.fill(x, rowY + 1, x + 3, rowY + 12, 0xFF000000 | storm.color() & 0xFFFFFF);
+            graphics.drawString(font, fit(storm.label(), width - 6), x + 6, rowY, INK, false);
+            StringBuilder detail = new StringBuilder(storm.risk());
+            detail.append(' ').append(Math.round(storm.windMph())).append(" MPH");
+            if (Config.RADAR_VORTEX_ICONS.get()) {
+                String signature = RadarEchoField.signatureLabel(RadarEchoField.vortexSignatureTier(storm));
+                if (!signature.isEmpty()) {
+                    detail.append(' ').append(signature);
+                }
+            }
+            String sizeTag = RadarEchoField.sizeLabel(storm.width());
+            if (!sizeTag.isEmpty()) {
+                detail.append(' ').append(sizeTag);
+            }
+            small(graphics, fit(detail.toString(), (width - 6) * 2), x + 6, rowY + 8, INK_DIM);
+        }
+        if (overflow) {
+            small(graphics, "+ " + (ranked.size() - shown) + " MORE RETURNS", x, y + shown * rowHeight + 2, INK_DIM);
+        }
+    }
+
+    /** Half-size text, for the small print a real display carries round its product. */
+    private void small(GuiGraphics graphics, String text, int x, int y, int color) {
+        graphics.pose().pushPose();
+        graphics.pose().translate(x, y, 0.0F);
+        graphics.pose().scale(0.5F, 0.5F, 1.0F);
+        graphics.drawString(font, text, 0, 0, color, false);
+        graphics.pose().popPose();
+    }
+
+    private String fit(String text, int width) {
+        if (font.width(text) <= width) {
+            return text;
+        }
+        return font.plainSubstrByWidth(text, width - font.width("..")) + "..";
+    }
+
+    /** The world's own time of day, as the display's clock. */
+    private static String clock() {
+        Minecraft minecraft = Minecraft.getInstance();
+        long time = minecraft.level == null ? 0L : minecraft.level.getDayTime();
+        long inDay = (time + 6000L) % 24000L;
+        long hours = inDay / 1000L;
+        long minutes = (inDay % 1000L) * 60L / 1000L;
+        return String.format(Locale.ROOT, "%02d:%02dZ", hours, minutes);
     }
 
     /**
@@ -502,44 +380,8 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         return minecraft.level != null && minecraft.level.getBlockEntity(menu.radarPos()) instanceof RadarBlockEntity;
     }
 
-    private void drawStormList(GuiGraphics graphics, int x, int y, List<RadarStormSnapshot> storms) {
-        int listX = x + 166;
-        int listY = y + 34;
-        graphics.drawString(font, "SPC / EAS", listX, y + 8, TEXT, false);
-        if (storms.isEmpty()) {
-            graphics.drawString(font, "No returns", listX, listY, DIM_TEXT, false);
-            return;
-        }
-        for (int i = 0; i < storms.size() && i < 8; i++) {
-            RadarStormSnapshot storm = storms.get(i);
-            int rowY = listY + i * 17;
-            graphics.fill(listX, rowY + 1, listX + 7, rowY + 8, storm.color());
-            graphics.drawString(font, storm.label(), listX + 11, rowY, TEXT, false);
-            String risk = storm.risk();
-            graphics.drawString(font, risk, listX + 11, rowY + 8, 0xFFB5C9C7, false);
-            // The signature goes after the risk, so the list says which return is flagged without the reader
-            // having to pick the icon out on the scope - but only when the row has room for it, since a GUI
-            // string is not clipped and an overhanging tag would run past the panel.
-            int tagX = listX + 15 + font.width(risk);
-            if (Config.RADAR_VORTEX_ICONS.get()) {
-                int tier = RadarEchoField.vortexSignatureTier(storm);
-                String signature = RadarEchoField.signatureLabel(tier);
-                if (!signature.isEmpty() && tagX + font.width(signature) <= x + imageWidth - 4) {
-                    graphics.drawString(font, signature, tagX, rowY + 8, RadarEchoField.signatureColor(tier), false);
-                    tagX += font.width(signature) + 4;
-                }
-            }
-            // Then its size class, from the width the row already carries: a rope and a monster are the
-            // same risk on this list otherwise, and telling them apart is what the size model is for.
-            String sizeTag = RadarEchoField.sizeLabel(storm.width());
-            if (!sizeTag.isEmpty() && tagX + font.width(sizeTag) <= x + imageWidth - 4) {
-                graphics.drawString(font, sizeTag, tagX, rowY + 8, RadarEchoField.sizeColor(sizeTag), false);
-            }
-        }
-    }
-
     // ------------------------------------------------------------------------------------------------
-    // Mapping and primitives.
+    // Mapping and vector primitives.
     // ------------------------------------------------------------------------------------------------
 
     /** A world X as a pixel offset from the scope centre, through the same mapping the block face uses. */
@@ -552,73 +394,59 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         return RadarEchoField.panelToScreen(RadarEchoField.scopeCoord(worldZ, originZ, range) - 0.5F, RANGE_RADIUS_PX);
     }
 
-    private static RadarEchoField.EchoAnchors anchors(RadarStormSnapshot storm, double originX, double originZ, int range,
-                                                      float rx, float rz, float cos, float sin) {
-        return RadarEchoField.anchorsFor(storm,
-                screenX(RadarEchoField.hookWorldX(storm), originX, range) - rx,
-                screenZ(RadarEchoField.hookWorldZ(storm), originZ, range) - rz,
-                screenX(storm.hookX(), originX, range) - rx,
-                screenZ(storm.hookZ(), originZ, range) - rz,
-                cos, sin);
+    private static void vertex(VertexConsumer out, Matrix4f pose, float x, float y, int color) {
+        out.addVertex(pose, x, y, 0.0F).setColor(color);
     }
 
-    /** A rectangle fill clipped to the round screen, so nothing spills onto the bezel. */
-    private void fillOnScope(GuiGraphics graphics, int centerX, int centerY, int x1, int y1, int x2, int y2, int color) {
-        if (x2 <= x1 || y2 <= y1) {
-            return;
-        }
-        float radius = RANGE_RADIUS_PX + 1.0F;
-        float farthest = Math.max(Math.abs(y1 - centerY), Math.abs(y2 - centerY));
-        if (farthest >= radius) {
-            return;
-        }
-        int half = (int) Math.floor(Math.sqrt(radius * radius - farthest * farthest));
-        int left = Math.max(x1, centerX - half);
-        int right = Math.min(x2, centerX + half + 1);
-        if (right <= left) {
-            return;
-        }
-        graphics.fill(left, y1, right, y2, color);
-    }
-
-    private void fillDisc(GuiGraphics graphics, int centerX, int centerY, int radius, int color) {
-        for (int dy = -radius; dy <= radius; dy++) {
-            int half = (int) Math.floor(Math.sqrt(Math.max(0, radius * radius - dy * dy)));
-            graphics.fill(centerX - half, centerY + dy, centerX + half + 1, centerY + dy + 1, color);
-        }
-    }
-
-    private void strokeCircle(GuiGraphics graphics, int centerX, int centerY, int radius, int color) {
-        int inner = Math.max(1, radius - 1);
-        for (int dy = -radius; dy <= radius; dy++) {
-            int outerHalf = (int) Math.floor(Math.sqrt(Math.max(0, radius * radius - dy * dy)));
-            int innerHalf = (int) Math.floor(Math.sqrt(Math.max(0, inner * inner - dy * dy)));
-            int left = centerX - outerHalf;
-            int right = centerX + outerHalf;
-            graphics.fill(left, centerY + dy, left + (outerHalf - innerHalf) + 1, centerY + dy + 1, color);
-            graphics.fill(right - (outerHalf - innerHalf), centerY + dy, right + 1, centerY + dy + 1, color);
-        }
-    }
-
-    private void line(GuiGraphics graphics, int centerX, int centerY, float x1, float z1, float x2, float z2, int color) {
+    private static void line(VertexConsumer out, Matrix4f pose, float x1, float y1, float x2, float y2, float width, int color) {
         float dx = x2 - x1;
-        float dz = z2 - z1;
-        int steps = Math.max(1, (int) Math.ceil(Math.max(Math.abs(dx), Math.abs(dz))));
-        for (int i = 0; i <= steps; i++) {
-            float t = i / (float) steps;
-            int px = Math.round(centerX + x1 + dx * t);
-            int pz = Math.round(centerY + z1 + dz * t);
-            fillOnScope(graphics, centerX, centerY, px, pz, px + 1, pz + 1, color);
+        float dy = y2 - y1;
+        float length = Mth.sqrt(dx * dx + dy * dy);
+        if (length < 1.0E-3F) {
+            return;
+        }
+        float nx = -dy / length * width * 0.5F;
+        float ny = dx / length * width * 0.5F;
+        vertex(out, pose, x1 + nx, y1 + ny, color);
+        vertex(out, pose, x2 + nx, y2 + ny, color);
+        vertex(out, pose, x2 - nx, y2 - ny, color);
+        vertex(out, pose, x1 - nx, y1 - ny, color);
+    }
+
+    private static void ring(VertexConsumer out, Matrix4f pose, float x, float y, float radius, float width, int color) {
+        int segments = 28;
+        for (int i = 0; i < segments; i++) {
+            float a0 = (float) (Math.PI * 2.0D * i / segments);
+            float a1 = (float) (Math.PI * 2.0D * (i + 1) / segments);
+            line(out, pose, x + Mth.cos(a0) * radius, y + Mth.sin(a0) * radius, x + Mth.cos(a1) * radius, y + Mth.sin(a1) * radius, width, color);
         }
     }
 
-    private void ring(GuiGraphics graphics, int centerX, int centerY, float x, float z, float radius, int color) {
-        int steps = Math.max(16, Math.round(radius * 6.0F));
-        for (int i = 0; i < steps; i++) {
-            double angle = i * Math.PI * 2.0D / steps;
-            int px = Math.round(centerX + x + (float) Math.cos(angle) * radius);
-            int pz = Math.round(centerY + z + (float) Math.sin(angle) * radius);
-            fillOnScope(graphics, centerX, centerY, px, pz, px + 1, pz + 1, color);
+    private static void disc(VertexConsumer out, Matrix4f pose, float x, float y, float radius, int color) {
+        int segments = 12;
+        for (int i = 0; i < segments; i++) {
+            float a0 = (float) (Math.PI * 2.0D * i / segments);
+            float a1 = (float) (Math.PI * 2.0D * (i + 1) / segments);
+            vertex(out, pose, x, y, color);
+            vertex(out, pose, x + Mth.cos(a1) * radius, y + Mth.sin(a1) * radius, color);
+            vertex(out, pose, x + Mth.cos(a0) * radius, y + Mth.sin(a0) * radius, color);
+            vertex(out, pose, x, y, color);
         }
+    }
+
+    private static void triangle(VertexConsumer out, Matrix4f pose, float x, float y, float half, float height, int color) {
+        float top = y - height * 0.62F;
+        float bottom = y + height * 0.38F;
+        vertex(out, pose, x, top, color);
+        vertex(out, pose, x - half, bottom, color);
+        vertex(out, pose, x + half, bottom, color);
+        vertex(out, pose, x, top, color);
+    }
+
+    private static void diamond(VertexConsumer out, Matrix4f pose, float x, float y, float axis, int color) {
+        vertex(out, pose, x, y - axis, color);
+        vertex(out, pose, x - axis, y, color);
+        vertex(out, pose, x, y + axis, color);
+        vertex(out, pose, x + axis, y, color);
     }
 }

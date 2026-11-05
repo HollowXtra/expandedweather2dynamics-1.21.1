@@ -17,6 +17,8 @@
     "ClientLevelMixin",
     "CrossedArmsItemLayerMixin",
     "EntityRotFXPauseMixin",
+    "ParticleEngineAccessor",
+    "WeatherPuffRenderTypeMixin",
     "GameRendererMixin",
     "LevelRendererMixin",
     "LightTextureMixin",
