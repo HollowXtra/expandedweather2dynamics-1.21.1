@@ -48,6 +48,9 @@ public final class StormSkyClient {
     /** How deep inside a hailing core's footprint the player is, smoothed. */
     private static double hailDepth;
 
+    /** How much of a supercell's own darkness is over the player, smoothed. */
+    private static double supercell;
+
     /** How green the sky is, smoothed, after the size gate and the config's dial. */
     private static double green;
 
@@ -112,7 +115,9 @@ public final class StormSkyClient {
                         StormSky.greenness(depth, size) * Config.HAIL_SKY_GREEN_STRENGTH.get());
             }
         }
+        double targetCell = level != null && player != null ? StormShade.supercell(level, player.position()) : 0.0D;
         deck = StormSky.approach(deck, cover, StormSky.DECK_RISE_RATE, StormSky.DECK_FALL_RATE);
+        supercell = StormSky.approach(supercell, targetCell, StormSky.DECK_RISE_RATE, StormSky.DECK_FALL_RATE);
         hailDepth = StormSky.approach(hailDepth, targetHail, StormSky.DECK_RISE_RATE, StormSky.DECK_FALL_RATE);
         green = StormSky.approach(green, targetGreen, StormSky.GREEN_RISE_RATE, StormSky.GREEN_FALL_RATE);
         eclipse = eclipseDarkening(level);
@@ -155,7 +160,7 @@ public final class StormSkyClient {
     public static double darkness() {
         double storm = 1.0D;
         if (Config.VISUALS_ENABLED.get() && Config.STORM_SKY_DARKENING.get()) {
-            storm = StormSky.darkness(deck, hailDepth, Config.STORM_SKY_DARKEN_SCALE.get());
+            storm = StormSky.darkness(deck, hailDepth, supercell, Config.STORM_SKY_DARKEN_SCALE.get());
         }
         return StormSky.withEclipse(storm, eclipse);
     }
@@ -219,13 +224,14 @@ public final class StormSkyClient {
         if (!Config.VISUALS_ENABLED.get() || !Config.STORM_SKY_DARKENING.get()) {
             return vanillaRainLevel;
         }
-        return StormSky.sunHidingLevel(vanillaRainLevel, deck, hailDepth, Config.STORM_SKY_DARKEN_SCALE.get());
+        return StormSky.sunHidingLevel(vanillaRainLevel, deck, hailDepth, supercell, Config.STORM_SKY_DARKEN_SCALE.get());
     }
 
     /** Forgets the reading when there is no world to read it in, so a sky cannot be half remembered. */
     public static void clear() {
         deck = 0.0D;
         hailDepth = 0.0D;
+        supercell = 0.0D;
         green = 0.0D;
         eclipse = 1.0D;
     }

@@ -598,6 +598,7 @@ public final class Config {
     public static final ModConfigSpec.DoubleValue SEVERE_SKY_TINT_STRENGTH;
     public static final ModConfigSpec.BooleanValue STORM_SKY_DARKENING;
     public static final ModConfigSpec.DoubleValue STORM_SKY_DARKEN_SCALE;
+    public static final ModConfigSpec.DoubleValue NIGHT_STORM_DARKNESS;
     public static final ModConfigSpec.BooleanValue SKY_HAIL_GREEN;
     public static final ModConfigSpec.DoubleValue HAIL_SKY_GREEN_STRENGTH;
     public static final ModConfigSpec.BooleanValue STORM_COVER_SHADING;
@@ -871,6 +872,7 @@ public final class Config {
     public static final ModConfigSpec.DoubleValue VANILLA_RAIN_WIND_BEND_MAX_LEAN_BLOCKS;
 
     public static final ModConfigSpec.BooleanValue LIGHTNING_BOLT_REVAMP_ENABLED;
+    public static final ModConfigSpec.BooleanValue LIGHTNING_BOLT_PACK_PATH;
     public static final ModConfigSpec.IntValue LIGHTNING_BOLT_HEIGHT_BLOCKS;
     public static final ModConfigSpec.IntValue LIGHTNING_BOLT_RANGE_BLOCKS;
     public static final ModConfigSpec.DoubleValue LIGHTNING_BOLT_CORE_WIDTH;
@@ -2159,6 +2161,8 @@ public final class Config {
                 .define("stormSkyDarkening", true);
         STORM_SKY_DARKEN_SCALE = BUILDER.comment("How far into that darkening a storm goes. 1.0 lets a direct hit with a hailing core reach the game's own midnight, 0.5 tops out halfway there, 0 leaves the shapes and takes none of the light.")
                 .defineInRange("stormSkyDarkenScale", 0.85D, 0.0D, 1.0D);
+        NIGHT_STORM_DARKNESS = BUILDER.comment("How dark a storm's clouds, rain and funnel go at night. Lit like the ground, a pale cloud glows against the night sky; at 1.0 a storm at midnight is lit by under a third of the sky light the ground is, so it is a dark shape in a dark sky, and lightning lights it up. 0 lights it like the ground.")
+                .defineInRange("nightStormDarkness", 1.0D, 0.0D, 1.0D);
         SKY_HAIL_GREEN = BUILDER.comment("A green sky over a hailing cell. A green sky is light coming through a storm's hail core, so this mod puts it where the hail actually is: the sky turns green only where stones are falling around you or over a hail core in sight, gated on the same size ladder as the hail itself, with nothing below quarter-sized stones. A storm with a rain core and no hail never turns green.")
                 .define("hailSkyGreen", true);
         HAIL_SKY_GREEN_STRENGTH = BUILDER.comment("How green the sky goes at the middle of a baseball-sized hail core. 1 is the mod's own mix - muted, so it reads as weather rather than as a filter - and 0 is the same as switching the green off.")
@@ -2523,8 +2527,10 @@ public final class Config {
         BUILDER.pop();
 
         BUILDER.push("lightning");
-        LIGHTNING_BOLT_REVAMP_ENABLED = BUILDER.comment("Draw lightning as the mod's own channel: a tapered, forked, billboarded bolt shaded by a mod program that strobes it, runs the return stroke up it and lifts a hot core out of a cool halo, instead of vanilla's constant-width grey ribbons. With a shader pack active the mod stands down and lets the pack draw its own lightning, because a pack replaces the core programs this one is.")
+        LIGHTNING_BOLT_REVAMP_ENABLED = BUILDER.comment("Draw lightning as the mod's own channel: a tapered, forked, billboarded bolt that strobes, runs the return stroke up it and lifts a hot core out of a cool halo, instead of vanilla's constant-width grey ribbons. With a shader pack active the same channel is drawn through the game's own lightning program, which the pack replaces with its own, so the strike keeps its shape, forks and flicker and the pack shades it.")
                 .define("revampedBolt", true);
+        LIGHTNING_BOLT_PACK_PATH = BUILDER.comment("Always draw the revamped bolt the way it is drawn under a shader pack: its glow and flicker worked out per vertex and drawn through the game's own lightning program. This happens on its own when Iris has a pack on; turn it on if another shader mod leaves the bolt missing or wrong.")
+                .define("boltThroughGameLightningProgram", false);
         LIGHTNING_BOLT_HEIGHT_BLOCKS = BUILDER.comment("How far the channel climbs, in blocks. Vanilla draws 112, which is what this defaults to, so a strike stays the size it always was.")
                 .defineInRange("heightBlocks", 112, 32, 320);
         LIGHTNING_BOLT_RANGE_BLOCKS = BUILDER.comment("How far the channel is drawn. The program fades it out from about 55% of this to none at this range, so a strike recedes into the sky flash instead of winking out, and past it a distant strike is the flash alone - which is what a real one a kilometre away is.")

@@ -86,16 +86,23 @@ public final class LightningRevamp {
     /**
      * Whether the mod's own bolt is the one that will be drawn this frame.
      *
-     * <p>Three things have to hold, and the same test gates the two entity renderers being
-     * suppressed, so a bolt can never be drawn twice or by neither. The program has to have loaded -
-     * a strike left undrawn is worse than a vanilla one - and no shader pack may be active, because a
-     * pack replaces the core shaders this program is, so a revoked vanilla bolt would be a bolt
-     * nobody could shade.
+     * <p>The same test gates the two entity renderers being suppressed, so a bolt can never be drawn
+     * twice or by neither. The mod's program has to have loaded - a strike left undrawn is worse than a
+     * vanilla one - unless the bolt is going through the game's own lightning program, which is always
+     * there, and is what a shader pack shades.
      */
     public static boolean replaces() {
         return Config.LIGHTNING_BOLT_REVAMP_ENABLED.get()
-                && LightningBoltShader.ready()
-                && !RenderingCompat.isShaderPackActive();
+                && (throughGameProgram() || LightningBoltShader.ready());
+    }
+
+    /**
+     * Whether the channel is drawn through the game's own lightning program rather than the mod's. A shader pack replaces
+     * the core programs, so the mod's own would come out as nothing under one; the game's lightning program is one every
+     * pack provides its own version of. The channel's glow and flicker are worked out per vertex for it instead.
+     */
+    private static boolean throughGameProgram() {
+        return RenderingCompat.isShaderPackActive() || Config.LIGHTNING_BOLT_PACK_PATH.get();
     }
 
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
@@ -134,6 +141,7 @@ public final class LightningRevamp {
         float cloudBaseOffset = Config.LIGHTNING_CLOUD_BASE_OFFSET_BLOCKS.get().floatValue();
 
         Set<Integer> live = observe(level, gameTime);
+        boolean gameProgram = throughGameProgram();
 
         for (Map.Entry<Integer, Strike> entry : STRIKES.entrySet()) {
             Strike strike = entry.getValue();
@@ -185,8 +193,12 @@ public final class LightningRevamp {
             PoseStack stack = event.getPoseStack();
             stack.pushPose();
             stack.translate(strike.x() - camera.x, strike.y() - camera.y + originY, strike.z() - camera.z);
-            LightningBoltShader.draw(stack, mesh, age, seedFraction(strike.seed()), brightness, distance,
-                    coreHeat, filaments, strobes, height, (float) range);
+            if (gameProgram) {
+                LightningBoltShader.drawThroughGameProgram(stack, mesh, age, brightness, distance, coreHeat, strobes, (float) range);
+            } else {
+                LightningBoltShader.draw(stack, mesh, age, seedFraction(strike.seed()), brightness, distance,
+                        coreHeat, filaments, strobes, height, (float) range);
+            }
             stack.popPose();
         }
         STRIKES.entrySet().removeIf(entry -> gameTime - entry.getValue().birthTick() > FLASH_LIFETIME_TICKS

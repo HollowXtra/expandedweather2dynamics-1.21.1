@@ -53,6 +53,13 @@ public final class StormSky {
     public static final double FULL_DARKEN = DECK_DARKEN + HAIL_DARKEN;
 
     /**
+     * And how much a supercell takes on top of its deck: under its rain, its updraft base and its wall cloud, and less
+     * of it in the gloom it casts round about. A supercell is the one storm that turns day into something like night
+     * under it, and a deck that only ever took two thirds of the light left the sky under one a dull grey.
+     */
+    public static final double SUPERCELL_DARKEN = 0.26D;
+
+    /**
      * How dark the sky is under a deck, as the same value vanilla's own sky-darken uses.
      *
      * <p>One reading for everything that darkens, because a sky, a fog, a deck and an ambient light that disagree
@@ -67,9 +74,15 @@ public final class StormSky {
      * slightly under 1 so that the darkest a storm gets still has somewhere to go.
      */
     public static double darkness(double cover, double hail, double strength) {
+        return darkness(cover, hail, 0.0D, strength);
+    }
+
+    /** The same, with a supercell's own share of the darkening over the player: nought to one. */
+    public static double darkness(double cover, double hail, double supercell, double strength) {
         double deck = clamp(cover, 0.0D, 1.0D);
         double core = clamp(hail, 0.0D, 1.0D);
-        double depth = (DECK_DARKEN * deck + HAIL_DARKEN * core) * clamp(strength, 0.0D, 1.0D);
+        double cell = clamp(supercell, 0.0D, 1.0D);
+        double depth = (DECK_DARKEN * deck + HAIL_DARKEN * core + SUPERCELL_DARKEN * cell) * clamp(strength, 0.0D, 1.0D);
         return clamp(1.0D - depth, DARKEST_SKY_DARKEN, 1.0D);
     }
 
@@ -197,7 +210,11 @@ public final class StormSky {
  * system to disagree with the first.
      */
     public static double sunHiding(double cover, double hail, double strength) {
-        double left = (darkness(cover, hail, strength) - DARKEST_SKY_DARKEN) / (1.0D - DARKEST_SKY_DARKEN);
+        return sunHiding(cover, hail, 0.0D, strength);
+    }
+
+    public static double sunHiding(double cover, double hail, double supercell, double strength) {
+        double left = (darkness(cover, hail, supercell, strength) - DARKEST_SKY_DARKEN) / (1.0D - DARKEST_SKY_DARKEN);
         return clamp(1.0D - left, 0.0D, 1.0D);
     }
 
@@ -267,9 +284,9 @@ public final class StormSky {
      * wins. A world that is actually raining and has a storm over it hides the sun exactly as much as the darker of
      * the two says, not twice as much.
      */
-    public static float sunHidingLevel(double vanillaRainLevel, double cover, double hail, double strength) {
+    public static float sunHidingLevel(double vanillaRainLevel, double cover, double hail, double supercell, double strength) {
         double rain = clamp(vanillaRainLevel, 0.0D, 1.0D);
-        return (float) Math.max(rain, sunHiding(cover, hail, strength));
+        return (float) Math.max(rain, sunHiding(cover, hail, supercell, strength));
     }
 
     private static double clamp(double value, double low, double high) {

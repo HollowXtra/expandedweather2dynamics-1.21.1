@@ -53,10 +53,11 @@ public final class SoftPuffs {
     private static final int LOOSE_PUFF_CEILING = 11000;
     private static boolean crowded;
     /**
-     * How far a tornado's own ground dust may fill the queue, which is further than the other loose effects. The dust
-     * cloud is what shows where a tornado touches the ground; held to the loose ceiling it was the first thing to go
-     * when a multi-vortex episode's columns filled the queue, and the parent stood on bare ground with its foot lifted.
-     * This still leaves room under the queue's 16384 for the funnels themselves.
+     * How far a tornado's own ground dust and its storm's structure may fill the queue, which is further than the other
+     * loose effects. The dust cloud is what shows where a tornado touches the ground; held to the loose ceiling it was
+     * the first thing to go when a multi-vortex episode's columns filled the queue, and the parent stood on bare ground
+     * with its foot lifted. A supercell's tower, anvil and rain are the storm itself, not something laid over it. This
+     * still leaves room under the queue's 16384 for the funnels.
      */
     private static final int GROUND_DUST_CEILING = 13500;
     private static boolean groundDustCrowded;

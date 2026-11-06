@@ -19,8 +19,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * hang either on, so the geometry is replaced as well and this renderer stops drawing.
  *
  * <p>The suppression is gated on the same test the replacement pass uses, so nothing here can leave
- * a strike invisible: while the mod's program has not loaded, or a shader pack is active and would
- * not shade it, the vanilla renderer draws exactly as it always did.
+ * a strike invisible: while the mod's program has not loaded and the bolt is not going through the
+ * game's own lightning program instead, the vanilla renderer draws exactly as it always did.
  */
 @Mixin(LightningBoltRenderer.class)
 public abstract class LightningBoltRendererMixin {

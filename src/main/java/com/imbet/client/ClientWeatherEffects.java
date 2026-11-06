@@ -325,31 +325,51 @@ public final class ClientWeatherEffects {
         }
     }
 
+    /**
+     * The anvil and the overshooting top.
+     *
+     * <p>Where the updraft runs into the tropopause it can climb no further and spreads out flat: the anvil, a broad
+     * plume with a flat top that fans out downwind for several storm widths, thick and sagging near the tower and thin
+     * at its far edge, with a little of it pushed back upwind over the tower in a strong storm. Over the tower itself the
+     * updraft punches through the top anyway, in a bright dome. These are the things a supercell is recognised by from
+     * a long way off, so they are drawn big and far.
+     */
     private static void spawnAnvilAndOvershootingTop(ClientLevel level, SupercellStructureService.StructureSample structure, float strength) {
         double towerTop = updraftTowerTop(structure);
-        int count = level.random.nextFloat() < strength * 0.7F ? 1 : 0;
+        double towerRadius = updraftTowerRadius(structure);
+        double length = structure.radius() * 3.4D;
+        Vec3 origin = structure.updraft().add(structure.forward().scale(towerLean(structure)));
+        float wanted = strength * 2.6F;
+        int count = (int) wanted + (level.random.nextFloat() < wanted - (int) wanted ? 1 : 0);
         for (int i = 0; i < count; i++) {
-            // A plume: narrow where it leaves the tower and fanning out with distance downshear.
-            double reach = Math.pow(level.random.nextDouble(), 0.8D);
-            double along = (reach * 3.0D - 0.25D) * structure.radius();
-            double lateral = (level.random.nextDouble() - 0.5D) * structure.radius() * (0.55D + reach * 1.9D);
-            Vec3 base = structure.updraft().add(structure.forward().scale(along)).add(structure.right().scale(lateral));
-            // Flat on top, because it has run into the tropopause, and thinning toward its far edge.
-            double thickness = 34.0D * (1.0D - reach * 0.6D);
-            Vec3 pos = new Vec3(base.x, visualY(level, base, towerTop - level.random.nextDouble() * thickness), base.z);
-            Vec3 velocity = structure.forward().scale(0.030D + strength * 0.020D).add(0.0D, -0.002D, 0.0D);
-            float shade = 0.80F + level.random.nextFloat() * 0.12F;
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), 34.0F + level.random.nextFloat() * 30.0F + (float) reach * 22.0F,
-                    shade, shade, shade * 1.03F, 0.30F * (1.0F - (float) reach * 0.5F), 220, 0.02F, ParticleTypes.CLOUD);
+            double along = level.random.nextFloat() < 0.12F ? -level.random.nextDouble() * 0.18D : Math.pow(level.random.nextDouble(), 0.75D);
+            double reach = Math.max(0.0D, along);
+            double halfWidth = towerRadius * 1.15D + reach * structure.radius() * 1.30D;
+            double lateral = (level.random.nextDouble() * 2.0D - 1.0D) * halfWidth * Math.sqrt(level.random.nextDouble());
+            Vec3 at = origin.add(structure.forward().scale(along * length)).add(structure.right().scale(lateral));
+            double thickness = Mth.lerp(reach, 70.0D, 24.0D);
+            double depth = level.random.nextDouble() * thickness;
+            boolean underside = depth > thickness * 0.55D;
+            float shade = underside ? 0.60F : 0.88F;
+            Vec3 pos = new Vec3(at.x, visualY(level, at, towerTop + 14.0D - depth), at.z);
+            Vec3 velocity = structure.forward().scale(0.040D + strength * 0.020D);
+            float size = (float) (60.0D + level.random.nextDouble() * 40.0D + reach * 30.0D);
+            float alpha = (float) (0.40D * (1.0D - reach * 0.55D)) * (0.6F + strength * 0.4F);
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), size, shade * 0.97F, shade * 0.98F, shade * 1.02F,
+                    alpha, 300, 0.02F, ParticleTypes.CLOUD);
         }
 
-        Vec3 top = structure.updraft();
-        Vec3 topPos = new Vec3(top.x, visualY(level, top, towerTop + level.random.nextDouble() * 26.0D), top.z);
-        spawnStructureParticle(level, topPos, new Vec3(0.0D, 0.026D + strength * 0.014D, 0.0D), ParticleArt.cloud256(), 18.0F + strength * 13.0F, 0.82F, 0.82F, 0.88F, 0.30F, 130, 0.01F, ParticleTypes.CLOUD);
-
-        Vec3 back = structure.backShearedAnvil();
-        Vec3 backPos = new Vec3(back.x, visualY(level, back, towerTop - 10.0D - level.random.nextDouble() * 26.0D), back.z);
-        spawnStructureParticle(level, backPos, structure.forward().scale(-0.012D), ParticleArt.cloud256(), 18.0F + strength * 11.0F, 0.66F, 0.66F, 0.74F, 0.22F, 140, 0.02F, ParticleTypes.CLOUD);
+        int domes = level.random.nextFloat() < strength ? 2 : 1;
+        for (int i = 0; i < domes; i++) {
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            double share = Math.sqrt(level.random.nextDouble());
+            double r = towerRadius * 0.45D * share;
+            Vec3 at = origin.add(Math.cos(angle) * r, 0.0D, Math.sin(angle) * r);
+            double rise = (1.0D - share * share) * 48.0D * level.random.nextDouble();
+            Vec3 pos = new Vec3(at.x, visualY(level, at, towerTop + 14.0D + rise), at.z);
+            spawnStructureParticle(level, pos, new Vec3(0.0D, 0.020D + strength * 0.012D, 0.0D), ParticleArt.cloud256(),
+                    30.0F + level.random.nextFloat() * 16.0F, 0.90F, 0.91F, 0.94F, 0.38F, 160, 0.01F, ParticleTypes.CLOUD);
+        }
     }
 
     private static void spawnWallCloud(ClientLevel level, StormObject storm, SupercellStructureService.StructureSample structure, DynamicStormState state) {
@@ -458,7 +478,7 @@ public final class ClientWeatherEffects {
             return;
         }
 
-        int baseCount = level.random.nextFloat() < strength * 0.6F ? 1 : 0;
+        int baseCount = Mth.clamp(Math.round(strength * 2.2F), 1, 3);
         // The storm's flat skirt. Real base strata spread well beyond the tower's footprint -
         // the reference look is a base noticeably wider than the stem - so the skirt rings
         // extend out past the wall cloud diameter and cluster in two altitude sheets to read
@@ -512,9 +532,24 @@ public final class ClientWeatherEffects {
         return Math.min(state.wallCloudLoweringDepth() * Mth.clamp(structure.rainFreeBaseY() / 44.0D, 1.0D, 3.0D), structure.rainFreeBaseY() * 0.20D);
     }
 
-    /** How high the storm's rotating tower reaches above the ground: a storm's width or so above its base. */
+    /**
+     * How high the storm's rotating tower reaches above the ground, which is where the anvil spreads. A real one tops out
+     * ten times higher than its base; this is two or three times, which is as far as a sky can be drawn and still be
+     * seen, and enough for the tower to stand well clear of the deck rather than level with it.
+     */
     private static double updraftTowerTop(SupercellStructureService.StructureSample structure) {
-        return structure.rainFreeBaseY() + Mth.clamp(90.0D + structure.radius() * 0.55D, 110.0D, 240.0D);
+        return structure.rainFreeBaseY() + Mth.clamp(130.0D + structure.radius() * 0.85D, 200.0D, 400.0D);
+    }
+
+    /** How wide the updraft tower is, as a radius. A low-precipitation storm's is narrower and crisper. */
+    private static double updraftTowerRadius(SupercellStructureService.StructureSample structure) {
+        boolean lp = structure.mode() == SupercellStructureService.SupercellMode.LP;
+        return Math.max(44.0D, structure.radius() * (lp ? 0.36D : 0.46D));
+    }
+
+    /** How far downwind the top of the tower is carried past its foot, in blocks. */
+    private static double towerLean(SupercellStructureService.StructureSample structure) {
+        return structure.radius() * 0.30D;
     }
 
     /** Storm-derived but direction-free seed, so the skirt's deterministic slots differ per storm without leaning on position. */
@@ -528,58 +563,42 @@ public final class ClientWeatherEffects {
             return;
         }
         double rotationSign = DynamicStormController.visualRotationSign(storm);
-        int count = level.random.nextFloat() < meso ? 1 : 0;
-        double towerRadius = Math.max(36.0D, structure.radius() * (structure.mode() == SupercellStructureService.SupercellMode.LP ? 0.32D : 0.40D));
+        double towerRadius = updraftTowerRadius(structure);
+        double base = structure.rainFreeBaseY();
         double top = updraftTowerTop(structure);
-        // A real updraft base is one coherent mass, not a swarm: the storm keeps re-condensing
-        // in the same vertical column, so each puff regenerates near where its predecessor sat.
-        // Puffs are drawn against a deterministic stem of the storm id (not the game clock), so
-        // the silhouette holds between ticks instead of shimmering, while the slow rotation of
-        // the whole mass still comes from storm time.
-        long stemSeed = (storm.ID * 0x9E3779B97F4A7C15L) >>> 16;
+        int count = Mth.clamp(Math.round(1.0F + meso * 3.5F), 1, 5);
         for (int i = 0; i < count; i++) {
-            // Layer picks the lobe's altitude band. The tower is a stack of 2-3 lobe rows per
-            // particle: a wide dark collar at the base, mid lobes above it, and the brightest,
-            // most billowed caps near the top - which is the vertical shading the reference
-            // look is built from.
-            double layer = level.random.nextDouble();
-            double rowJitter = (level.random.nextDouble() - 0.5D) * 0.5D;
-            double band = Mth.clamp(layer + rowJitter * 0.4D, 0.0D, 1.0D);
-            // Hard-coded deterministic phase: each lobe gets a fixed angle slot around the
-            // stem, jittered once per spawn, so neighbours sit side by side rather than on
-            // top of each other.
-            double slot = ((stemSeed + i * 0x2545F4914F6CDD1DL) >>> 11) % 7200L / 7200.0D;
-            double angle = slot * Math.PI * 2.0D + level.getGameTime() * 0.014D * rotationSign + rowJitter * 0.62D;
-            double cosAngle = Math.cos(angle);
-            double sinAngle = Math.sin(angle);
-            // The column flares where it meets the skirt, waist in above the base, then the
-            // billowed caps bulge out again near the top - the mushroom-cauliflower profile
-            // the reference look is built from.
-            double legUp = band < 0.62D ? (0.62D - band) / 0.62D : (band - 0.62D) / 0.38D;
-            double pinch = 0.55D + (band < 0.62D ? 0.33D : 0.26D) * Math.pow(legUp, 0.9D);
-            double radius = towerRadius * (0.30D + 0.62D * pinch) * (0.86D + level.random.nextDouble() * 0.28D);
-            Vec3 base = structure.updraft()
-                    .add(cosAngle * radius, 0.0D, sinAngle * radius)
-                    .add(structure.forward().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.05D));
-            double height = Mth.lerp(band, structure.rainFreeBaseY() + 6.0D, top);
-            // Upward drift carries each lobe slowly into the row above it, which is what makes
-            // the stack read as boiling rather than as three static rings of puffs.
-            Vec3 tangent = new Vec3(-sinAngle * rotationSign, 0.0D, cosAngle * rotationSign);
-            Vec3 velocity = tangent.scale(0.020D + meso * 0.044D)
-                    .add(structure.forward().scale(0.005D))
-                    .add(0.0D, 0.014D + meso * 0.022D, 0.0D);
-            // Under-lit base, sun-lit crown: shading is a function of the lobe's altitude band.
-            // The underside of each lobe also stays one step darker than its top so the stack
-            // reads as rounded knuckles instead of a smooth gradient.
-            float crownShade = (float) Mth.lerp(band, 0.46D, 0.80D);
-            float underShade = crownShade * 0.72F;
-            // The bands: shelves of light and dark that wind round the drum as it turns.
-            float striation = 0.86F + 0.14F * (float) Math.sin(band * Math.PI * 9.0D + angle * rotationSign);
-            float shade = (level.random.nextBoolean() ? crownShade : underShade) * striation;
-            Vec3 pos = new Vec3(base.x, visualY(level, base, height), base.z);
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(),
-                    (30.0F + meso * 26.0F + level.random.nextFloat() * 16.0F) * (float) (0.88D + 0.30D * band),
-                    shade * 0.80F, shade * 0.82F, shade * 0.90F, 0.36F + meso * 0.22F, 200, 0.07F, ParticleTypes.CLOUD);
+            double band = Math.pow(level.random.nextDouble(), 0.85D);
+            // A supercell updraft's outline: a broad, striated mesocyclone at its foot - the "mothership" - narrowing into
+            // the knuckled column of the tower, which spreads out again where it runs into the anvil.
+            double radiusShare;
+            if (band < 0.30D) {
+                double t = band / 0.30D;
+                radiusShare = Mth.lerp(t * t, 1.18D, 0.80D);
+            } else if (band < 0.82D) {
+                radiusShare = 0.74D + 0.06D * Math.sin(band * 23.0D + storm.ID);
+            } else {
+                radiusShare = Mth.lerp((band - 0.82D) / 0.18D, 0.74D, 1.10D);
+            }
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            // Most puffs on the skin of the column, where its lumpy edge is, and some inside it so it is solid.
+            double skin = level.random.nextFloat() < 0.78F ? 0.82D + level.random.nextDouble() * 0.18D : Math.sqrt(level.random.nextDouble()) * 0.8D;
+            double r = towerRadius * radiusShare * skin;
+            // It leans downwind as it climbs, the top carried on ahead of the foot.
+            Vec3 lean = structure.forward().scale(band * band * towerLean(structure));
+            Vec3 at = structure.updraft().add(Math.cos(angle) * r, 0.0D, Math.sin(angle) * r).add(lean);
+            Vec3 tangent = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign);
+            // The turning shows most at the foot, where the mesocyclone is; the tower above it mostly boils.
+            double spin = (0.035D + meso * 0.060D) * (1.0D - band * 0.7D);
+            Vec3 velocity = tangent.scale(spin).add(structure.forward().scale(0.006D)).add(0.0D, 0.010D + meso * 0.018D, 0.0D);
+            // The striations: shelves of light and dark wound round the lower part of a turning updraft.
+            double striation = band < 0.45D ? 0.84D + 0.16D * Math.sin(band * Math.PI * 14.0D + angle * rotationSign * 0.5D) : 1.0D;
+            // Lit from above: the foot under-lit and dark, the crown in sunlight.
+            float shade = (float) (Mth.lerp(Math.pow(band, 0.7D), 0.40D, 0.86D) * striation);
+            float size = (float) ((34.0D + meso * 18.0D + level.random.nextDouble() * 16.0D) * (0.85D + band * 0.45D));
+            Vec3 pos = new Vec3(at.x, visualY(level, at, Mth.lerp(band, base + 4.0D, top)), at.z);
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), size, shade * 0.92F, shade * 0.94F, shade,
+                    0.34F + meso * 0.18F, 220, 0.04F, ParticleTypes.CLOUD);
         }
     }
 
@@ -645,44 +664,98 @@ public final class ClientWeatherEffects {
     private static final int FLANKING_TOWERS = 5;
 
     /**
-     * The curtain of rain that wraps round a tornado in a rain-heavy storm. It is a curved wall of falling rain round
-     * the funnel, swept round with the circulation and open on the inflow side, where dry air is coming in. The tornado
-     * is seen through the rain and behind it rather than lost in it. It stays outside the funnel's clear air, so it
-     * shrouds the funnel from some angles without ever sitting on top of it.
+     * The rain the rear-flank downdraft wraps round a tornado.
+     *
+     * <p>In a heavy-precipitation storm the curtain closes nearly all the way round the funnel, leaving only the notch the
+     * warm inflow comes in through, and there is rain right up against the funnel as well: from most sides the tornado is
+     * a darker shape in grey rain, or not there at all, which is what makes an HP storm the dangerous one. A classic storm
+     * wraps only its back. The curtain is built of heavy rain sheets from the ground to the base, each moving mostly
+     * inward so that it faces outward like a wall, swept round cyclonically the way the downdraft carries it, and its
+     * far end swings wider into the forward-flank core: the hook. It is the one part of the storm let into the funnel's
+     * clear air, because hiding the funnel is the whole of what it does.
      */
     private static void spawnRainWrap(ClientLevel level, StormObject storm, SupercellStructureService.StructureSample structure, float wrap) {
-        int count = Mth.clamp(Math.round(2.0F + wrap * 6.0F), 2, 9);
-        double wall = Math.max(12.0D, DynamicStormController.funnelWallRadiusAt(storm, 0.3F));
-        double inner = wall * 1.35D + 50.0D;
+        boolean heavy = structure.mode() == SupercellStructureService.SupercellMode.HP;
+        float strength = Mth.clamp(wrap, 0.0F, 1.4F);
+        double wall = Math.max(10.0D, DynamicStormController.funnelWallRadiusAt(storm, 0.15F));
         double rotationSign = DynamicStormController.visualRotationSign(storm);
         Vec3 inflow = structure.forward().add(structure.right());
-        double inflowAngle = Math.atan2(inflow.z, inflow.x);
-        for (int i = 0; i < count; i++) {
-            double along = level.random.nextDouble();
-            double angle = inflowAngle + rotationSign * (Math.toRadians(60.0D) + along * Math.toRadians(240.0D));
-            double radius = inner + level.random.nextDouble() * (18.0D + wall * 0.5D) + along * 20.0D;
-            double cos = Math.cos(angle);
-            double sin = Math.sin(angle);
-            Vec3 base = storm.pos.add(cos * radius, 0.0D, sin * radius);
-            Vec3 pos = new Vec3(base.x, visualY(level, base, 4.0D + level.random.nextDouble() * structure.rainFreeBaseY() * 0.95D), base.z);
-            Vec3 swept = new Vec3(-sin * rotationSign, 0.0D, cos * rotationSign).scale(0.10D + wrap * 0.08D);
-            spawnStructureParticle(level, pos, swept.add(0.0D, -0.30D, 0.0D), RainShaftSprites.virgaSheet(level.random, 0.75F),
-                    22.0F + level.random.nextFloat() * 14.0F, 0.50F, 0.54F, 0.62F, 0.30F + wrap * 0.16F, 60, 0.10F, ParticleTypes.RAIN);
+        double notchAngle = Math.atan2(inflow.z, inflow.x);
+        double open = Math.toRadians(heavy ? 70.0D : 190.0D);
+        double span = Math.PI * 2.0D - open;
+        double base = structure.rainFreeBaseY();
+        double curtainDepth = structure.radius() * (heavy ? 0.30D : 0.20D);
+        int curtain = Mth.clamp(Math.round((heavy ? 7.0F : 3.5F) * strength), 1, 10);
+        int veil = heavy ? Mth.clamp(Math.round(3.0F * strength), 1, 4) : 0;
+        structureInClearAir = true;
+        try {
+            for (int i = 0; i < curtain + veil; i++) {
+                boolean inner = i >= curtain;
+                double along = level.random.nextDouble();
+                double angle = notchAngle + rotationSign * (open * 0.5D + along * span);
+                double radius = inner
+                        ? wall * (1.05D + level.random.nextDouble() * 0.55D) + 4.0D
+                        : wall * 1.6D + 10.0D + level.random.nextDouble() * curtainDepth + along * structure.radius() * 0.12D;
+                double cos = Math.cos(angle);
+                double sin = Math.sin(angle);
+                Vec3 at = storm.pos.add(cos * radius, 0.0D, sin * radius);
+                // A sheet covers a stretch of the fall; stacked at every height from the ground to the base, they are the curtain.
+                Vec3 pos = new Vec3(at.x, visualY(level, at, level.random.nextDouble() * base * 0.92D), at.z);
+                Vec3 inward = new Vec3(-cos, 0.0D, -sin);
+                Vec3 tangent = new Vec3(-sin * rotationSign, 0.0D, cos * rotationSign);
+                Vec3 velocity = inward.scale(0.10D).add(tangent.scale(0.07D + strength * 0.05D)).add(0.0D, -0.05D, 0.0D);
+                float shade = inner ? 0.44F : 0.36F + level.random.nextFloat() * 0.06F;
+                float alpha = inner ? 0.20F + strength * 0.06F : 0.30F + strength * 0.12F;
+                spawnStructureParticle(level, pos, velocity, RainShaftSprites.sheet(level.random, inner ? 0.62F : 0.88F),
+                        (inner ? 30.0F : 38.0F) + level.random.nextFloat() * 18.0F, shade, shade * 1.08F, shade * 1.26F,
+                        alpha, 70 + level.random.nextInt(26), 0.05F, ParticleTypes.RAIN);
+            }
+            // The rain foot: where the curtain meets the ground it throws up a low grey mist.
+            if (heavy && level.random.nextFloat() < strength * 0.8F) {
+                double angle = notchAngle + rotationSign * (open * 0.5D + level.random.nextDouble() * span);
+                double radius = wall * 1.6D + 10.0D + level.random.nextDouble() * curtainDepth;
+                Vec3 at = storm.pos.add(Math.cos(angle) * radius, 0.0D, Math.sin(angle) * radius);
+                Vec3 pos = new Vec3(at.x, visualY(level, at, 1.0D + level.random.nextDouble() * 7.0D), at.z);
+                Vec3 sweep = new Vec3(-Math.sin(angle) * rotationSign, 0.0D, Math.cos(angle) * rotationSign).scale(0.08D);
+                spawnStructureParticle(level, pos, sweep, ParticleArt.cloud256(), 20.0F + level.random.nextFloat() * 14.0F,
+                        0.56F, 0.58F, 0.64F, 0.20F, 90, 0.10F, ParticleTypes.CLOUD);
+            }
+        } finally {
+            structureInClearAir = false;
         }
     }
 
+    /**
+     * The flanking line: a row of towering cumulus along the rear-flank gust front, each tower a step taller than the one
+     * behind it, climbing to the main updraft. Every tower is its own column with a rounded crown, so the line reads as
+     * a staircase of separate towers rather than a smear of cloud.
+     */
     private static void spawnFlankingLine(ClientLevel level, SupercellStructureService.StructureSample structure, float strength) {
-        int count = strength > 0.2F && level.random.nextBoolean() ? 1 : 0;
+        if (strength <= 0.2F) {
+            return;
+        }
+        double base = structure.rainFreeBaseY();
+        double top = updraftTowerTop(structure);
+        int count = level.random.nextFloat() < strength ? 2 : 1;
         for (int i = 0; i < count; i++) {
-            double t = (level.random.nextInt(FLANKING_TOWERS) + 0.5D) / FLANKING_TOWERS;
-            Vec3 base = structure.flankingLineStart().lerp(structure.flankingLineEnd(), t)
-                    .add(structure.right().scale((level.random.nextDouble() - 0.5D) * (10.0D + t * 12.0D)))
-                    .add(structure.forward().scale((level.random.nextDouble() - 0.5D) * (10.0D + t * 12.0D)));
-            double towerHeight = structure.rainFreeBaseY() + level.random.nextDouble() * (18.0D + t * t * (updraftTowerTop(structure) - structure.rainFreeBaseY()) * 0.62D);
-            Vec3 pos = new Vec3(base.x, visualY(level, base, towerHeight), base.z);
-            Vec3 velocity = structure.forward().scale(0.010D).add(structure.right().scale(-0.006D)).add(0.0D, 0.010D + t * 0.012D, 0.0D);
-            float scale = (float) (14.0D + t * 22.0D + level.random.nextDouble() * 9.0D);
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), scale, 0.74F, 0.74F, 0.80F, 0.32F + (float) t * 0.18F, 150, 0.03F, ParticleTypes.CLOUD);
+            int tower = level.random.nextInt(FLANKING_TOWERS);
+            // 0 at the far end of the line, 1 beside the main updraft.
+            double t = (tower + 0.5D) / FLANKING_TOWERS;
+            Vec3 centre = structure.flankingLineStart().lerp(structure.flankingLineEnd(), t);
+            double towerTop = base + (top - base) * (0.14D + 0.44D * t * t);
+            double towerRadius = 16.0D + t * 28.0D;
+            double band = Math.pow(level.random.nextDouble(), 0.7D);
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            // A column that bulges into its crown.
+            double crown = band > 0.72D ? 1.0D + (band - 0.72D) * 1.1D : 0.82D;
+            double r = towerRadius * crown * (0.55D + 0.45D * level.random.nextDouble());
+            Vec3 at = centre.add(Math.cos(angle) * r, 0.0D, Math.sin(angle) * r);
+            Vec3 pos = new Vec3(at.x, visualY(level, at, Mth.lerp(band, base - 4.0D, towerTop)), at.z);
+            Vec3 velocity = structure.forward().scale(0.008D).add(0.0D, 0.010D + t * 0.012D, 0.0D);
+            float shade = (float) Mth.lerp(band, 0.50D, 0.86D);
+            float scale = (float) (18.0D + t * 18.0D + level.random.nextDouble() * 10.0D);
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), scale, shade * 0.95F, shade * 0.96F, shade,
+                    0.30F + (float) t * 0.14F, 200, 0.03F, ParticleTypes.CLOUD);
         }
     }
 
@@ -692,24 +765,36 @@ public final class ClientWeatherEffects {
      * an HP supercell buries the forward flank in rain.
      */
     private static void spawnForwardFlankPrecip(ClientLevel level, SupercellStructureService.StructureSample structure, float ffdStrength, float hailCoreStrength, float character) {
-        float density = Mth.lerp(0.30F, 1.40F, Mth.clamp(character, 0.0F, 1.0F));
-        int count = Mth.clamp((int) Math.round((1 + (int) (ffdStrength * 2.0F)) * density), 0, 3);
-        if (count <= 0) {
-            return;
+        float wet = Mth.clamp(character, 0.0F, 1.0F);
+        double base = structure.rainFreeBaseY();
+        // The rain core: a grey curtain hanging from the base to the ground under the forward flank, heaviest and darkest
+        // beside the updraft where the hail comes down and thinning toward its leading edge. It is built of rain sheets,
+        // as the rain-wrap is, half of them facing across the storm and half along it, so it reads from any side. A dry
+        // storm hardly has one.
+        int sheets = Mth.clamp(Math.round((1.0F + ffdStrength * 4.5F) * Mth.lerp(wet, 0.15F, 1.0F)), 0, 6);
+        for (int i = 0; i < sheets; i++) {
+            double ahead = level.random.nextDouble();
+            Vec3 at = structure.forwardFlank()
+                    .add(structure.forward().scale((ahead - 0.35D) * structure.radius() * 0.80D))
+                    .add(structure.right().scale((level.random.nextDouble() - 0.55D) * structure.radius() * (0.45D + ahead * 0.35D)));
+            Vec3 pos = new Vec3(at.x, visualY(level, at, level.random.nextDouble() * base * 0.92D), at.z);
+            Vec3 facing = (i & 1) == 0 ? structure.right().scale(-0.06D) : structure.forward().scale(0.06D);
+            Vec3 velocity = facing.add(0.0D, -0.05D, 0.0D);
+            float heaviness = (float) (1.0D - ahead * 0.6D);
+            float shade = 0.40F + (1.0F - heaviness) * 0.14F;
+            spawnStructureParticle(level, pos, velocity, RainShaftSprites.sheet(level.random, 0.45F + heaviness * 0.45F),
+                    40.0F + level.random.nextFloat() * 20.0F, shade, shade * 1.07F, shade * 1.22F,
+                    (0.18F + heaviness * 0.20F) * (0.5F + ffdStrength * 0.5F), 90 + level.random.nextInt(30), 0.06F, ParticleTypes.RAIN);
         }
-        // Dry air aloft means the hail shaft survives to the ground more often in an LP storm.
-        float hailChance = Mth.clamp(hailCoreStrength * Mth.lerp(0.65F, 0.30F, Mth.clamp(character, 0.0F, 1.0F)), 0.0F, 0.85F);
-        for (int i = 0; i < count; i++) {
-            Vec3 base = structure.forwardFlank()
-                    .add(structure.forward().scale((level.random.nextDouble() - 0.3D) * structure.radius() * 0.62D))
-                    .add(structure.right().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.48D));
-            Vec3 pos = new Vec3(base.x, visualY(level, base, 12.0D + level.random.nextDouble() * structure.rainFreeBaseY() * 0.92D), base.z);
-            Vec3 velocity = structure.forward().scale(0.035D + ffdStrength * 0.045D).add(0.0D, -0.18D - ffdStrength * 0.07D, 0.0D);
-            if (hailCoreStrength > 0.30F && level.random.nextFloat() < hailChance * 0.45F) {
-                spawnStructureParticle(level, pos, velocity, ParticleRegistry.groundSplash, 0.65F + hailCoreStrength * 0.75F, 0.86F, 0.90F, 0.96F, 0.55F, 26, 0.02F, ParticleTypes.RAIN);
-            } else {
-                spawnStructureParticle(level, pos, velocity, ParticleRegistry.cloud, 3.0F + ffdStrength * 4.0F, 0.46F, 0.50F, 0.58F, 0.26F, 46, 0.12F, ParticleTypes.RAIN);
-            }
+        // Hail bouncing at the foot of the core. Dry air aloft means it survives to the ground more often in an LP storm.
+        float hailChance = Mth.clamp(hailCoreStrength * Mth.lerp(0.65F, 0.30F, wet), 0.0F, 0.85F);
+        if (hailCoreStrength > 0.30F && level.random.nextFloat() < hailChance * 0.45F) {
+            Vec3 at = structure.forwardFlank()
+                    .add(structure.forward().scale((level.random.nextDouble() - 0.3D) * structure.radius() * 0.40D))
+                    .add(structure.right().scale((level.random.nextDouble() - 0.55D) * structure.radius() * 0.30D));
+            Vec3 pos = new Vec3(at.x, visualY(level, at, 1.0D + level.random.nextDouble() * 3.0D), at.z);
+            spawnStructureParticle(level, pos, new Vec3(0.0D, -0.20D, 0.0D), ParticleRegistry.groundSplash, 0.65F + hailCoreStrength * 0.75F,
+                    0.86F, 0.90F, 0.96F, 0.55F, 26, 0.02F, ParticleTypes.RAIN);
         }
     }
 
@@ -2156,7 +2241,10 @@ public final class ClientWeatherEffects {
         // spreads well past the loaded chunks, and an unloaded column answers the bottom of the world, which was putting
         // whole sheets of its cloud at head height. A base that is flat is also what a base should be.
         int groundY = structureFunnelStorm != null ? structureGroundY : vortexGroundY(level, base);
-        return Mth.clamp(groundY + offset, level.getMinBuildHeight() + 1.0D, level.getMaxBuildHeight() - 4.0D);
+        // Not held under the build limit: a supercell's tower and anvil stand far above any block, and held at the limit
+        // they were pressed into the hundred blocks over the cloud base, so the tallest thing in the sky was no taller
+        // than the deck. A particle up there is lit by the open sky like any other.
+        return Mth.clamp(groundY + offset, level.getMinBuildHeight() + 1.0D, level.getMaxBuildHeight() + SKY_HEADROOM_BLOCKS);
     }
 
     /** The ground a puff of dust stands on: under it where that is loaded, under the storm where it is not. */
@@ -2188,8 +2276,17 @@ public final class ClientWeatherEffects {
         return level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, BlockPos.containing(pos)).getY();
     }
 
+    /** How far above the build limit a storm's structure may stand, in blocks. */
+    private static final double SKY_HEADROOM_BLOCKS = 640.0D;
+
+    /** True while rain that is meant to hide the funnel is being spawned: it is let into the funnel's clear air. */
+    private static boolean structureInClearAir;
+
     private static void spawnStructureParticle(ClientLevel level, Vec3 pos, Vec3 velocity, TextureAtlasSprite sprite, float scale, float red, float green, float blue, float alpha, int maxAge, float windWeight, ParticleOptions fallback) {
-        if (structureParticlesSpawnedThisTick >= Config.SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK.get() || SoftPuffs.crowded() || inFunnelsClearAir(pos, scale)) {
+        // The storm's own structure has the same room in the queue as a tornado's ground dust: it is the storm, not a loose
+        // effect laid over it, and at the loose ceiling a violent tornado's funnel left it none.
+        if (structureParticlesSpawnedThisTick >= Config.SUPERCELL_STRUCTURE_MAX_PARTICLES_PER_TICK.get() || SoftPuffs.groundDustCrowded()
+                || (!structureInClearAir && inFunnelsClearAir(pos, scale))) {
             return;
         }
         structureParticlesSpawnedThisTick++;

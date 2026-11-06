@@ -63,6 +63,7 @@ public final class StormShade {
 
     private static long cachedTick = Long.MIN_VALUE;
     private static float cachedCover = -1.0F;
+    private static float cachedSupercell = 0.0F;
 
     private StormShade() {
     }
@@ -81,6 +82,7 @@ public final class StormShade {
             return 0.0F;
         }
         float best = 0.0F;
+        float bestSupercell = 0.0F;
         double deckScale = Config.STORM_COVER_DECK_SCALE.get();
         for (WeatherObject object : new ArrayList<>(manager.getStormObjects())) {
             if (!(object instanceof StormObject storm) || storm.pos == null || storm.isDead
@@ -92,13 +94,45 @@ public final class StormShade {
                 continue;
             }
             best = Math.max(best, stormCover(storm, position, deckScale));
-            if (best >= 1.0F) {
-                break;
-            }
+            bestSupercell = Math.max(bestSupercell, supercellGloom(storm, position));
         }
         cachedTick = gameTime;
         cachedCover = Mth.clamp(best, 0.0F, 1.0F);
+        cachedSupercell = Mth.clamp(bestSupercell, 0.0F, 1.0F);
         return cachedCover;
+    }
+
+    /**
+     * How much of a supercell's own darkness is over a position, 0 to 1: the extra it takes on top of an ordinary deck.
+     * Read on the same tick as {@link #cover}, and from the same storms.
+     */
+    public static float supercell(ClientLevel level, Vec3 position) {
+        cover(level, position);
+        return cachedSupercell;
+    }
+
+    /**
+     * A supercell's darkness at a position. Under its rain, its updraft base and its wall cloud it is the whole of it, and
+     * it carries on past the storm's edge as a gloom that fades over two or three storm widths: a storm that size blocks
+     * a good part of the sky well beyond the ground it rains on, which is why the light goes strange long before it
+     * arrives. A low-precipitation storm, with its bare bright base, takes the least.
+     */
+    private static float supercellGloom(StormObject storm, Vec3 position) {
+        DynamicStormState state = DynamicStormController.stateFor(storm);
+        if (state == null) {
+            return 0.0F;
+        }
+        float structure = state.supercellStructureStrength();
+        if (structure <= 0.05F || !SupercellStructureService.isEligible(storm)) {
+            return 0.0F;
+        }
+        StructureSample sample = SupercellStructureService.sample(storm, state);
+        double radius = Math.max(40.0D, sample.radius());
+        double under = Math.max(precipitationShade(storm, state, position),
+                Math.max(disc(position, sample.updraft(), radius * 1.10D), disc(position, sample.mesocyclone(), radius * 0.95D)));
+        double around = Math.sqrt(disc(position, sample.mesocyclone(), radius * 3.2D)) * 0.50D;
+        double mode = sample.mode() == SupercellMode.HP ? 1.0D : sample.mode() == SupercellMode.CLASSIC ? 0.82D : 0.55D;
+        return (float) Mth.clamp(Math.max(under, around) * structure * mode, 0.0D, 1.0D);
     }
 
     private static float stormCover(StormObject storm, Vec3 position, double deckScale) {
