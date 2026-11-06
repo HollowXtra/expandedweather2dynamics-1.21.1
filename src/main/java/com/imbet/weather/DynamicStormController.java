@@ -271,15 +271,88 @@ public final class DynamicStormController {
         return Mth.clamp(1.0D - (state.damagePathWidth() - 12.0D) / 450.0D, 0.0D, 1.0D);
     }
 
+    /** How far into dying the funnel has finished thinning into a rope. */
+    private static final float ROPE_THIN_SHARE = 0.32F;
+    /** How far into dying the condensation starts to draw up off the ground, and how far it is gone into the cloud. */
+    private static final float ROPE_LIFT_START = 0.40F;
+    private static final float ROPE_LIFT_END = 0.95F;
+    /** How much of the funnel's height the bottom edge of a lifting funnel fades over. */
+    private static final float ROPE_LIFT_EDGE = 0.22F;
+
     /**
      * How far through roping out this funnel is: nought until it is in its last tornadic stage and failing, or being
      * absorbed. A storm past its peak steps down through every stage on its way out, and counting the whole of that as a
      * rope-out kept a violent tornado drawn as a thin leaning rope for most of its life.
      */
     public static float funnelRopeOut(StormObject storm) {
-        boolean absorbed = isAbsorbedOrDecaying(storm);
-        boolean lastStage = storm.hasStormPeaked && !storm.isGrowing && storm.levelCurIntensityStage <= StormObject.STATE_STAGE1;
-        return absorbed || lastStage ? Mth.clamp((1.0F - Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F)) * 1.55F, 0.0F, 1.0F) : 0.0F;
+        return storm == null ? 0.0F : Mth.clamp(stateFor(storm).ropeOutProgress() / ROPE_THIN_SHARE, 0.0F, 1.0F);
+    }
+
+    /**
+     * How far a dying funnel's condensation has drawn up off the ground: 0 while it still reaches the surface, 1 once it
+     * has gone back up into the cloud. It starts once the funnel is a rope, and is over just before Weather2 takes the
+     * funnel away, so a tornado lifts rather than vanishing.
+     */
+    public static float funnelRopeLift(StormObject storm) {
+        if (storm == null) {
+            return 0.0F;
+        }
+        float progress = stateFor(storm).ropeOutProgress();
+        return smoothstep(Mth.clamp((progress - ROPE_LIFT_START) / (ROPE_LIFT_END - ROPE_LIFT_START), 0.0F, 1.0F));
+    }
+
+    /**
+     * How far up the funnel its condensation ends right now, as a share of its height: 0 when it reaches the ground. A
+     * lifting rope-out, a lifted or swarming multi-vortex parent and a floater all raise it, whichever is highest.
+     */
+    public static float funnelFootFraction(StormObject storm) {
+        if (storm == null || !storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout) {
+            return 0.0F;
+        }
+        DynamicStormState state = stateFor(storm);
+        float foot = funnelRopeLift(storm);
+        if (hasActiveMultivortexVisual(storm)) {
+            if (state.multiVortexFlavour() == MultiVortexFlavour.LIFTED) {
+                foot = Math.max(foot, liftedTipFraction(storm, state));
+            } else if (state.multiVortexFlavour() == MultiVortexFlavour.GROUND_SWARM) {
+                foot = Math.max(foot, state.parentTipFraction(stormGameTime(storm)));
+            }
+        }
+        // Read straight off the floater rather than through a layer: a layer's height is read against the funnel's glided
+        // layer count, and asking about any other count moves the glide.
+        double floaterLift = floaterFootLift(storm);
+        if (floaterLift > 0.0D) {
+            foot = Math.max(foot, (float) (floaterLift / Math.max(16.0D, funnelHeightBlocks(storm))));
+        }
+        return Mth.clamp(foot, 0.0F, 1.0F);
+    }
+
+    /** How far up the foot has to be before nothing of the funnel is on the ground, as a share of its height. */
+    private static final float OFF_THE_GROUND_SPAN = 0.12F;
+
+    /**
+     * 0 while the funnel stands on the ground, 1 once its foot has lifted clear of it. The ground dust reads this: it stays
+     * on the ground under a lifting funnel, lower and thinner, rather than going up with it or going out all at once.
+     */
+    public static float funnelOffTheGround(StormObject storm) {
+        return smoothstep(Mth.clamp(funnelFootFraction(storm) / OFF_THE_GROUND_SPAN, 0.0F, 1.0F));
+    }
+
+    /**
+     * The height a funnel's foot is drawn from. Weather2 puts the foot of a funnel in its forming stage partway up toward
+     * the cloud, by how far that stage has drained, and the stage drains in steps a few seconds apart: through its last
+     * minute a dying tornado's whole funnel jumped up a dozen blocks at a time. A dying funnel stays on Weather2's own
+     * ground instead and lifts by the rope-out's fade, which is smooth. A funnel still forming is left to Weather2.
+     */
+    public static double funnelFootAnchorY(StormObject storm, double weather2FootY) {
+        if (storm == null || storm.levelCurIntensityStage > StormObject.STATE_FORMING || !dyingFunnel(storm)) {
+            return weather2FootY;
+        }
+        Level world = storm.manager == null ? null : storm.manager.getWorld();
+        if (world == null || storm.currentTopYBlock <= world.getMinBuildHeight() + 1) {
+            return weather2FootY;
+        }
+        return Math.min(weather2FootY, storm.currentTopYBlock);
     }
 
     /** A layer's height up the column, 0 at the foot and 1 at the cloud base. */
@@ -521,32 +594,50 @@ public final class DynamicStormController {
      * clear air is still between the two. A funnel whose genesis length is unknown (a save written
      * before the timeline existed) keeps the legacy eight-second build-in.
      *
-     * DECAY: the funnel ropes out from the ground up - the bottom lifts first,
-     * then the whole funnel thins before it is removed.
+     * DECAY: the funnel thins into a rope, then its condensation draws up off the ground from the foot, the edge of it
+     * rising up the column until it is gone back into the cloud. Weather2 takes the funnel away when its stage falls
+     * below forming, and by then there is nothing left of it to vanish.
      */
     public static float funnelLayerFormationAlpha(StormObject storm, float ageTicks, int layerIndex, int layerCount) {
         if (storm == null || layerCount <= 1 || !Config.TORNADO_FORMING_ANIMATION_ENABLED.get() || storm.attrib_waterSpout) {
             return 1.0F;
         }
         float fraction = layerFraction(storm, layerIndex, layerCount);
-        float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
-        float intensity = Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F);
-        boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
-        if (decaying) {
-            // rope-out: bottom layers lift first, the top hangs on longest
-            float rope = Mth.clamp((1.0F - intensity) * 1.55F, 0.0F, 1.0F);
-            float bottomLift = (1.0F - fraction) * (1.0F - fraction);
-            float layerFade = 1.0F - bottomLift * rope;
-            // late in the rope the whole funnel thins toward nothing
-            float globalThin = Mth.clamp(rope * 1.18F - 0.42F, 0.0F, 1.0F);
-            return Mth.clamp(layerFade * (1.0F - globalThin * 0.55F), 0.0F, 1.0F);
-        }
         float descend = condensationDescent(storm, ageTicks, fraction);
         float fadeIn = descend * descend * (3.0F - 2.0F * descend);
+        if (dyingFunnel(storm)) {
+            float lift = funnelRopeLift(storm);
+            // The edge where the condensation gives out, with a soft fade under it. At no lift it is below the ground, and
+            // at full lift it has passed the top of the column.
+            float edge = lift * (1.0F + ROPE_LIFT_EDGE);
+            float layerFade = smoothstep(Mth.clamp((fraction - edge + ROPE_LIFT_EDGE) / ROPE_LIFT_EDGE, 0.0F, 1.0F));
+            float thin = Mth.lerp(funnelRopeOut(storm), 1.0F, 0.72F);
+            // Held at the strength the funnel had at its peak. Read off the stage it is in now, it stepped down a rung each
+            // time Weather2 dropped a stage on the way out.
+            float overall = Mth.lerp(Mth.clamp(peakStageShare(storm) / 0.25F, 0.0F, 1.0F), 0.5F, 1.0F);
+            return Mth.clamp(fadeIn * layerFade * thin * overall, 0.0F, 1.0F);
+        }
+        float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
         // stage still gates overall strength: an early-stage funnel is wispy
         // even after it has reached the ground, a violent one solidifies fully
         float overall = Mth.lerp(Mth.clamp(stage / 0.25F, 0.0F, 1.0F), 0.5F, 1.0F);
         return Mth.clamp(fadeIn * overall, 0.0F, 1.0F);
+    }
+
+    /**
+     * Whether the funnel is on its way down: absorbed, past its peak, or below the highest stage it reached. The whole of
+     * the way down is drawn from the peak's strength, so nothing changes until the rope-out itself starts.
+     */
+    private static boolean dyingFunnel(StormObject storm) {
+        DynamicStormState state = stateFor(storm);
+        return isAbsorbedOrDecaying(storm) || state.ropeOutProgress() > 0.0F || storm.hasStormPeaked
+                || storm.levelCurIntensityStage < state.peakStage();
+    }
+
+    /** How far up the tornadic stages this storm got at its peak, 0 at forming and 1 at the top. */
+    private static float peakStageShare(StormObject storm) {
+        int peak = Math.max(storm.levelCurIntensityStage, stateFor(storm).peakStage());
+        return Mth.clamp((peak - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
     }
 
     /**
@@ -583,11 +674,11 @@ public final class DynamicStormController {
         float fraction = layerFraction(storm, layerIndex, layerCount);
         float stage = Mth.clamp((storm.levelCurIntensityStage - StormObject.STATE_FORMING) / 5.0F, 0.0F, 1.0F);
         float intensity = Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F);
-        boolean decaying = stage >= 0.35F && (storm.hasStormPeaked && !storm.isGrowing || isAbsorbedOrDecaying(storm));
-        if (decaying) {
-            float rope = Mth.clamp((1.0F - intensity) * 1.55F, 0.0F, 1.0F);
-            float globalThin = Mth.clamp(rope * 1.18F - 0.42F, 0.0F, 1.0F);
-            return Mth.clamp(1.0F - globalThin * 0.38F, 0.35F, 1.0F);
+        if (dyingFunnel(storm)) {
+            // The strength it peaked at, as for the alpha, thinning with the rope.
+            float peakOverall = Mth.lerp(Mth.clamp(peakStageShare(storm) * 0.55F + 0.45F, 0.0F, 1.0F), 0.78F, 1.0F);
+            float widen = Mth.lerp(condensationDescent(storm, ageTicks, fraction), 0.45F, 1.0F);
+            return Mth.clamp(peakOverall * widen * Mth.lerp(funnelRopeOut(storm), 1.0F, 0.70F), 0.30F, 1.0F);
         }
         // bottom layers start thin and widen as the condensation reaches down
         float descend = condensationDescent(storm, ageTicks, fraction);
@@ -633,7 +724,7 @@ public final class DynamicStormController {
                     : MultiVortexParentProfile.liftedCulled(liftedTipFraction(storm, state), layerFraction(storm, layerIndex, layerCount));
             // Ground swarm: only the layers below the tip are cut, so the condensation visibly stops
             // short of the ground with the swirls turning in the gap under it.
-            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmCulled(state.parentTipFraction(), layerFraction(storm, layerIndex, layerCount));
+            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmCulled(state.parentTipFraction(stormGameTime(storm)), layerFraction(storm, layerIndex, layerCount));
             // Embedded: the parent is planted on the ground exactly as usual. Nothing is cut.
             case EMBEDDED -> false;
         };
@@ -649,7 +740,7 @@ public final class DynamicStormController {
             case LIFTED -> liftedParentHidden()
                     ? 0.0F
                     : MultiVortexParentProfile.liftedAlpha(liftedTipFraction(storm, state), fraction);
-            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmAlpha(state.parentTipFraction(), fraction);
+            case GROUND_SWARM -> MultiVortexParentProfile.groundSwarmAlpha(state.parentTipFraction(stormGameTime(storm)), fraction);
             case EMBEDDED -> MultiVortexParentProfile.embeddedAlpha(fraction);
         };
     }
@@ -738,19 +829,27 @@ public final class DynamicStormController {
         if (storm == null || !storm.isTornadoFormingOrGreater() || storm.attrib_waterSpout || layerCount <= 1) {
             return 0.0D;
         }
-        DynamicStormState state = stateFor(storm);
-        float blend = Config.FLOATER_TORNADOES_ENABLED.get() ? state.shapeShare(FunnelMorphology.FLOATER) : 0.0F;
-        if (blend > 0.001F) {
+        double footLift = floaterFootLift(storm);
+        if (footLift > 0.0D) {
             float fraction = layerFraction(storm, layerIndex, layerCount);
             double lowerWeight = 1.0D - smoothstep(Mth.clamp(fraction / 0.68F, 0.0F, 1.0F));
-            double lift = Mth.clamp(18.0D + state.visibleFunnelWidth() * 0.22D, 18.0D, 64.0D);
-            return lift * lowerWeight * blend;
+            return footLift * lowerWeight;
         }
         // Every multi-vortex arrangement leaves the main funnel where it is. A lifted parent is culled
         // layer by layer below its retraction, a ground swarm's rope is culled below its tip, and an
         // embedded parent is not moved at all - the vortices come to it. So there is no ground lift for
         // any of them: the funnel's foot is what changes, not the funnel's height in the sky.
         return 0.0D;
+    }
+
+    /** How far a floater's foot is lifted off the ground, in blocks: the lift at the bottom of the column. */
+    private static double floaterFootLift(StormObject storm) {
+        DynamicStormState state = stateFor(storm);
+        float blend = Config.FLOATER_TORNADOES_ENABLED.get() ? state.shapeShare(FunnelMorphology.FLOATER) : 0.0F;
+        if (blend <= 0.001F) {
+            return 0.0D;
+        }
+        return Mth.clamp(18.0D + state.visibleFunnelWidth() * 0.22D, 18.0D, 64.0D) * blend;
     }
 
     public static double subVortexWindMph(StormObject storm, DynamicStormState.SubVortex vortex) {
@@ -786,7 +885,7 @@ public final class DynamicStormController {
         DynamicStormState state = stateFor(storm);
         MultiVortexFlavour flavour = state.multiVortexFlavour();
         if (flavour == MultiVortexFlavour.GROUND_SWARM) {
-            return MultiVortexParentProfile.groundSwarmWidthScale(state.parentTipFraction(), fraction);
+            return MultiVortexParentProfile.groundSwarmWidthScale(state.parentTipFraction(stormGameTime(storm)), fraction);
         }
         if (flavour == MultiVortexFlavour.EMBEDDED) {
             return MultiVortexParentProfile.embeddedWidthScale(fraction);

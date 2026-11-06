@@ -66,12 +66,12 @@ public final class MultiVortexParentProfile {
 
     /** Lifted-base layer opacity: hazy where the condensation gives up, the parent's own above it. */
     public static float liftedAlpha(float tipFraction, float layerFraction) {
-        return Mth.lerp(liftedRecovery(tipFraction, layerFraction), LIFTED_TIP_ALPHA, 1.0F);
+        return Mth.lerp(presence(tipFraction), 1.0F, Mth.lerp(liftedRecovery(tipFraction, layerFraction), LIFTED_TIP_ALPHA, 1.0F));
     }
 
     /** Lifted-base layer width: tapered where it gives up, the parent's real width above it. */
     public static float liftedWidthScale(float tipFraction, float layerFraction) {
-        return Mth.lerp(liftedRecovery(tipFraction, layerFraction), LIFTED_TIP_WIDTH, 1.0F);
+        return Mth.lerp(presence(tipFraction), 1.0F, Mth.lerp(liftedRecovery(tipFraction, layerFraction), LIFTED_TIP_WIDTH, 1.0F));
     }
 
     /** The retraction height as it is actually used. 0 means the column reaches the ground as usual. */
@@ -116,17 +116,31 @@ public final class MultiVortexParentProfile {
 
     /** Ground swarm layer opacity, 0 at the tip rising to {@link #ROPE_ALPHA} and then back to full. */
     public static float groundSwarmAlpha(float tipFraction, float layerFraction) {
-        return Mth.lerp(recovery(tipFraction, layerFraction), TIP_ALPHA, ROPE_ALPHA);
+        return Mth.lerp(presence(tipFraction), 1.0F, Mth.lerp(recovery(tipFraction, layerFraction), TIP_ALPHA, ROPE_ALPHA));
     }
 
     /** Ground swarm layer width, a thin rope at the tip widening to the parent's real width above it. */
     public static float groundSwarmWidthScale(float tipFraction, float layerFraction) {
-        return Mth.lerp(recovery(tipFraction, layerFraction), ROPE_WIDTH, 1.0F);
+        return Mth.lerp(presence(tipFraction), 1.0F, Mth.lerp(recovery(tipFraction, layerFraction), ROPE_WIDTH, 1.0F));
     }
 
     /** The tip height as it is actually used, clamped into the range the config allows. */
     public static float clampTip(float tipFraction) {
-        return Mth.clamp(tipFraction, 0.02F, 0.45F);
+        return Mth.clamp(tipFraction, 0.0F, 0.45F);
+    }
+
+    /** How far up the foot has to have come before a retraction's whole shape is in force. */
+    private static final float PRESENCE_SPAN = 0.08F;
+
+    /**
+     * How much of a retraction's shape is in force: none while the foot is still on the ground, all of it once it has
+     * risen a little way. The tip rides the episode's envelope up from the ground and back down to it, but the shape hung
+     * off it did not: the foot thinned to a haze the tick an episode began, before it had lifted at all, and filled back
+     * in the tick it ended.
+     */
+    private static float presence(float tipFraction) {
+        float t = Mth.clamp(tipFraction / PRESENCE_SPAN, 0.0F, 1.0F);
+        return t * t * (3.0F - 2.0F * t);
     }
 
     // ------------------------------------------------------------------ embedded

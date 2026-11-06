@@ -260,6 +260,18 @@ public final class DynamicStormState {
     private long supercellAbsorbedTick = -1_000_000L;
     private long absorbedByStormId = Long.MIN_VALUE;
     private boolean absorbedBySupercell;
+    /**
+     * How far through dying the funnel is, eased: 0 until it is failing in its last tornadic stage, 1 as it leaves the
+     * forming stage and Weather2 takes the funnel away. Worked out from the storm on both sides each tick; see
+     * {@link #tickRopeOut}.
+     */
+    private float ropeOutProgress;
+    private boolean ropeOutSeeded;
+    /** The highest stage this storm has reached. A storm below it is on its way down, whoever lowered it. */
+    private int peakStage = -1;
+    /** The wind the ground dust is raised by, held up while the funnel lifts off. Client only, never saved. */
+    private float groundDustWindMph;
+    private float groundDustOffTheGround;
     private boolean recentlyReintensified;
     /**
      * Rungs this storm has earned past the maximum it rolled at birth.
@@ -713,6 +725,7 @@ public final class DynamicStormState {
 
     void smooth(StormObject storm, long gameTime) {
         enforceExclusiveVisualTags();
+        tickRopeOut(storm);
         // Continuous sinuous heading drift instead of stepwise random retargets: tracks meander smoothly,
         // and weak/rope tornadoes dance harder than violent wedges, which track nearly straight.
         double phase = (stormId % 97L) * 0.271D;
@@ -1602,8 +1615,10 @@ public final class DynamicStormState {
     }
 
     /** How far above the ground the parent condensation gives up, as a fraction of the funnel height. */
-    public float parentTipFraction() {
-        return multiVortexTipFraction;
+    public float parentTipFraction(long gameTime) {
+        // On the episode's own envelope, as a lifted base's retraction is. Held at its full height from the first tick,
+        // the parent's foot was cut away the instant a ground swarm began and put back the instant it ended.
+        return multiVortexTipFraction * (gameTime == Long.MIN_VALUE ? 1.0F : liftEnvelope(gameTime));
     }
 
     /**
@@ -2041,6 +2056,99 @@ public final class DynamicStormState {
         return absorbedBySupercell;
     }
 
+    /** The fastest the rope-out may move, a share of the whole of it a tick: never all of it in under fifteen seconds. */
+    private static final float ROPE_OUT_MAX_RATE = 1.0F / 300.0F;
+    /** How much of the gap to the rope-out's target is closed each tick. */
+    private static final float ROPE_OUT_EASE = 0.035F;
+
+    /**
+     * Moves the rope-out one tick toward where the storm says it is.
+     *
+     * <p>Weather2 only ever sets {@code isGrowing} when a storm is made, so a test of {@code !isGrowing} never passed and
+     * no tornado that died on its own roped out at all: it stood at full strength until its stage fell below forming,
+     * then vanished. The other half of the old test, the stage's own intensity, runs from one down to nothing inside
+     * each stage and starts again at one in the next, so anything drawn from it alone lifted the funnel's foot off the
+     * ground over each stage and dropped it back the moment the stage changed. Both are replaced by one measure that
+     * runs one way through the last two stages, eased so that the steps Weather2 takes it in never show.
+     */
+    private void tickRopeOut(StormObject storm) {
+        if (storm == null) {
+            return;
+        }
+        // The peak is this tornado's: once a storm is no longer tornadic, the one it forms next starts again from where it is,
+        // rather than being drawn as a dying rope because an earlier one climbed higher.
+        peakStage = storm.levelCurIntensityStage < StormObject.STATE_FORMING
+                ? storm.levelCurIntensityStage
+                : Math.max(peakStage, storm.levelCurIntensityStage);
+        float target = rawRopeOut(storm);
+        if (!ropeOutSeeded) {
+            ropeOutProgress = target;
+            ropeOutSeeded = true;
+            return;
+        }
+        float gap = target - ropeOutProgress;
+        ropeOutProgress = Math.abs(gap) < 0.0005F
+                ? target
+                : ropeOutProgress + Mth.clamp(gap * ROPE_OUT_EASE, -ROPE_OUT_MAX_RATE, ROPE_OUT_MAX_RATE);
+    }
+
+    /**
+     * Where a dying storm is through its last two tornadic stages, from 0 as it starts to fail in stage one to 1 as its
+     * forming stage runs out. Weather2 drains the stage's intensity from one to nothing in stage one, then caps it at
+     * one half in the forming stage and drains that, so both halves meet at one half with no step between them.
+     */
+    private float rawRopeOut(StormObject storm) {
+        float intensity = Mth.clamp(storm.levelCurStagesIntensity, 0.0F, 1.0F);
+        if (absorbedBySupercell) {
+            return 1.0F - intensity;
+        }
+        boolean dying = storm.hasStormPeaked || storm.levelCurIntensityStage < peakStage;
+        if (!dying) {
+            return 0.0F;
+        }
+        int stage = storm.levelCurIntensityStage;
+        if (stage > StormObject.STATE_STAGE1) {
+            return 0.0F;
+        }
+        if (stage == StormObject.STATE_STAGE1) {
+            return 0.5F * (1.0F - intensity);
+        }
+        if (stage == StormObject.STATE_FORMING) {
+            return 0.5F + 0.5F * (1.0F - Math.min(intensity, 0.5F) / 0.5F);
+        }
+        return 1.0F;
+    }
+
+    /** How far through dying the funnel is: 0 until it is failing in its last tornadic stage, 1 as it goes. */
+    public float ropeOutProgress() {
+        return ropeOutProgress;
+    }
+
+    /** The highest stage this storm has reached. */
+    public int peakStage() {
+        return peakStage;
+    }
+
+    /**
+     * The wind the ground dust is raised by. While the funnel is planted that is the wind; once it starts to lift off, the
+     * dust on the ground does not go with it, so the wind it was raised by is held and let down slowly as the funnel
+     * rises, instead of the dust going out with the first drop in the wind.
+     */
+    public float groundDustWindMph(float windMph, float offTheGround) {
+        groundDustOffTheGround = offTheGround;
+        if (offTheGround <= 0.001F || groundDustWindMph <= 0.0F) {
+            groundDustWindMph = windMph;
+            return windMph;
+        }
+        groundDustWindMph = Math.max(windMph, groundDustWindMph - 0.06F);
+        return Math.max(windMph, groundDustWindMph * (1.0F - 0.35F * offTheGround));
+    }
+
+    /** How far off the ground the funnel was when its ground dust was last raised, 0 to 1. Client only. */
+    public float groundDustOffTheGround() {
+        return groundDustOffTheGround;
+    }
+
     public long lastSupercellMergeTick() {
         return lastSupercellMergeTick;
     }
@@ -2256,6 +2364,7 @@ public final class DynamicStormState {
         tag.putLong("SupercellAbsorbedTick", supercellAbsorbedTick);
         tag.putLong("AbsorbedByStormId", absorbedByStormId);
         tag.putBoolean("AbsorbedBySupercell", absorbedBySupercell);
+        tag.putInt("PeakStage", peakStage);
         tag.putBoolean("CycloidalMarksRecorded", cycloidalMarksRecorded);
         tag.putFloat("SupercellStructureStrength", supercellStructureStrength);
         tag.putFloat("MesocycloneStrength", mesocycloneStrength);
@@ -2374,6 +2483,9 @@ public final class DynamicStormState {
         supercellAbsorbedTick = tag.contains("SupercellAbsorbedTick") ? tag.getLong("SupercellAbsorbedTick") : supercellAbsorbedTick;
         absorbedByStormId = tag.contains("AbsorbedByStormId") ? tag.getLong("AbsorbedByStormId") : absorbedByStormId;
         absorbedBySupercell = tag.getBoolean("AbsorbedBySupercell");
+        if (tag.contains("PeakStage")) {
+            peakStage = tag.getInt("PeakStage");
+        }
         cycloidalMarksRecorded = tag.getBoolean("CycloidalMarksRecorded");
         supercellStructureStrength = tag.contains("SupercellStructureStrength") ? tag.getFloat("SupercellStructureStrength") : supercellStructureStrength;
         mesocycloneStrength = tag.contains("MesocycloneStrength") ? tag.getFloat("MesocycloneStrength") : mesocycloneStrength;

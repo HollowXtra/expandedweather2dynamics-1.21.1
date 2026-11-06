@@ -20,6 +20,8 @@ still an honest unknown - is in the README.
 
 **No more fake blocks.** The little block-textured cubes that circled inside the funnel were never real blocks, only particles. They are gone, along with this mod's own cube-shaped ground chunks. Blocks a tornado really picks up are untouched.
 
+**A tornado lifts smoothly and leaves its dust on the ground.** A dying tornado now thins into a rope in its last stage, then its condensation draws up off the ground from the foot, the edge of it rising steadily up the column until it is gone back into the cloud, just before the storm lets it go. It used to stand at full strength to the end and vanish, while the funnel jerked upward a dozen blocks at a time through its last minute. When a tornado lifts, whether it is dying, floating, or lifting its foot for a multi-vortex spell, its dust cloud stays on the ground: lower and thinner, held up a while by the wind that raised it, instead of going out at once or climbing after the funnel. A multi-vortex spell's lift now eases in and out with the funnel's foot rather than thinning it the moment the spell starts.
+
 **It bends properly.** The funnel used to be bent by a formula, so when a storm turned the whole column swung round at once like a stick. Its centreline now has a history: the foot moves first and the top follows later, so a tall funnel curves through a turn and a kink climbs the column.
 
 **Clouds are soft.** These are still Weather2's particles, with no volumetric rendering. They are now drawn back to front instead of cutting straight lines through each other, they feather into the ground, and they fade as you fly through them. Deck puffs face you rather than turning into black needles when seen from the side. The `softPuffs` setting under `storm_look` turns all of this off.
@@ -52,6 +54,10 @@ still an honest unknown - is in the README.
 - The portable radar drew its title twice and let long storm names run off the screen.
 - Parts of a storm's structure over unloaded chunks were placed from the bottom of the world, which put whole sheets of cloud at head height.
 - The server reloaded every storm's saved state from a copy of itself every tick, before it had moved on. That froze a tornado's width and wind on the server: its damage path stayed at its starting width, and its wind sat near its starting value, which is why a new tornado could read as little as 77 mph. Tornadoes now grow and strengthen on the server as they always should have, and their damage path is as wide as they look.
+- No tornado that died on its own ever roped out. The test for a dying storm needed Weather2's `isGrowing` to go false, and Weather2 never sets it after a storm is made.
+- A weakening tornado's foot faded off the ground over each stage and dropped back the moment the stage changed, because it was drawn from the stage's own intensity, which starts again at full in every stage.
+- During a multi-vortex spell the tornado's own dust cloud stopped spawning altogether, because the spell's vortices filled the particle queue past the point where dust is allowed. The vortices' own dust now keeps to that limit, and the tornado's ground dust has more room than the other loose effects.
+- A dust puff that reached the funnel wall went on climbing for the whole of its life, so round a thin funnel the dust climbed in a column all the way to the cloud.
 
 ## 1.06.3
 

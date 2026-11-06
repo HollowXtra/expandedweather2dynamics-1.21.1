@@ -179,7 +179,10 @@ public abstract class TornadoFunnelSimpleMixin {
                 expandedweather2dynamics$clearState(smoothedOffsets, smoothedVerticalOffsets);
                 return;
             }
-            Vec3 base = funnel.pos;
+            // A dying funnel is drawn from the ground, not from the foot Weather2 is stepping up toward the cloud.
+            double footY = DynamicStormController.funnelFootAnchorY(storm, funnel.pos.y);
+            boolean anchored = footY < funnel.pos.y - 0.01D;
+            Vec3 base = anchored ? new Vec3(funnel.pos.x, footY, funnel.pos.z) : funnel.pos;
             int count = funnel.listLayers.size();
             while (smoothedOffsets.size() < count) {
                 smoothedOffsets.add(Vec3.ZERO);
@@ -210,7 +213,10 @@ public abstract class TornadoFunnelSimpleMixin {
                     continue;
                 }
                 double targetLift = DynamicStormController.mainFunnelGroundLift(storm, i, count);
-                if (i == 0 && targetLift <= 0.0001D) {
+                // The foot is handed back to Weather2 only once it is down: dropped the tick the target reached the ground, it
+                // fell the last of the way in one step.
+                double footLift = smoothedVerticalOffsets.get(i) == null ? 0.0D : smoothedVerticalOffsets.get(i);
+                if (i == 0 && targetLift <= 0.0001D && Math.abs(footLift) <= 0.05D && !anchored) {
                     smoothedOffsets.set(i, Vec3.ZERO);
                     smoothedVerticalOffsets.set(i, 0.0D);
                     expandedweather2dynamics$scaleLayerParticles(storm, layer, i, count);
@@ -470,9 +476,9 @@ public abstract class TornadoFunnelSimpleMixin {
         // Ground contact is the other half of that gate. A ground swarm cuts its condensation off below
         // the tip and a floater is lifted clear of the surface, so in both cases the visible column has
         // lifted nothing - its lowest layer only *looks* low - and it must stay plain condensation.
-        boolean grounded = !DynamicStormController.shouldCullMultivortexParentLayer(storm, 0, layerCount)
-                && DynamicStormController.mainFunnelGroundLift(storm, 0, layerCount) <= 0.0001D;
-        float dustGate = grounded ? baseFormation : 0.0F;
+        // How far it has lifted, rather than whether it has: the dust in its foot fades as the foot rises off the ground,
+        // instead of being switched off the tick any lift began.
+        float dustGate = baseFormation * (1.0F - DynamicStormController.funnelOffTheGround(storm));
         boolean cullLayer = hideParentFunnel || DynamicStormController.shouldCullMultivortexParentLayer(storm, layerIndex, layerCount);
         float lumpTaper = expandedweather2dynamics$lumpTaper(storm, layerIndex, layerCount);
         expandedweather2dynamics$scaleParticleList(layer.getListParticles(), radiusScale, particleScale, alphaScale, cullLayer, lumpTaper);

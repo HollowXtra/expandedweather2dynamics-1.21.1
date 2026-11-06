@@ -25,6 +25,8 @@ final class SpiralPuff extends EntityRotFX {
     private static final double MIN_WALL_RADIUS = 9.0D;
     /** How far out the dust settles at the least, as a share of the damage path's whole width. */
     private static final double WIND_FIELD_SHARE = 0.22D;
+    /** How much of its ceiling a puff may climb to under a funnel that has lifted off the ground. */
+    private static final double LIFTED_CEILING_SHARE = 0.32D;
 
     private final StormObject storm;
     /** Tangential speed at the wall, in blocks a tick. Round the axis it falls off as one over the distance. */
@@ -39,13 +41,22 @@ final class SpiralPuff extends EntityRotFX {
     private final double startGap;
     private final double funnelHeight;
     private final double groundY;
+    /**
+     * The highest it climbs, in blocks above the ground. Without it a puff that reached the wall went on climbing for the
+     * whole of its life, and round a thin funnel, where the wall is close and every puff reaches it early, the dust
+     * climbed in a column all the way up to the cloud.
+     */
+    private final double ceiling;
+    /** How far the ceiling was already lowered for a lifted funnel when this puff was raised. */
+    private final double loweringAtSpawn;
 
     private double angle;
     private double radius;
     private double height;
 
     SpiralPuff(ClientLevel level, StormObject storm, double angle, double radius, double groundY, double height,
-               double funnelHeight, double wallSpeed, double rotationSign, double inflow, double climb, double wallShare) {
+               double funnelHeight, double wallSpeed, double rotationSign, double inflow, double climb, double wallShare,
+               double ceiling) {
         super(level, storm.pos.x + Math.cos(angle) * radius, groundY + height, storm.pos.z + Math.sin(angle) * radius, 0.0D, 0.0D, 0.0D);
         this.storm = storm;
         this.angle = angle;
@@ -58,6 +69,8 @@ final class SpiralPuff extends EntityRotFX {
         this.inflow = inflow;
         this.climb = climb;
         this.wallShare = wallShare;
+        this.ceiling = Math.max(height, ceiling);
+        this.loweringAtSpawn = lowering(storm);
         this.startGap = Math.max(1.0D, radius - wallRadiusAt(fractionUp()));
         // Nothing here moves by velocity: the position is set outright, each tick, below.
         this.xd = 0.0D;
@@ -81,7 +94,13 @@ final class SpiralPuff extends EntityRotFX {
         // started further out has further to come in the same lifetime.
         radius = Math.max(0.5D, radius + (wall - radius) * inflow);
         double arrived = Mth.clamp(1.0D - (radius - wall) / startGap, 0.0D, 1.0D);
-        height += climb * (0.06D + 0.94D * arrived * arrived);
+        // Under a funnel lifting off the ground there is no wall to climb, so the dust stops low and goes on turning there.
+        // A puff already above that is left where it is rather than pulled down. Only the lift since it was raised counts:
+        // one raised under a lifted funnel was given a low ceiling to begin with.
+        double cap = ceiling * Math.min(1.0D, lowering(storm) / loweringAtSpawn);
+        if (height < cap) {
+            height = Math.min(cap, height + climb * (0.06D + 0.94D * arrived * arrived));
+        }
         // The speed round the axis gathers inward as one over the distance, up to the wall and no further: that is the
         // shape of the wind outside any vortex, and it is why the dust visibly accelerates as it closes in.
         double speed = wallSpeed * Math.min(1.0D, Math.max(1.0D, wall) / Math.max(1.0D, radius));
@@ -97,6 +116,11 @@ final class SpiralPuff extends EntityRotFX {
             }
         }
         this.setPos(axisX + Math.cos(angle) * radius, groundY + height, axisZ + Math.sin(angle) * radius);
+    }
+
+    /** How much of its climb dust is allowed under this storm's funnel right now: all of it on the ground, less lifted. */
+    private static double lowering(StormObject storm) {
+        return Mth.lerp(DynamicStormController.stateFor(storm).groundDustOffTheGround(), 1.0D, LIFTED_CEILING_SHARE);
     }
 
     private float fractionUp() {

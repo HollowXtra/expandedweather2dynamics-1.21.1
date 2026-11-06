@@ -932,6 +932,11 @@ public final class ClientWeatherEffects {
         float humidity = context.humidity();
         float humidityClamped = Mth.clamp(humidity, 0.0F, 1.0F);
         DynamicStormState state = DynamicStormController.stateFor(storm);
+        // A lifting funnel leaves its dust on the ground. The cloud is held up a while by the wind that raised it, so it does
+        // not go out with the first drop in the wind, and it stays low and thins out instead of climbing a column that is
+        // no longer there.
+        float offGround = DynamicStormController.funnelOffTheGround(storm);
+        maxWind = state.groundDustWindMph((float) maxWind, offGround);
         // Formation dust whirl. A forming tornado turns up a whirl at the surface while the condensation
         // is still descending and while the surface wind is far too weak to raise dust on its own, which
         // is how real tornadoes announce themselves before there is any visible funnel. It is handled
@@ -960,6 +965,8 @@ public final class ClientWeatherEffects {
         // A surface whirl is squat: it only reaches full height once the condensation is on the ground.
         float heightFactor = (float) Mth.lerp(0.78D, 1.24D, dryness)
                 * (float) Mth.lerp(0.55D, 1.0D, condensationReach);
+        // How high the dust reaches, apart from how big its puffs are: under a lifted funnel it stays low but no smaller.
+        float lowering = Mth.lerp(offGround, 1.0F, DUST_HEIGHT_LIFTED);
         double visibleRadius = Math.max(6.0D, state.visibleFunnelWidth() * 0.5D);
         double radiusOfMaxWind = Math.max(4.0D, DynamicStormController.radiusOfMaxWind(storm));
         double clearRadius = Mth.clamp(Math.max(visibleRadius + 3.0D, radiusOfMaxWind * 0.28D), 6.0D, 512.0D);
@@ -970,17 +977,20 @@ public final class ClientWeatherEffects {
         float genesisDimming = 0.30F + 0.70F * condensationReach;
         float density = Config.TORNADO_DEBRIS_CLOUD_DENSITY.get().floatValue() * context.gust() * densityFactor;
         int attempts = Mth.clamp((int) Math.round((12.0D + maxWind / 17.0D + (cloudRadius - clearRadius) / 3.6D) * density * genesisDimming * 0.27D), 3, 20);
-        if (!DynamicStormController.suppressMultivortexParentDust(storm)) {
-            double coreRadius = Mth.clamp(Math.max(visibleRadius * 0.76D, radiusOfMaxWind * 0.42D), 4.0D, 96.0D);
-            int coreAttempts = Mth.clamp((int) Math.round((8.0D + maxWind / 20.0D + coreRadius / 6.0D) * density * genesisDimming * 0.19D), 1, 6);
-            spawnDebrisCloudCore(level, storm, storm.pos, coreRadius, maxWind, coreAttempts, (float) formation, heightFactor, genesisDimming, context);
-            spawnDebrisCloudAround(level, storm, storm.pos, clearRadius, cloudRadius, maxWind, attempts, (float) formation, heightFactor, genesisDimming, context);
-            if (maxWind >= DUST_WRAP_MIN_MPH && !water) {
-                spawnDustWrap(level, storm, maxWind, genesisDimming, context);
-            }
-            if (!water) {
-                spawnSurfaceDirtKickup(level, storm, storm.pos, coreRadius, clearRadius, maxWind, formation, dryness);
-            }
+        // Under a lifted funnel the dust is thinner, never gone. It used to be cut outright the tick a multi-vortex episode
+        // lifted the parent, before the foot had even started to rise, and put back the tick the episode ended.
+        float groundShare = 1.0F - DUST_THINNING_LIFTED * offGround;
+        attempts = Math.max(1, Math.round(attempts * groundShare));
+        double coreRadius = Mth.clamp(Math.max(visibleRadius * 0.76D, radiusOfMaxWind * 0.42D), 4.0D, 96.0D);
+        int coreAttempts = Mth.clamp((int) Math.round((8.0D + maxWind / 20.0D + coreRadius / 6.0D) * density * genesisDimming * 0.19D * groundShare), 1, 6);
+        spawnDebrisCloudCore(level, storm, storm.pos, coreRadius, maxWind, coreAttempts, (float) formation, heightFactor, lowering, genesisDimming, context);
+        spawnDebrisCloudAround(level, storm, storm.pos, clearRadius, cloudRadius, maxWind, attempts, (float) formation, heightFactor, lowering, genesisDimming, context);
+        // The shroud climbs the outside of the funnel, so it goes as the funnel's foot leaves the ground.
+        if (maxWind >= DUST_WRAP_MIN_MPH && !water && offGround < 0.95F) {
+            spawnDustWrap(level, storm, maxWind, genesisDimming * (1.0F - offGround), context);
+        }
+        if (!water) {
+            spawnSurfaceDirtKickup(level, storm, storm.pos, coreRadius, clearRadius, maxWind, formation, dryness);
         }
 
         for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
@@ -991,6 +1001,11 @@ public final class ClientWeatherEffects {
             spawnSatelliteDebrisCloud(level, storm, satellite, center, context);
         }
     }
+
+    /** How high the ground dust reaches under a funnel that has lifted off, against how high it climbs a planted one. */
+    private static final float DUST_HEIGHT_LIFTED = 0.32F;
+    /** How much of the ground dust thins away under a funnel that has lifted off. */
+    private static final float DUST_THINNING_LIFTED = 0.35F;
 
     /** Below this a tornado's dust is a skirt at its foot; above it, the funnel is wrapped in it. EF4 begins at 166 mph. */
     private static final double DUST_WRAP_MIN_MPH = 160.0D;
@@ -1025,7 +1040,7 @@ public final class ClientWeatherEffects {
             float alpha = (0.10F + violence * 0.06F) * (float) (1.0D - up / reach * 0.6D);
             spawnSpiralDust(level, storm, angle, wall * 1.05D, ground + 0.3D, height, funnelHeight,
                     dustWallSpeed(maxWind, wall), rotationSign, 0.03D, Math.max(0.0D, reach * funnelHeight - height) * 0.5D / maxAge,
-                    1.02D + level.random.nextDouble() * 0.12D, scale, alpha, tone, maxAge);
+                    1.02D + level.random.nextDouble() * 0.12D, reach * funnelHeight, scale, alpha, tone, maxAge);
         }
     }
 
@@ -1136,7 +1151,7 @@ public final class ClientWeatherEffects {
      * or leaning funnel. Density thins with height so the base stays the dark debris foot photos
      * show while the top feathers out into the condensation.</p>
      */
-    private static void spawnDebrisCloudCore(ClientLevel level, StormObject storm, Vec3 center, double coreRadius, double maxWind, int attempts, float intensityScale, float heightFactor, float genesisDimming, DustCloudContext context) {
+    private static void spawnDebrisCloudCore(ClientLevel level, StormObject storm, Vec3 center, double coreRadius, double maxWind, int attempts, float intensityScale, float heightFactor, float lowering, float genesisDimming, DustCloudContext context) {
         double rotationSign = DynamicStormController.visualRotationSign(storm);
         // The collar is drawn from the field's own shape: the wall it hugs is round, the amount of dust
         // standing on it is not, so the sheath is thicker on the side the wind is carrying it.
@@ -1159,7 +1174,7 @@ public final class ClientWeatherEffects {
             double wallBias = level.random.nextFloat() < 0.72F ? 0.60D + 0.40D * level.random.nextDouble() : 0.22D + 0.38D * level.random.nextDouble();
             // How far up the funnel this dust particle sits: concentrated near the ground, but the
             // luckiest particles climb 55-75% of the funnel - the tall collar in the reference.
-            double climbCap = funnelShaped ? (0.10D + wallBias * 0.18D) * heightFactor : 0.0D;
+            double climbCap = funnelShaped ? (0.10D + wallBias * 0.18D) * heightFactor * lowering : 0.0D;
             double heightFraction = Math.pow(level.random.nextDouble(), 2.1D) * Mth.clamp(climbCap, 0.03D, 0.30D);
             double wallRadiusAt = funnelShaped
                     ? Math.max(2.0D, DynamicStormController.funnelWallRadiusAt(storm, (float) heightFraction))
@@ -1181,7 +1196,7 @@ public final class ClientWeatherEffects {
             // sheath scales with the storm; without it, the old short cap for the genesis whirl.
             double height = funnelShaped
                     ? Math.max(0.4D, (funnelTopY - groundY) * heightFraction)
-                    : Math.pow(level.random.nextDouble(), 1.9D) * Mth.clamp(3.0D + maxWind / 34.0D + wall * 3.6D, 3.6D, 13.5D) * heightFactor;
+                    : Math.pow(level.random.nextDouble(), 1.9D) * Mth.clamp(3.0D + maxWind / 34.0D + wall * 3.6D, 3.6D, 13.5D) * heightFactor * lowering;
             boolean dustyFoot = heightFraction < 0.08D || wall > 0.85D;
             // Puffs grow slightly as they climb - the sheath feathers out instead of staying a tube.
             float scale = (float) Mth.clamp(wallRadiusAt * (0.42D + wall * 0.26D) + heightFraction * 10.0D + level.random.nextDouble() * 3.0D, 2.5D, 22.0D) * heightFactor;
@@ -1200,7 +1215,7 @@ public final class ClientWeatherEffects {
             double climbTo = funnelHeight * Mth.clamp(climbCap, 0.03D, 0.30D);
             spawnSpiralDust(level, storm, angle, distance, groundY + 0.28D, height, funnelHeight,
                     dustWallSpeed(maxWind, wallRadiusAt), rotationSign, 2.4D / maxAge, Math.max(0.0D, climbTo - height) * 1.3D / maxAge,
-                    0.74D + wall * 0.34D, scale, alpha, tone, maxAge);
+                    0.74D + wall * 0.34D, Math.max(height, climbTo) * 1.15D, scale, alpha, tone, maxAge);
         }
     }
 
@@ -1210,7 +1225,7 @@ public final class ClientWeatherEffects {
      * FRACTION of the funnel's real height at the ring's inner edge, decaying to a low ground haze
      * at the outer edge, instead of the old absolute caps that flattened everything into a disc.
      */
-    private static void spawnDebrisCloudAround(ClientLevel level, StormObject storm, Vec3 center, double clearRadius, double cloudRadius, double maxWind, int attempts, float intensityScale, float heightFactor, float genesisDimming, DustCloudContext context) {
+    private static void spawnDebrisCloudAround(ClientLevel level, StormObject storm, Vec3 center, double clearRadius, double cloudRadius, double maxWind, int attempts, float intensityScale, float heightFactor, float lowering, float genesisDimming, DustCloudContext context) {
         double rotationSign = DynamicStormController.visualRotationSign(storm);
         double ringWidth = Math.max(2.0D, cloudRadius - clearRadius);
         long gameTime = level.getGameTime();
@@ -1248,10 +1263,10 @@ public final class ClientWeatherEffects {
             double heightLimit;
             if (funnelShaped) {
                 double funnelHeight = Math.max(8.0D, funnelTopY - groundY);
-                double bowlTop = (lowGroundBowl ? 0.10D : loftedCurtain ? 0.34D : 0.20D) * heightFactor;
+                double bowlTop = (lowGroundBowl ? 0.10D : loftedCurtain ? 0.34D : 0.20D) * heightFactor * lowering;
                 heightLimit = Math.max(2.0D, funnelHeight * Mth.lerp(outerShelf, bowlTop, 0.05D));
             } else {
-                heightLimit = (lowGroundBowl ? Mth.clamp(maxWind / 42.0D, 1.6D, 6.0D) : loftedCurtain ? Mth.clamp(maxWind / 9.5D, 10.0D, 34.0D) : Mth.clamp(maxWind / 18.0D, 4.0D, 18.0D)) * heightFactor;
+                heightLimit = (lowGroundBowl ? Mth.clamp(maxWind / 42.0D, 1.6D, 6.0D) : loftedCurtain ? Mth.clamp(maxWind / 9.5D, 10.0D, 34.0D) : Mth.clamp(maxWind / 18.0D, 4.0D, 18.0D)) * heightFactor * lowering;
             }
             if (water) {
                 heightLimit = Math.max(heightLimit, 6.0D);
@@ -1274,7 +1289,7 @@ public final class ClientWeatherEffects {
             // and it is always on its way toward the wall.
             spawnSpiralDust(level, storm, angle, distance, groundY + 0.35D, height, funnelHeight,
                     dustWallSpeed(maxWind, clearRadius), rotationSign, 1.5D / maxAge, heightLimit * (lowGroundBowl ? 0.5D : 1.6D) / maxAge,
-                    1.05D, scale, alpha, tone, maxAge);
+                    1.05D, Math.max(height, heightLimit) * 1.3D, scale, alpha, tone, maxAge);
         }
     }
 
@@ -1367,15 +1382,15 @@ public final class ClientWeatherEffects {
     /** One puff of a tornado's dust on its way round the foot. See {@link SpiralPuff}. */
     private static void spawnSpiralDust(ClientLevel level, StormObject storm, double angle, double radius, double groundY, double height, double funnelHeight,
                                         double wallSpeed, double rotationSign, double inflow, double climb, double wallShare,
-                                        float scale, float alpha, DustTone tone, int maxAge) {
-        if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get() || ParticleArt.cloud256() == null || SoftPuffs.crowded()) {
+                                        double ceiling, float scale, float alpha, DustTone tone, int maxAge) {
+        if (debrisCloudSpawnedThisTick >= Config.TORNADO_DEBRIS_CLOUD_MAX_PARTICLES_PER_TICK.get() || ParticleArt.cloud256() == null || SoftPuffs.groundDustCrowded()) {
             return;
         }
         debrisCloudSpawnedThisTick++;
         float soilGrey = (tone.red() + tone.green() + tone.blue()) / 3.0F;
         DustTone muted = storm.isFirenado ? tone : new DustTone(
                 Math.min(1.0F, Mth.lerp(FUNNEL_FOOT_GREYING, tone.red(), soilGrey) * DUST_LIFT), Math.min(1.0F, Mth.lerp(FUNNEL_FOOT_GREYING, tone.green(), soilGrey) * DUST_LIFT), Math.min(1.0F, Mth.lerp(FUNNEL_FOOT_GREYING, tone.blue(), soilGrey) * DUST_LIFT));
-        dressDustPuff(new SpiralPuff(level, storm, angle, radius, groundY, height, funnelHeight, wallSpeed, rotationSign, inflow, climb, wallShare),
+        dressDustPuff(new SpiralPuff(level, storm, angle, radius, groundY, height, funnelHeight, wallSpeed, rotationSign, inflow, climb, wallShare, ceiling),
                 scale, alpha, muted, maxAge);
     }
 
@@ -1554,6 +1569,11 @@ public final class ClientWeatherEffects {
     }
 
     private static void spawnSubVortexCloudParticle(ClientLevel level, Vec3 pos, Vec3 velocity, float scale, float alpha, DustTone tone, int maxAge) {
+        // A loose effect like any other, so it stops at the loose ceiling. It never did, and with the episode's columns it
+        // filled the queue past the point where the parent's own dust cloud could spawn at all.
+        if (SoftPuffs.crowded()) {
+            return;
+        }
         spawnDustCloudParticle(level, pos, velocity, scale, alpha, tone, maxAge, ParticleTypes.CLOUD);
     }
 
@@ -2150,6 +2170,11 @@ public final class ClientWeatherEffects {
         int ground = vortexGroundY(level, storm.pos);
         if (ground > level.getMinBuildHeight() + 1) {
             return ground;
+        }
+        // Weather2's own ground under the storm, which the server measures and sends. The funnel's foot is no stand-in for
+        // it: Weather2 raises that toward the cloud through a tornado's forming stage, and dust placed from it went up too.
+        if (storm.currentTopYBlock > level.getMinBuildHeight() + 1) {
+            return storm.currentTopYBlock;
         }
         var funnel = storm.getTornadoFunnelSimple();
         return funnel != null && funnel.pos != null && funnel.pos.y > level.getMinBuildHeight() + 1 ? Mth.floor(funnel.pos.y) : level.getSeaLevel();

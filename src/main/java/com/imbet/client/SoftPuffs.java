@@ -52,6 +52,14 @@ public final class SoftPuffs {
      */
     private static final int LOOSE_PUFF_CEILING = 11000;
     private static boolean crowded;
+    /**
+     * How far a tornado's own ground dust may fill the queue, which is further than the other loose effects. The dust
+     * cloud is what shows where a tornado touches the ground; held to the loose ceiling it was the first thing to go
+     * when a multi-vortex episode's columns filled the queue, and the parent stood on bare ground with its foot lifted.
+     * This still leaves room under the queue's 16384 for the funnels themselves.
+     */
+    private static final int GROUND_DUST_CEILING = 13500;
+    private static boolean groundDustCrowded;
 
     private SoftPuffs() {
     }
@@ -101,14 +109,21 @@ public final class SoftPuffs {
         return crowded;
     }
 
+    /** Whether the queue is too full even for a tornado's ground dust. */
+    public static boolean groundDustCrowded() {
+        return groundDustCrowded;
+    }
+
     /** Keeps the puffs in back-to-front order, which is what a blend with no depth writes depends on. */
     public static void tick(Minecraft minecraft) {
         if (minecraft.level == null) {
             crowded = false;
+            groundDustCrowded = false;
             return;
         }
         Queue<Particle> queue = queue(minecraft);
         crowded = queue != null && queue.size() > LOOSE_PUFF_CEILING;
+        groundDustCrowded = queue != null && queue.size() > GROUND_DUST_CEILING;
         if (!Config.STORM_SOFT_PUFFS.get() || minecraft.level.getGameTime() % SORT_INTERVAL_TICKS != 0L || queue == null || queue.size() < 2) {
             return;
         }
