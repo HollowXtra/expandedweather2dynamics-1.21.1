@@ -289,6 +289,7 @@ public final class AddonWeatherEventService {
                     : event.radius() * 2.0F;
             boolean dopplerSignature = event.type() != StormSubtype.LANDSPOUT && event.type() != StormSubtype.DUST_DEVIL && event.type() != StormSubtype.SNOW_DEVIL && event.type() != StormSubtype.FUNNEL_CLOUD;
             float eventWind = event.type() == StormSubtype.LANDSPOUT ? Math.min(LandspoutEntity.MAX_EF2_WIND_MPH, event.maxWindMph()) : event.maxWindMph();
+            float[] lineField = squallLineField(event);
             snapshots.add(new RadarStormSnapshot(
                     event.id(),
                     event.type().label(),
@@ -323,10 +324,41 @@ public final class AddonWeatherEventService {
                     0.0F,
                     0,
                     event.position().x,
-                    event.position().z
+                    event.position().z,
+                    lineField
             ));
         }
         return snapshots;
+    }
+
+    /**
+     * A squall line as the radar draws it: its two ends, its thickness, how far its middle bows forward, and which way it
+     * is going. Without it a line was drawn as a round echo at its middle, where a real radar shows a long thin band.
+     */
+    /** The line a squall-line event's radar echo is drawn along, looked up by the event's id. */
+    public static float[] radarLineField(ServerLevel level, long eventId) {
+        for (AddonWeatherEvent event : eventsFor(level)) {
+            if (event.id() == eventId) {
+                return squallLineField(event);
+            }
+        }
+        return new float[0];
+    }
+
+    private static float[] squallLineField(AddonWeatherEvent event) {
+        if (event.type() != StormSubtype.SQUALL_LINE || event.lineStart() == null || event.lineEnd() == null) {
+            return new float[0];
+        }
+        Vec3 line = event.lineEnd().subtract(event.lineStart());
+        double length = Math.sqrt(line.horizontalDistanceSqr());
+        if (length < 1.0D) {
+            return new float[0];
+        }
+        Vec3 forward = event.motion() != null && event.motion().horizontalDistanceSqr() > 1.0E-5D
+                ? new Vec3(event.motion().x, 0.0D, event.motion().z).normalize()
+                : new Vec3(-line.z / length, 0.0D, line.x / length);
+        double bow = Math.min(130.0D, Math.max(20.0D, length * 0.085D));
+        return com.imbet.radar.RadarPrecipitation.packLine(event.lineStart(), event.lineEnd(), Math.max(24.0F, event.radius()), bow, forward);
     }
 
     private static List<AddonWeatherEvent> eventsFor(ServerLevel level) {

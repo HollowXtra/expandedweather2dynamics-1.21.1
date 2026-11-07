@@ -4,6 +4,7 @@ import com.imbet.Config;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.HurricaneShield;
 import extendedrenderer.particle.entity.EntityRotFX;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.util.Mth;
 import weather2.weathersystem.storm.StormObject;
 
@@ -200,6 +201,50 @@ public final class StormDeckCauliflower {
         double cloudBase = DynamicStormController.cloudBaseWorldY(storm);
         holdAboveCloudBase(upper.values(), cloudBase);
         holdAboveCloudBase(lower.values(), cloudBase);
+        if (storm.manager.getWorld() instanceof ClientLevel level) {
+            shadeBySun(level, storm, upper, lower, bounds);
+        }
+    }
+
+    /**
+     * Lights the mass from the sun. Every puff gets its own steady grey - Weather2 gives each a random one when it spawns,
+     * and this keeps that mottling - and is then shaded by which way its part of the mass faces: the side toward the sun
+     * near white, the side away blue-grey, the crown lit from above and the underside layer dark, the base of the storm.
+     * Uniformly white, the deck read from any distance as a scatter of separate white balls rather than one solid storm.
+     * Set fresh every tick from the puff's own grey, so it never compounds.
+     */
+    private static void shadeBySun(ClientLevel level, StormObject storm, HashMap<Integer, EntityRotFX> upper, HashMap<Integer, EntityRotFX> lower, DeckBounds bounds) {
+        for (HashMap.Entry<Integer, EntityRotFX> entry : upper.entrySet()) {
+            EntityRotFX particle = entry.getValue();
+            if (particle == null) {
+                continue;
+            }
+            double dx = particle.getPosX() - bounds.centreX();
+            double dz = particle.getPosZ() - bounds.centreZ();
+            double band = Mth.clamp((particle.getPosY() - bounds.upperMinY()) / bounds.upperHeight(), 0.0D, 1.0D);
+            double outward = Math.max(1.0D, Math.sqrt(dx * dx + dz * dz));
+            // The lower part of the mass faces out and a little down; the crown faces up.
+            double up = (band - 0.40D) * 1.6D;
+            float lit = SunShading.lit(level, dx / outward, up, dz / outward);
+            float grey = 0.80F + 0.20F * (float) hashUnit(storm.ID * 131L + entry.getKey() * 0x632BE59BD9B4E019L);
+            // Down at the foot of the mass it is under its own shadow whichever way it faces.
+            float underside = (float) Mth.clamp(0.72D + band * 0.70D, 0.72D, 1.0D);
+            float[] colour = SunShading.cloudColour(level, grey * underside, lit, 0.58F);
+            particle.setColor(colour[0], colour[1], colour[2]);
+        }
+        for (HashMap.Entry<Integer, EntityRotFX> entry : lower.entrySet()) {
+            EntityRotFX particle = entry.getValue();
+            if (particle == null) {
+                continue;
+            }
+            double dx = particle.getPosX() - bounds.centreX();
+            double dz = particle.getPosZ() - bounds.centreZ();
+            double outward = Math.max(1.0D, Math.sqrt(dx * dx + dz * dz));
+            float lit = SunShading.lit(level, dx / outward, -0.6D, dz / outward);
+            float grey = 0.58F + 0.12F * (float) hashUnit(storm.ID * 137L + entry.getKey() * 0x632BE59BD9B4E019L);
+            float[] colour = SunShading.cloudColour(level, grey, lit, 0.70F);
+            particle.setColor(colour[0], colour[1], colour[2]);
+        }
     }
 
     /**

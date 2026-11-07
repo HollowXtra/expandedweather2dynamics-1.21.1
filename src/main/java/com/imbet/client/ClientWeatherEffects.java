@@ -24,6 +24,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.core.particles.ItemParticleOption;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
@@ -34,6 +35,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import weather2.ClientTickHandler;
@@ -348,14 +350,18 @@ public final class ClientWeatherEffects {
             double lateral = (level.random.nextDouble() * 2.0D - 1.0D) * halfWidth * Math.sqrt(level.random.nextDouble());
             Vec3 at = origin.add(structure.forward().scale(along * length)).add(structure.right().scale(lateral));
             double thickness = Mth.lerp(reach, 70.0D, 24.0D);
-            double depth = level.random.nextDouble() * thickness;
-            boolean underside = depth > thickness * 0.55D;
-            float shade = underside ? 0.60F : 0.88F;
+            // Flat on top, where the tropopause stops it, and ragged underneath: most of the depth goes to the underside.
+            double depth = Math.pow(level.random.nextDouble(), 1.6D) * thickness;
+            boolean underside = depth > thickness * 0.45D;
+            // The anvil's top faces the sun and is the brightest cloud in the sky - from far off a whole storm is often just
+            // a white anvil on the horizon - and its underside is in its own shadow.
+            float lit = underside ? SunShading.lit(level, 0.0D, -1.0D, 0.0D) : SunShading.lit(level, structure.forward().x * 0.4D, 1.0D, structure.forward().z * 0.4D);
+            float[] colour = SunShading.cloudColour(level, underside ? 0.66F : 0.98F, lit, underside ? 0.80F : 0.74F);
             Vec3 pos = new Vec3(at.x, visualY(level, at, towerTop + 14.0D - depth), at.z);
             Vec3 velocity = structure.forward().scale(0.040D + strength * 0.020D);
             float size = (float) (60.0D + level.random.nextDouble() * 40.0D + reach * 30.0D);
             float alpha = (float) (0.40D * (1.0D - reach * 0.55D)) * (0.6F + strength * 0.4F);
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), size, shade * 0.97F, shade * 0.98F, shade * 1.02F,
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), size, colour[0], colour[1], colour[2],
                     alpha, 300, 0.02F, ParticleTypes.CLOUD);
         }
 
@@ -573,8 +579,13 @@ public final class ClientWeatherEffects {
             // the knuckled column of the tower, which spreads out again where it runs into the anvil.
             double radiusShare;
             if (band < 0.30D) {
-                double t = band / 0.30D;
-                radiusShare = Mth.lerp(t * t, 1.18D, 0.80D);
+                // The foot is a stack of flat, flared plates, each a little narrower than the one under it, with a thin
+                // gap of shadow between them: the "bell-bottom" of a rotating updraft. Spread evenly up the band it was a
+                // smooth cone; held to three shelves it reads as the layered base the photographs show.
+                int shelf = Math.min(2, (int) (band / 0.10D));
+                double within = (band - shelf * 0.10D) / 0.10D;
+                band = shelf * 0.10D + within * 0.055D;
+                radiusShare = (1.52D - shelf * 0.24D) * (1.0D - 0.10D * within);
             } else if (band < 0.82D) {
                 radiusShare = 0.74D + 0.06D * Math.sin(band * 23.0D + storm.ID);
             } else {
@@ -593,11 +604,15 @@ public final class ClientWeatherEffects {
             Vec3 velocity = tangent.scale(spin).add(structure.forward().scale(0.006D)).add(0.0D, 0.010D + meso * 0.018D, 0.0D);
             // The striations: shelves of light and dark wound round the lower part of a turning updraft.
             double striation = band < 0.45D ? 0.84D + 0.16D * Math.sin(band * Math.PI * 14.0D + angle * rotationSign * 0.5D) : 1.0D;
-            // Lit from above: the foot under-lit and dark, the crown in sunlight.
-            float shade = (float) (Mth.lerp(Math.pow(band, 0.7D), 0.40D, 0.86D) * striation);
+            // Lit by the sun from the side it is on: near white toward it with crisp bright edges, blue-grey away from it,
+            // the crown lit from above and the foot in the storm's own shadow. Shaded by height alone the tower was the
+            // same grey all the way round and read as a flat cut-out.
+            float lit = SunShading.lit(level, Math.cos(angle), (band - 0.30D) * 1.4D, Math.sin(angle));
+            float height = (float) Mth.lerp(Math.pow(band, 0.6D), 0.62D, 1.0D);
+            float[] colour = SunShading.cloudColour(level, (float) (0.97D * height * striation), lit, 0.56F);
             float size = (float) ((34.0D + meso * 18.0D + level.random.nextDouble() * 16.0D) * (0.85D + band * 0.45D));
             Vec3 pos = new Vec3(at.x, visualY(level, at, Mth.lerp(band, base + 4.0D, top)), at.z);
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), size, shade * 0.92F, shade * 0.94F, shade,
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), size, colour[0], colour[1], colour[2],
                     0.34F + meso * 0.18F, 220, 0.04F, ParticleTypes.CLOUD);
         }
     }
@@ -781,9 +796,12 @@ public final class ClientWeatherEffects {
             Vec3 facing = (i & 1) == 0 ? structure.right().scale(-0.06D) : structure.forward().scale(0.06D);
             Vec3 velocity = facing.add(0.0D, -0.05D, 0.0D);
             float heaviness = (float) (1.0D - ahead * 0.6D);
-            float shade = 0.40F + (1.0F - heaviness) * 0.14F;
+            // Lighter than the base it hangs from, not darker: a rain core is lit by the daylight scattered through it and
+            // seen against the brighter air behind, a soft grey curtain under a dark base in every photograph. Drawn as
+            // dark as the base, it merged into it and the storm read as one dark mass to the ground.
+            float shade = 0.54F + (1.0F - heaviness) * 0.16F;
             spawnStructureParticle(level, pos, velocity, RainShaftSprites.sheet(level.random, 0.45F + heaviness * 0.45F),
-                    40.0F + level.random.nextFloat() * 20.0F, shade, shade * 1.07F, shade * 1.22F,
+                    40.0F + level.random.nextFloat() * 20.0F, shade, shade * 1.03F, shade * 1.09F,
                     (0.18F + heaviness * 0.20F) * (0.5F + ffdStrength * 0.5F), 90 + level.random.nextInt(30), 0.06F, ParticleTypes.RAIN);
         }
         // Hail bouncing at the foot of the core. Dry air aloft means it survives to the ground more often in an LP storm.
@@ -1906,14 +1924,19 @@ public final class ClientWeatherEffects {
         double segmentDistance = distanceToLineSegment(playerPos, start, end);
         float proximity = Mth.clamp((float) (1.0D - segmentDistance / Math.max(260.0D, event.radius() * 2.4D)), 0.0F, 1.0F);
         double centerT = lineSampleT(playerPos, start, end);
-        int curtainCount = Mth.clamp(28 + (int) (lineLength / 58.0D) + (int) (proximity * 24.0F), 30, 72);
-        int rainCount = Mth.clamp(18 + (int) (lineLength / 82.0D), 18, 42);
+        int curtainCount = Mth.clamp(24 + (int) (lineLength / 64.0D) + (int) (proximity * 20.0F), 26, 60);
+        int rainCount = Mth.clamp(14 + (int) (lineLength / 90.0D), 14, 34);
+        spawnSquallShelf(level, event, start, end, axis, forward, centerT, lineLength, proximity);
 
+        // The convective line's heavy rain: a dark, dense curtain right behind the gust front.
         for (int i = 0; i < curtainCount; i++) {
             double t = visibleLineT(level, centerT, i, curtainCount, lineLength, 16.0D);
-            double rearOffset = -event.radius() * (0.22D + level.random.nextDouble() * 1.35D);
+            double rearOffset = -event.radius() * (0.05D + level.random.nextDouble() * 0.55D);
             Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, rearOffset, 34.0D);
-            double height = 12.0D + level.random.nextDouble() * 106.0D;
+            // Rain falls from the cloud base down: it hangs under the shelf and the deck, not up through them. Reaching a
+            // hundred and more blocks up, the curtains built a grey dome over the whole line that hid the shelf in front of
+            // it and the towers above.
+            double height = 6.0D + level.random.nextDouble() * 58.0D;
             Vec3 pos = new Vec3(base.x, visualY(level, base, height), base.z);
             Vec3 velocity = forward.scale(0.075D + event.maxWindMph() * 0.00075D)
                     .add(axis.scale((level.random.nextDouble() - 0.5D) * 0.025D))
@@ -1929,19 +1952,21 @@ public final class ClientWeatherEffects {
             }
         }
 
+        // The trailing stratiform region: lighter, steadier rain falling out of the deck far behind the line, the long grey
+        // tail that keeps raining after the gust front and the heavy core have gone past.
         for (int i = 0; i < rainCount; i++) {
             double t = visibleLineT(level, centerT, i, rainCount, lineLength, 40.0D);
-            double rearOffset = -event.radius() * (0.50D + level.random.nextDouble() * 1.10D);
+            double rearOffset = -event.radius() * (0.60D + level.random.nextDouble() * 1.60D);
             Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, rearOffset, 26.0D);
-            Vec3 pos = new Vec3(base.x, visualY(level, base, 4.0D + level.random.nextDouble() * 58.0D), base.z);
-            Vec3 velocity = forward.scale(0.040D + event.maxWindMph() * 0.00045D)
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 4.0D + level.random.nextDouble() * 70.0D), base.z);
+            Vec3 velocity = forward.scale(0.030D + event.maxWindMph() * 0.00030D)
                     .add(axis.scale((level.random.nextDouble() - 0.5D) * 0.018D))
-                    .add(0.0D, -0.20D - level.random.nextDouble() * 0.13D, 0.0D);
-            TextureAtlasSprite rainSprite = RainShaftSprites.sheet(
-                    level.random, Mth.clamp(0.42F + event.maxWindMph() * 0.0035F, 0.0F, 1.0F));
+                    .add(0.0D, -0.16D - level.random.nextDouble() * 0.10D, 0.0D);
+            TextureAtlasSprite rainSprite = RainShaftSprites.sheet(level.random, 0.30F + level.random.nextFloat() * 0.15F);
+            float grey = 0.46F + level.random.nextFloat() * 0.10F;
             spawnStructureParticle(level, pos, velocity, rainSprite,
                     44.0F + level.random.nextFloat() * 52.0F,
-                    0.24F, 0.28F, 0.36F, 0.62F, 62, 0.18F, ParticleTypes.RAIN);
+                    grey, grey * 1.04F, grey * 1.14F, 0.32F, 70, 0.18F, ParticleTypes.RAIN);
         }
 
         Vec3 debrisCheck = start.lerp(end, level.random.nextDouble());
@@ -1949,6 +1974,136 @@ public final class ClientWeatherEffects {
             Vec3 debrisPos = pointAlongShelf(level, start, end, axis, forward, level.random.nextDouble(), 8.0D + level.random.nextDouble() * 34.0D, 10.0D);
             Vec3 velocity = forward.scale(0.17D + event.maxWindMph() * 0.0014D).add(0.0D, 0.06D + level.random.nextDouble() * 0.08D, 0.0D);
             spawnStickDebris(level, new Vec3(debrisPos.x, visualY(level, debrisPos, 1.0D + level.random.nextDouble() * 6.0D), debrisPos.z), velocity);
+        }
+    }
+
+    /**
+     * The cloud along a squall line's leading edge.
+     *
+     * <p>The gust front - the cold outflow spreading ahead of the rain - lifts the warm air in front of it, and that air
+     * condenses into a shelf cloud: a long, low, tiered wedge lowest and lightest at its leading lip and rising backward
+     * into the storm's base, with the dark, smooth underside behind it that chasers call the whale's mouth. Ahead of it at
+     * the ground the outflow rolls dust forward, and above it the line's own convective towers stand over the deck.
+     */
+    private static void spawnSquallShelf(ClientLevel level, AddonWeatherEvent event, Vec3 start, Vec3 end, Vec3 axis, Vec3 forward,
+                                         double centerT, double lineLength, float proximity) {
+        double reach = event.radius();
+        double gustSpeed = 0.06D + event.maxWindMph() * 0.0006D;
+        int shelf = Mth.clamp(10 + Math.round(proximity * 10.0F), 10, 20);
+        for (int i = 0; i < shelf; i++) {
+            double t = visibleLineT(level, centerT, i, shelf, lineLength, 22.0D);
+            int tier = level.random.nextInt(3);
+            double ahead = reach * (0.10D + level.random.nextDouble() * 0.30D);
+            double lip = 1.0D - (ahead - reach * 0.10D) / (reach * 0.30D);
+            Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, ahead, 18.0D);
+            // Each tier a little higher, and the whole shelf climbing backward from its lip into the base.
+            double height = 24.0D + tier * 10.0D + lip * 36.0D;
+            Vec3 pos = new Vec3(base.x, visualY(level, base, height), base.z);
+            // Lightest at the leading lip and the top tier, which face the open sky ahead; darkest low and back, running
+            // into the whale's mouth. Shaded the other way round the shelf was the same grey as the rain wall behind it,
+            // and vanished into it.
+            float shade = (float) Mth.clamp(0.40D + tier * 0.10D + lip * 0.18D, 0.38D, 0.80D);
+            spawnStructureParticle(level, pos, forward.scale(gustSpeed).add(0.0D, 0.004D, 0.0D), ParticleArt.cloud256(),
+                    30.0F + level.random.nextFloat() * 16.0F, shade * 0.95F, shade * 0.97F, shade * 1.04F,
+                    0.40F + tier * 0.05F, 160, 0.04F, ParticleTypes.CLOUD);
+        }
+        // The whale's mouth: the dark, smooth underside between the shelf and the rain.
+        for (int i = 0; i < 5; i++) {
+            double t = visibleLineT(level, centerT, i, 5, lineLength, 48.0D);
+            Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, reach * (-0.05D + level.random.nextDouble() * 0.15D), 24.0D);
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 52.0D + level.random.nextDouble() * 12.0D), base.z);
+            float shade = 0.22F + level.random.nextFloat() * 0.06F;
+            spawnStructureParticle(level, pos, forward.scale(gustSpeed * 0.8D), ParticleArt.cloud256(),
+                    44.0F + level.random.nextFloat() * 20.0F, shade, shade * 1.02F, shade * 1.10F, 0.42F, 180, 0.03F, ParticleTypes.CLOUD);
+        }
+        // The outflow at the ground, rolling dust out ahead of the line.
+        if (event.maxWindMph() > 50.0D) {
+            for (int i = 0; i < 2; i++) {
+                double t = visibleLineT(level, centerT, i, 2, lineLength, 60.0D);
+                Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, reach * (0.35D + level.random.nextDouble() * 0.20D), 30.0D);
+                Vec3 pos = new Vec3(base.x, visualY(level, base, 0.5D + level.random.nextDouble() * 5.5D), base.z);
+                DustTone tone = dustTone(level, pos);
+                spawnStructureParticle(level, pos, forward.scale(0.22D + event.maxWindMph() * 0.0012D).add(0.0D, 0.02D, 0.0D), ParticleArt.cloud256(),
+                        10.0F + level.random.nextFloat() * 8.0F, Math.min(1.0F, tone.red() * DUST_LIFT), Math.min(1.0F, tone.green() * DUST_LIFT),
+                        Math.min(1.0F, tone.blue() * DUST_LIFT), 0.20F, 50, 0.20F, ParticleTypes.POOF);
+            }
+            // Over dry ground the outflow lifts so much dust that it walls the gust front in: a haboob, a rolling brown
+            // front hundreds of blocks long and tens high, running ahead of the rain.
+            // The ground's biome, not the biome of the air the line's points are carried in up at cloud height.
+            Vec3 front = pointAlongShelf(level, start, end, axis, forward, centerT, reach * 0.45D, 0.0D);
+            int frontX = Mth.floor(front.x);
+            int frontZ = Mth.floor(front.z);
+            BlockPos frontPos = new BlockPos(frontX, level.getHeight(Heightmap.Types.WORLD_SURFACE, frontX, frontZ), frontZ);
+            Player viewer = Minecraft.getInstance().player;
+            if (!level.isLoaded(frontPos) && viewer != null) {
+                // Past the loaded chunks the client knows no biome; the country the viewer is standing in is the guess.
+                frontPos = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, viewer.blockPosition());
+            }
+            if (!level.getBiome(frontPos).value().hasPrecipitation()) {
+                double strength = Mth.clamp((event.maxWindMph() - 50.0D) / 30.0D, 0.0D, 1.0D);
+                int wall = 4 + (int) Math.round(strength * 6.0D);
+                for (int i = 0; i < wall; i++) {
+                    double t = visibleLineT(level, centerT, i, wall, lineLength, 40.0D);
+                    // Only the stretch of the front near the viewer is drawn, so the wall thins out toward the ends of that
+                    // stretch rather than stopping on a straight edge.
+                    float fromMiddle = Math.abs(i - (wall - 1) * 0.5F) / Math.max(1.0F, (wall - 1) * 0.5F);
+                    float endFade = 1.0F - 0.75F * fromMiddle * fromMiddle;
+                    double ahead = reach * (0.40D + level.random.nextDouble() * 0.22D);
+                    Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, ahead, 26.0D);
+                    double rise = level.random.nextDouble();
+                    // Tallest just behind its leading face, where the outflow head is deepest.
+                    Vec3 pos = new Vec3(base.x, visualY(level, base, 1.0D + rise * (24.0D + strength * 36.0D)), base.z);
+                    // The fine desert dust a haboob is made of, tan to orange whatever is underfoot, mixed with the ground's own.
+                    DustTone tone = dustTone(level, pos);
+                    float lift = (float) Mth.lerp(rise, 0.86D, 1.04D);
+                    float red = Mth.lerp(0.55F, tone.red() * DUST_LIFT, 0.74F) * lift;
+                    float green = Mth.lerp(0.55F, tone.green() * DUST_LIFT, 0.56F) * lift;
+                    float blue = Mth.lerp(0.55F, tone.blue() * DUST_LIFT, 0.38F) * lift;
+                    spawnStructureParticle(level, pos, forward.scale(0.18D + event.maxWindMph() * 0.0011D).add(0.0D, 0.010D, 0.0D), ParticleArt.cloud256(),
+                            30.0F + level.random.nextFloat() * 20.0F, Math.min(1.0F, red), Math.min(1.0F, green), Math.min(1.0F, blue),
+                            0.42F * endFade, 110, 0.10F, ParticleTypes.POOF);
+                }
+            }
+        }
+        // Ahead of the line, in the warm air it has not reached yet: small fair-weather cumulus, bright and flat-based,
+        // and over them the thin forward edge of the anvil.
+        for (int i = 0; i < 2; i++) {
+            double t = visibleLineT(level, centerT, i, 2, lineLength, 120.0D);
+            Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, reach * (0.9D + level.random.nextDouble() * 1.6D), 90.0D);
+            double puff = level.random.nextDouble();
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 46.0D + puff * 14.0D), base.z);
+            float shade = 0.84F + level.random.nextFloat() * 0.10F;
+            spawnStructureParticle(level, pos, forward.scale(gustSpeed * 0.25D).add(0.0D, 0.004D, 0.0D), ParticleArt.cloud256(),
+                    14.0F + level.random.nextFloat() * 12.0F, shade * 0.98F, shade * 0.99F, shade, 0.30F, 200, 0.05F, ParticleTypes.CLOUD);
+        }
+        // The anvil. The line's updrafts run into the tropopause and spread: a little forward over the warm air ahead, where
+        // it is the thin cirrus seen long before the line arrives, and most of it back over the trailing rain, where it is
+        // the high, flat top of the whole deck.
+        for (int i = 0; i < 3; i++) {
+            double t = visibleLineT(level, centerT, i, 3, lineLength, 110.0D);
+            boolean forwardAnvil = level.random.nextFloat() < 0.35F;
+            double spread = forwardAnvil ? reach * level.random.nextDouble() * 1.8D : -reach * level.random.nextDouble() * 2.6D;
+            Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, spread, 70.0D);
+            double reachShare = Math.abs(spread) / (reach * (forwardAnvil ? 1.8D : 2.6D));
+            double thickness = Mth.lerp(reachShare, 40.0D, 14.0D);
+            double depth = level.random.nextDouble() * thickness;
+            boolean underside = depth > thickness * 0.55D;
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 236.0D - depth), base.z);
+            float shade = underside ? 0.62F : 0.86F;
+            float alpha = (float) ((forwardAnvil ? 0.24D : 0.34D) * (1.0D - reachShare * 0.55D));
+            spawnStructureParticle(level, pos, forward.scale(forwardAnvil ? gustSpeed * 0.9D : gustSpeed * 0.3D), ParticleArt.cloud256(),
+                    (float) (56.0D + level.random.nextDouble() * 36.0D + reachShare * 24.0D), shade * 0.97F, shade * 0.98F, shade * 1.02F,
+                    alpha, 300, 0.02F, ParticleTypes.CLOUD);
+        }
+        // The line's convective towers, standing over the deck along the leading edge.
+        for (int i = 0; i < 3; i++) {
+            double t = visibleLineT(level, centerT, i, 3, lineLength, 90.0D);
+            Vec3 base = pointAlongShelf(level, start, end, axis, forward, t, reach * (-0.10D + level.random.nextDouble() * 0.25D), 40.0D);
+            double rise = level.random.nextDouble();
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 110.0D + rise * rise * 130.0D), base.z);
+            float shade = (float) Mth.lerp(rise, 0.55D, 0.86D);
+            spawnStructureParticle(level, pos, forward.scale(gustSpeed * 0.5D).add(0.0D, 0.010D, 0.0D), ParticleArt.cloud256(),
+                    34.0F + level.random.nextFloat() * 22.0F, shade * 0.95F, shade * 0.96F, shade, 0.34F, 220, 0.03F, ParticleTypes.CLOUD);
         }
     }
 
@@ -2269,11 +2424,37 @@ public final class ClientWeatherEffects {
     }
 
     private static int vortexGroundY(ClientLevel level, Vec3 pos) {
-        BlockPos ground = BlockGrabSafety.vortexGroundSurface(level, BlockPos.containing(pos));
-        if (ground != null) {
-            return ground.getY();
+        BlockPos at = BlockPos.containing(pos);
+        if (!level.isLoaded(at)) {
+            // A column the client holds no chunk for answers the bottom of the world, and everything measured up from it
+            // was laid out a hundred-odd blocks underground: a squall line seen from past the render distance had its
+            // shelf, its anvil and its dust all below the horizon. Out there the ground under the camera is the best
+            // guess there is.
+            Player viewer = Minecraft.getInstance().player;
+            return viewer != null ? clientGroundY(level, viewer.getBlockX(), viewer.getBlockZ()) : level.getSeaLevel();
         }
-        return level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, BlockPos.containing(pos)).getY();
+        return clientGroundY(level, at.getX(), at.getZ());
+    }
+
+    /**
+     * The ground in a loaded column, as the client can know it. The server keeps a motion-blocking-without-leaves map but
+     * never sends it, and the client's own copy is primed once and never kept current - read on the client it answered
+     * the bottom of the world even under the camera, and everything measured up from it went underground. The surface
+     * map is the one the client is sent and keeps up, so the ground is read from it, stepping down past plants and leaves
+     * to the first block that would stop something falling, or water.
+     */
+    private static int clientGroundY(ClientLevel level, int x, int z) {
+        int surface = level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+        int floor = Math.max(level.getMinBuildHeight(), surface - 48);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos(x, surface - 1, z);
+        for (int y = surface - 1; y >= floor; y--) {
+            cursor.setY(y);
+            BlockState state = level.getBlockState(cursor);
+            if (!state.getFluidState().isEmpty() || (state.blocksMotion() && !state.is(BlockTags.LEAVES))) {
+                return y + 1;
+            }
+        }
+        return surface;
     }
 
     /** How far above the build limit a storm's structure may stand, in blocks. */

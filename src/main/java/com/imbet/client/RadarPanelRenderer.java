@@ -5,6 +5,7 @@ import com.imbet.network.RadarSnapshotPayload;
 import com.imbet.radar.ClientRadarStore;
 import com.imbet.radar.RadarBlockEntity;
 import com.imbet.radar.RadarStormSnapshot;
+import com.imbet.weather.PrecipitationField;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -110,7 +111,10 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
             // give it an extent.
             float markerSize = Math.max(size, 0.030F);
             if (returnInside && !program) {
-                if (mode == 1) {
+                PrecipitationField.Geometry precipitation = RadarEchoField.fieldOf(storm);
+                if ((precipitation != null || storm.hasLineField()) && mode != 2) {
+                    drawFieldReturn(consumer, pose, storm, precipitation, mode == 1, radar.getBlockPos().getX(), radar.getBlockPos().getZ(), rx, rz, range, y + 0.007F);
+                } else if (mode == 1) {
                     drawVelocityReturn(consumer, pose, storm, hookX, hookZ, markerSize, y + 0.007F);
                 } else if (mode == 2) {
                     drawRiskPixels(consumer, pose, storm, rx, rz, markerSize, y + 0.007F);
@@ -140,8 +144,9 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
             float mesoZ = RadarEchoField.scopeCoord(storm.mesoZ(), radar.getBlockPos().getZ(), range);
             if (signature == RadarEchoField.SIGNATURE_TVS && displayInside) {
                 drawVortexIcon(consumer, pose, circulationX, circulationZ, RadarEchoField.SIGNATURE_TVS, y + 0.019F);
-            } else if (signature == RadarEchoField.SIGNATURE_MESO && RadarEchoField.insideScope(mesoX, mesoZ)) {
-                drawVortexIcon(consumer, pose, mesoX, mesoZ, RadarEchoField.SIGNATURE_MESO, y + 0.019F);
+            } else if ((signature == RadarEchoField.SIGNATURE_ETVS || signature == RadarEchoField.SIGNATURE_MESO)
+                    && RadarEchoField.insideScope(mesoX, mesoZ)) {
+                drawVortexIcon(consumer, pose, mesoX, mesoZ, signature, y + 0.019F);
             } else if (!confirmedMarker && storm.hookEcho() && displayInside) {
                 drawMesocycloneMarker(consumer, pose, hookX, hookZ, size, y + 0.016F);
             }
@@ -250,6 +255,75 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
                 // colour only, so those steps separated nothing and were read as terracing across an
                 // otherwise smooth shield. Strength is carried by the colour ramp alone now.
                 RenderQuads.topQuadUvGradient(consumer, pose, minX, minZ, maxX, maxZ, y, minMin, maxMin, maxMax, minMax);
+            }
+        }
+    }
+
+    /**
+     * A storm's reflectivity or velocity drawn from its own rain field and the wind in it, on the same shared lattice the
+     * other returns use. This is the path a shader pack leaves; the program path reads the same two functions.
+     */
+    private static void drawFieldReturn(VertexConsumer consumer, PoseStack.Pose pose, RadarStormSnapshot storm, PrecipitationField.Geometry precipitation,
+                                        boolean velocity, double originX, double originZ, float rx, float rz, int range, float y) {
+        double blocksPerPanel = range / RadarEchoField.SCOPE_RADIUS;
+        boolean line = storm.hasLineField();
+        double reachBlocks = line ? RadarEchoField.lineReachBlocks(storm) : RadarEchoField.fieldReachBlocks(precipitation);
+        float reachPanel = (float) (reachBlocks / blocksPerPanel);
+        // Sampled every frame, so a squall line - many times a cell's reach - takes whole multiples of the lattice's cell
+        // rather than more of them: it stays on the shared lattice, at a cell's cost.
+        float cell = RadarEchoField.pixelCell() * Math.max(1, Mth.ceil(reachPanel / RadarEchoField.pixelCell() / 40.0F));
+        int cells = Mth.clamp(Mth.ceil(reachPanel / cell), 8, 40);
+        int side = cells * 2 + 1;
+        if (fieldScratch.length < side * side) {
+            fieldScratch = new float[side * side];
+        }
+        float[] field = fieldScratch;
+        double radarX = originX + 0.5D;
+        double radarZ = originZ + 0.5D;
+        for (int ix = 0; ix < side; ix++) {
+            for (int iz = 0; iz < side; iz++) {
+                double worldX = storm.x() + (ix - cells) * cell * blocksPerPanel;
+                double worldZ = storm.z() + (iz - cells) * cell * blocksPerPanel;
+                if (line) {
+                    field[iz * side + ix] = velocity
+                            ? RadarEchoField.lineVelocityAtWorld(storm, worldX, worldZ, radarX, radarZ)
+                            : (float) RadarEchoField.lineReflectivityAtWorld(storm, worldX, worldZ);
+                } else {
+                    field[iz * side + ix] = velocity
+                            ? RadarEchoField.radialVelocityAtWorld(storm, precipitation, worldX, worldZ, radarX, radarZ)
+                            : (float) RadarEchoField.reflectivityAtWorld(storm, precipitation, worldX, worldZ);
+                }
+            }
+        }
+        for (int ix = 0; ix < side - 1; ix++) {
+            for (int iz = 0; iz < side - 1; iz++) {
+                float minX = rx + (ix - cells) * cell;
+                float minZ = rz + (iz - cells) * cell;
+                float maxX = minX + cell;
+                float maxZ = minZ + cell;
+                if (!RadarEchoField.insidePanel(minX, minZ) && !RadarEchoField.insidePanel(maxX, maxZ)) {
+                    continue;
+                }
+                float a = field[iz * side + ix];
+                float b = field[iz * side + ix + 1];
+                float c = field[(iz + 1) * side + ix];
+                float d = field[(iz + 1) * side + ix + 1];
+                if (velocity) {
+                    if (Float.isNaN(a) || Float.isNaN(b) || Float.isNaN(c) || Float.isNaN(d)) {
+                        continue;
+                    }
+                    if (Math.max(Math.max(Math.abs(a), Math.abs(b)), Math.max(Math.abs(c), Math.abs(d))) < RadarEchoField.VELOCITY_FLOOR_MPS) {
+                        continue;
+                    }
+                    RenderQuads.topQuadUvGradient(consumer, pose, minX, minZ, maxX, maxZ, y + 0.001F,
+                            RadarEchoField.velocityColor(a), RadarEchoField.velocityColor(b), RadarEchoField.velocityColor(d), RadarEchoField.velocityColor(c));
+                } else {
+                    if (Math.max(Math.max(a, b), Math.max(c, d)) < RadarEchoField.ECHO_FLOOR_DBZ) {
+                        continue;
+                    }
+                    RenderQuads.topQuadUvGradient(consumer, pose, minX, minZ, maxX, maxZ, y,
+                            RadarEchoField.sampleColor(a), RadarEchoField.sampleColor(b), RadarEchoField.sampleColor(d), RadarEchoField.sampleColor(c));
+                }
             }
         }
     }
@@ -368,15 +442,40 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
      */
     private static void drawVortexIcon(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, int tier, float y) {
         float half = RadarEchoField.signatureHalf(tier);
-        if (tier == RadarEchoField.SIGNATURE_TVS) {
-            float height = half * (RadarEchoField.SIGNATURE_HEIGHT / RadarEchoField.SIGNATURE_HALF);
-            drawUpTriangle(consumer, pose, centerX, centerZ, half * 1.34F, height * 1.16F, y, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
-            drawUpTriangle(consumer, pose, centerX, centerZ, half, height, y + 0.0007F, RadarEchoField.TVS_ICON_COLOR);
+        if (tier == RadarEchoField.SIGNATURE_MESO) {
+            // A mesocyclone is a circle, as on the radar's own overlay: an open ring, so the couplet under it shows.
+            float radius = half * 1.10F;
+            drawRing(consumer, pose, centerX, centerZ, radius, 0.0070F, y, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+            drawRing(consumer, pose, centerX, centerZ, radius, 0.0040F, y + 0.0007F, RadarEchoField.MESO_ICON_COLOR);
             return;
         }
-        float axis = half * 1.55F;
-        diamond(consumer, pose, centerX, centerZ, axis * 1.30F, y, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
-        diamond(consumer, pose, centerX, centerZ, axis, y + 0.0007F, RadarEchoField.MESO_ICON_COLOR);
+        // A TVS, and an elevated one, are an inverted triangle: point down, toward where the vortex reaches the ground.
+        float height = half * (RadarEchoField.SIGNATURE_HEIGHT / RadarEchoField.SIGNATURE_HALF);
+        drawDownTriangle(consumer, pose, centerX, centerZ, half * 1.34F, height * 1.16F, y, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+        drawDownTriangle(consumer, pose, centerX, centerZ, half, height, y + 0.0007F, RadarEchoField.signatureColor(tier));
+    }
+
+    /**
+     * An inverted triangle on the panel, its point toward +z: the map's "down", as {@link #drawUpTriangle}'s point is its
+     * "up". The base corners are given in the other order so it winds the same way.
+     */
+    private static void drawDownTriangle(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float half, float height, float y, int color) {
+        RenderQuads.topTriangleUv(consumer, pose,
+                centerX, centerZ + height,
+                centerX + half, centerZ - height * 0.42F,
+                centerX - half, centerZ - height * 0.42F,
+                y, color);
+    }
+
+    /** A ring on the panel, out of short line segments. */
+    private static void drawRing(VertexConsumer consumer, PoseStack.Pose pose, float centerX, float centerZ, float radius, float width, float y, int color) {
+        int segments = 18;
+        for (int i = 0; i < segments; i++) {
+            float a0 = (float) (Math.PI * 2.0D * i / segments);
+            float a1 = (float) (Math.PI * 2.0D * (i + 1) / segments);
+            RenderQuads.topLineUv(consumer, pose, centerX + Mth.cos(a0) * radius, centerZ + Mth.sin(a0) * radius,
+                    centerX + Mth.cos(a1) * radius, centerZ + Mth.sin(a1) * radius, width, y, color);
+        }
     }
 
     /**

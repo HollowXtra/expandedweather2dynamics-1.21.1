@@ -123,6 +123,26 @@ public final class LeafEddies {
      * would stand under it. Returns null when the column has no leaves, which is the common answer and the
      * reason the caller counts how many it got.
      */
+    /**
+     * The ground under whatever canopy stands over a column. The server keeps a height map that skips leaves but never
+     * sends it, and the client's own copy answered the bottom of the world, so the canopy scan began at bedrock and never
+     * reached a tree. The surface map the client is kept up to date with includes the leaves, so this steps down from it
+     * through the canopy and the air under it to the first solid ground.
+     */
+    private static BlockPos groundUnderCanopy(ClientLevel level, BlockPos column) {
+        int top = level.getHeight(Heightmap.Types.WORLD_SURFACE, column.getX(), column.getZ());
+        int floor = Math.max(level.getMinBuildHeight(), top - 64);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos(column.getX(), top - 1, column.getZ());
+        for (int y = top - 1; y >= floor; y--) {
+            cursor.setY(y);
+            BlockState state = level.getBlockState(cursor);
+            if (!state.getFluidState().isEmpty() || (state.blocksMotion() && !state.is(BlockTags.LEAVES) && !state.is(BlockTags.LOGS))) {
+                return cursor.above().immutable();
+            }
+        }
+        return null;
+    }
+
     private static Eddy probe(ClientLevel level, Vec3 at, int range, double strength) {
         double angle = level.random.nextDouble() * Math.PI * 2.0D;
         double distance = Math.sqrt(level.random.nextDouble()) * range;
@@ -130,8 +150,8 @@ public final class LeafEddies {
         if (!level.hasChunkAt(column)) {
             return null;
         }
-        BlockPos surface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column);
-        if (!level.isLoaded(surface)) {
+        BlockPos surface = groundUnderCanopy(level, column);
+        if (surface == null || !level.isLoaded(surface)) {
             return null;
         }
         for (int dy = 0; dy <= FOLIAGE_SCAN_HEIGHT; dy++) {

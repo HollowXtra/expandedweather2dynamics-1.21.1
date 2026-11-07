@@ -222,13 +222,18 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         int signature = Config.RADAR_VORTEX_ICONS.get()
                 ? RadarEchoField.vortexSignatureTier(storm) : RadarEchoField.SIGNATURE_NONE;
         if (signature == RadarEchoField.SIGNATURE_TVS) {
-            triangle(out, pose, circulationX, circulationY, 4.6F, 7.6F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
-            triangle(out, pose, circulationX, circulationY, 3.2F, 5.6F, RadarEchoField.TVS_ICON_COLOR);
+            invertedTriangle(out, pose, circulationX, circulationY, 4.6F, 7.6F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+            invertedTriangle(out, pose, circulationX, circulationY, 3.2F, 5.6F, RadarEchoField.TVS_ICON_COLOR);
+        } else if (signature == RadarEchoField.SIGNATURE_ETVS) {
+            float mesoX = centerX + screenX(storm.mesoX(), originX, range);
+            float mesoY = centerY + screenZ(storm.mesoZ(), originZ, range);
+            invertedTriangle(out, pose, mesoX, mesoY, 4.6F, 7.6F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+            invertedTriangle(out, pose, mesoX, mesoY, 3.2F, 5.6F, RadarEchoField.ETVS_ICON_COLOR);
         } else if (signature == RadarEchoField.SIGNATURE_MESO) {
             float mesoX = centerX + screenX(storm.mesoX(), originX, range);
             float mesoY = centerY + screenZ(storm.mesoZ(), originZ, range);
-            diamond(out, pose, mesoX, mesoY, 3.8F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
-            diamond(out, pose, mesoX, mesoY, 2.8F, RadarEchoField.MESO_ICON_COLOR);
+            ring(out, pose, mesoX, mesoY, 3.6F, 1.6F, RadarEchoField.SIGNATURE_OUTLINE_COLOR);
+            ring(out, pose, mesoX, mesoY, 3.6F, 0.9F, RadarEchoField.MESO_ICON_COLOR);
         } else if (!confirmed && storm.hookEcho()) {
             float hookX = centerX + screenX(RadarEchoField.hookWorldX(storm), originX, range);
             float hookY = centerY + screenZ(RadarEchoField.hookWorldZ(storm), originZ, range);
@@ -441,6 +446,16 @@ public class RadarScreen extends AbstractContainerScreen<RadarMenu> {
         vertex(out, pose, x - half, bottom, color);
         vertex(out, pose, x + half, bottom, color);
         vertex(out, pose, x, top, color);
+    }
+
+    /** The radar's TVS symbol: a triangle point down. The base corners are swapped so it winds as {@link #triangle} does. */
+    private static void invertedTriangle(VertexConsumer out, Matrix4f pose, float x, float y, float half, float height, int color) {
+        float bottom = y + height * 0.62F;
+        float top = y - height * 0.38F;
+        vertex(out, pose, x, bottom, color);
+        vertex(out, pose, x + half, top, color);
+        vertex(out, pose, x - half, top, color);
+        vertex(out, pose, x, bottom, color);
     }
 
     private static void diamond(VertexConsumer out, Matrix4f pose, float x, float y, float axis, int color) {

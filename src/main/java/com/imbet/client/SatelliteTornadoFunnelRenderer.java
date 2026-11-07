@@ -526,7 +526,7 @@ public final class SatelliteTornadoFunnelRenderer {
             double wrapSpan = Math.toRadians(vortex.wrapDegrees() * rotationSign);
             double climb = vortex.climbFraction() + Math.sin(Math.toRadians(vortex.pitchDegrees())) * 0.05D;
             double baseHeight = vortex.heightFraction();
-            double hugMid = hugAt(vortex, 0.5D, intensity);
+            double hugMid = hugAt(vortex, 0.5D, intensity, lastSeenTick);
             Vec3 midWall = funnelWallPoint(storm, baseBearing, baseHeight, hugMid);
             Vec3 outward = new Vec3(Math.cos(baseBearing), 0.0D, Math.sin(baseBearing));
             // The direction the circulation is travelling at the tear-off bearing: the tube leaves
@@ -536,12 +536,17 @@ public final class SatelliteTornadoFunnelRenderer {
                 advanceFreeFlight(storm, vortex, outward, circulation, baseBearing, baseHeight, hugMid);
             }
             double wrapRadius = Math.max(2.0D, DynamicStormController.funnelWallRadiusAt(storm, (float) baseHeight)) * hugMid;
-            double arcLength = Mth.clamp(
-                    wrapRadius * Math.abs(wrapSpan) * (0.85D + intensity * 0.45D) * (0.72D + vortex.lengthFraction() * 0.55D),
+            boolean helical = vortex.helical();
+            // A helical vortex runs the whole of its wrap - turns round the funnel - so it is given the length for it.
+            double arcLength = helical
+                    ? Mth.clamp(wrapRadius * Math.abs(wrapSpan), 40.0D, 520.0D)
+                    : Mth.clamp(wrapRadius * Math.abs(wrapSpan) * (0.85D + intensity * 0.45D) * (0.72D + vortex.lengthFraction() * 0.55D),
                     12.0D, 130.0D);
             double tubeRadius = Mth.clamp(parentRadius * vortex.radiusFraction() * (0.85D + intensity * 0.45D), 1.1D, 5.5D)
                     * (1.0D - 0.34D * freeProgress);
-            int layerCount = Mth.clamp((int) Math.ceil(arcLength / 2.4D), 6, 30);
+            int layerCount = helical
+                    ? Mth.clamp((int) Math.ceil(arcLength / 3.2D), 12, 96)
+                    : Mth.clamp((int) Math.ceil(arcLength / 2.4D), 6, 30);
             ensureLayers(layerCount, base);
             trimLayers(layerCount);
             // Sample the spine once along the tube (plus one step past each end for the tangents) so
@@ -558,7 +563,7 @@ public final class SatelliteTornadoFunnelRenderer {
             Vec3[] spine = new Vec3[layerCount + 2];
             for (int i = 0; i < layerCount + 2; i++) {
                 double t = (i - 1) / (double) Math.max(1, layerCount - 1);
-                Vec3 attachedPoint = wrapPoint(storm, vortex, base, midWall, baseBearing, wrapSpan, climb, baseHeight, intensity, t);
+                Vec3 attachedPoint = wrapPoint(storm, vortex, base, midWall, baseBearing, wrapSpan, climb, baseHeight, intensity, t, lastSeenTick);
                 if (!detached) {
                     spine[i] = attachedPoint;
                     continue;
@@ -720,10 +725,10 @@ public final class SatelliteTornadoFunnelRenderer {
          */
         private static Vec3 wrapPoint(StormObject storm, DynamicStormState.HorizontalVortex vortex, Vec3 base, Vec3 midWall,
                                       double baseBearing, double wrapSpan, double climb, double baseHeight,
-                                      double intensity, double t) {
+                                      double intensity, double t, long tick) {
             double height = Mth.clamp(baseHeight + climb * (t - 0.5D), 0.02D, 0.965D);
             double bearing = baseBearing + wrapSpan * (t - 0.5D);
-            Vec3 wall = funnelWallPoint(storm, bearing, height, hugAt(vortex, t, intensity));
+            Vec3 wall = funnelWallPoint(storm, bearing, height, hugAt(vortex, t, intensity, tick));
             return base.add(wall.subtract(midWall));
         }
 
@@ -731,8 +736,10 @@ public final class SatelliteTornadoFunnelRenderer {
          * How tightly the tube rides the wall at parameter t: exactly on its own hug factor at the
          * middle (so it matches the anchor), tighter at the root and peeling outward at the tip.
          */
-        private static double hugAt(DynamicStormState.HorizontalVortex vortex, double t, double intensity) {
-            return vortex.wallHugFactor() * (1.0D + (t - 0.5D) * (0.30D + intensity * 0.12D));
+        private static double hugAt(DynamicStormState.HorizontalVortex vortex, double t, double intensity, long tick) {
+            // A helical tube keeps to the wall along its whole length; a horizontal one peels outward toward its tip.
+            double peel = vortex.helical() ? 0.04D : 0.30D + intensity * 0.12D;
+            return vortex.wallHugFactorAt(tick) * (1.0D + (t - 0.5D) * peel);
         }
 
         /** Point on the live funnel wall at a bearing and height fraction. */

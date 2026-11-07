@@ -382,7 +382,9 @@ public final class DynamicStormController {
     /** One shape's bend of the axis at a layer, at full strength. */
     private static Vec3 shapeOffset(StormObject storm, DynamicStormState state, FunnelMorphology morphology, int layerIndex, int layerCount) {
         if (!shapeEnabled(state, morphology) || morphology == FunnelMorphology.WEDGE
-                || morphology == FunnelMorphology.CONE || morphology == FunnelMorphology.STOVEPIPE) {
+                || morphology == FunnelMorphology.CONE || morphology == FunnelMorphology.STOVEPIPE
+                || morphology == FunnelMorphology.NEEDLE || morphology == FunnelMorphology.BARREL
+                || morphology == FunnelMorphology.HOURGLASS) {
             return Vec3.ZERO;
         }
         float fraction = layerFraction(storm, layerIndex, layerCount);
@@ -429,6 +431,13 @@ public final class DynamicStormController {
             case BOWL -> {
                 double sway = Math.sin(effective * Math.PI * 1.8D + phase * 0.8D) * widthScale * 0.16D * Math.sin(effective * Math.PI);
                 return cross.scale(sway);
+            }
+            case SNAKE -> {
+                // Big, slow S-curves across the sky, the long thin column thrown from side to side as it goes up.
+                double snakeScale = Math.max(6.0D, Math.min(widthScale * 0.90D, 30.0D));
+                double across = Math.sin(effective * Math.PI * 2.2D + phase * 0.6D) * snakeScale * Math.sin(effective * Math.PI);
+                double along = Math.sin(effective * Math.PI * 1.1D + phase * 0.35D) * snakeScale * 0.6D * effective;
+                return cross.scale(across).add(lean.scale(along));
             }
             default -> {
                 // The elephant trunk: a bow through the middle, a lean at the top and a hook at the foot.
@@ -491,15 +500,53 @@ public final class DynamicStormController {
         DynamicStormState state = stateFor(storm);
         float scale = 0.0F;
         float total = 0.0F;
+        float taper = Float.NaN;
         for (FunnelMorphology shape : SHAPES) {
             float share = state.shapeShare(shape);
             if (share <= 0.001F) {
                 continue;
             }
-            scale += shapeRadius(state, shape, fraction) * share;
+            float radius = shapeRadius(state, shape, fraction);
+            if (straightTrunk(shape) && shapeEnabled(state, shape)) {
+                if (Float.isNaN(taper)) {
+                    taper = weather2Taper(storm, layerIndex);
+                }
+                radius = straightened(radius, taper, fraction);
+            }
+            scale += radius * share;
             total += share;
         }
         return (total > 0.0F ? scale / total : plainRadius(fraction)) * multivortexScale;
+    }
+
+    /**
+     * The shapes whose outline is their own all the way up rather than a bend of the cone: a needle, a snake, a barrel and
+     * an hourglass. Weather2's layers widen steadily from the foot to the cloud, so any profile laid on top of them is
+     * still a cone - which is what all four were drawn as.
+     */
+    private static boolean straightTrunk(FunnelMorphology shape) {
+        return shape == FunnelMorphology.NEEDLE || shape == FunnelMorphology.SNAKE
+                || shape == FunnelMorphology.BARREL || shape == FunnelMorphology.HOURGLASS;
+    }
+
+    /** How much wider Weather2's own funnel is at a layer than at its foot. */
+    private static float weather2Taper(StormObject storm, int layerIndex) {
+        TornadoFunnelSimple funnel = storm.getTornadoFunnelSimple();
+        ActiveTornadoConfig config = funnel == null ? null : funnel.getConfig();
+        if (config == null || config.getRadiusOfBase() <= 0.01F) {
+            return 1.0F;
+        }
+        float base = config.getRadiusOfBase();
+        return Math.max(1.0F, (base + config.getRadiusIncreasePerLayer() * layerIndex) / base);
+    }
+
+    /**
+     * A straight-trunk shape's width, given in widths of the funnel's foot, turned into a scale on Weather2's widening
+     * layer - and opening into the cloud over the top quarter, where every funnel meets the base it hangs from.
+     */
+    private static float straightened(float footWidths, float taper, float fraction) {
+        float join = smoothstep(Mth.clamp((fraction - 0.74F) / 0.26F, 0.0F, 1.0F));
+        return Mth.lerp(join, footWidths / taper, plainRadius(fraction));
     }
 
     /**
@@ -560,6 +607,27 @@ public final class DynamicStormController {
             case CORKSCREW -> {
                 float twist = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 4.0D + state.trunkCurvePhase() * 2.0D);
                 return Mth.clamp(0.62F + twist * 0.22F - fraction * 0.10F, 0.45F, 0.95F) + topFlare * 0.40F;
+            }
+            // The four straight-trunk shapes are widths of the funnel's foot, all the way up; see straightened.
+            case NEEDLE -> {
+                // Thin and even from the ground to near the top, opening only into the cloud.
+                return 0.62F + fraction * 0.08F;
+            }
+            case SNAKE -> {
+                // A thin, even tube; the S-bends are in its axis, not its width.
+                float pulse = 0.5F + 0.5F * (float) Math.sin(fraction * Math.PI * 2.0D + state.trunkCurvePhase());
+                return 0.80F + pulse * 0.08F;
+            }
+            case BARREL -> {
+                // A broad column with near-parallel sides, bulging a little through the middle.
+                float bulge = (float) Math.sin(fraction * Math.PI);
+                return 1.85F + bulge * 0.35F;
+            }
+            case HOURGLASS -> {
+                // Broad at the ground, pinched to a narrow waist a little below half way, and broad again above it.
+                float waist = 1.0F - Mth.clamp(Math.abs(fraction - 0.42F) / 0.36F, 0.0F, 1.0F);
+                float pinch = waist * waist * (3.0F - 2.0F * waist);
+                return 2.0F + fraction * 0.6F - pinch * 1.35F;
             }
             case BOWL -> {
                 // Flares into the cloud at the top, narrows to a waist and stands on a firm base.

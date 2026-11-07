@@ -12,7 +12,15 @@ public enum FunnelMorphology {
     STOVEPIPE,
     ROPE,
     CORKSCREW,
-    BOWL;
+    BOWL,
+    /** A thin, dead-straight column: the slender tornado that stands like a needle under the cloud. */
+    NEEDLE,
+    /** A long rope thrown into big S-curves across the sky. */
+    SNAKE,
+    /** A wide column with near-parallel sides and a slight bulge, broader than a stovepipe and straighter than a wedge. */
+    BARREL,
+    /** Wide at the ground and at the cloud, pinched to a narrow waist between. */
+    HOURGLASS;
 
     public boolean shaped() {
         return this != DEFAULT;

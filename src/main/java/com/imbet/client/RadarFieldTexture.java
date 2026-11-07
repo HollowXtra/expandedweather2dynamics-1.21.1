@@ -2,6 +2,7 @@ package com.imbet.client;
 
 import com.imbet.ExpandedWeather2Dynamics;
 import com.imbet.radar.RadarStormSnapshot;
+import com.imbet.weather.PrecipitationField;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.Util;
 import net.minecraft.client.Minecraft;
@@ -48,7 +49,12 @@ final class RadarFieldTexture {
     private int lastMode = Integer.MIN_VALUE;
     private int lastRange = Integer.MIN_VALUE;
     private CompletableFuture<float[]> pending;
+    private int pendingMode = Integer.MIN_VALUE;
+    private int pendingRange = Integer.MIN_VALUE;
     private float[] current = new float[SIZE * SIZE];
+    /** The product and range the scan on the sheet was made for. */
+    private int currentMode = Integer.MIN_VALUE;
+    private int currentRange = Integer.MIN_VALUE;
 
     /** Where the beam is, and where it was when the data on the sheet arrived. Radians. */
     private float sweepAngle;
@@ -134,13 +140,15 @@ final class RadarFieldTexture {
             float[] next = pending.getNow(null);
             pending = null;
             if (next != null) {
-                publish(next);
+                publish(next, pendingMode, pendingRange);
             }
         }
         if (pending == null && (storms != lastStorms || mode != lastMode || range != lastRange)) {
             lastStorms = storms;
             lastMode = mode;
             lastRange = range;
+            pendingMode = mode;
+            pendingRange = range;
             double originX = origin.getX();
             double originZ = origin.getZ();
             pending = CompletableFuture.supplyAsync(() -> composite(storms, mode, range, originX, originZ), Util.backgroundExecutor());
@@ -158,13 +166,23 @@ final class RadarFieldTexture {
         lastPartial = partial;
     }
 
-    /** Puts a finished scan on the sheet, keeping the last one beside it for the beam to paint over. */
-    private void publish(float[] next) {
+    /**
+     * Puts a finished scan on the sheet, keeping the last one beside it for the beam to paint over.
+     *
+     * <p>Only a scan of the same product at the same range is painted over. A display switched to another product or range
+     * shows it at once, from the last volume scan, as a real one does: painted over the old scan, the part the beam had not
+     * reached yet showed the last product read as the new one - reflectivity coloured as velocity, in reds and greens that
+     * were not there.
+     */
+    private void publish(float[] next, int mode, int range) {
+        boolean sameProduct = mode == currentMode && range == currentRange;
+        currentMode = mode;
+        currentRange = range;
         NativeImage image = texture.getPixels();
         if (image == null) {
             return;
         }
-        float[] previous = current;
+        float[] previous = sameProduct ? current : next;
         for (int y = 0; y < SIZE; y++) {
             for (int x = 0; x < SIZE; x++) {
                 int index = y * SIZE + x;
@@ -177,7 +195,7 @@ final class RadarFieldTexture {
         texture.upload();
         current = next;
         scanStart = sweepAngle;
-        scanCovered = 0.0F;
+        scanCovered = sameProduct ? 0.0F : (float) (Math.PI * 2.0D);
     }
 
     /**
@@ -193,7 +211,7 @@ final class RadarFieldTexture {
             float centreX = RadarEchoField.scopeOffsetUnclamped(storm.x(), originX, range);
             float centreZ = RadarEchoField.scopeOffsetUnclamped(storm.z(), originZ, range);
             switch (mode) {
-                case 1 -> compositeVelocity(out, storm, centreX, centreZ, scale, range);
+                case 1 -> compositeVelocity(out, storm, centreX, centreZ, scale, range, originX, originZ);
                 case 2 -> compositeRisk(out, storm, centreX, centreZ, scale, range);
                 default -> compositeReflectivity(out, storm, centreX, centreZ, scale, range, originX, originZ);
             }
@@ -202,6 +220,36 @@ final class RadarFieldTexture {
     }
 
     private static void compositeReflectivity(float[] out, RadarStormSnapshot storm, float centreX, float centreZ, float scale, int range, double originX, double originZ) {
+        if (storm.hasLineField()) {
+            double blocksPerPanel = range / RadarEchoField.SCOPE_RADIUS;
+            float reach = (float) (RadarEchoField.lineReachBlocks(storm) / blocksPerPanel);
+            forEachTexel(centreX, centreZ, reach, scale, (index, dx, dz) -> {
+                float dbz = (float) RadarEchoField.lineReflectivityAtWorld(storm, storm.x() + dx * blocksPerPanel, storm.z() + dz * blocksPerPanel);
+                if (dbz >= RadarEchoField.ECHO_FLOOR_DBZ) {
+                    float value = Mth.clamp((dbz + 5.0F) / 80.0F, 0.01F, 1.0F);
+                    if (value > out[index]) {
+                        out[index] = value;
+                    }
+                }
+            });
+            return;
+        }
+        PrecipitationField.Geometry field = RadarEchoField.fieldOf(storm);
+        if (field != null) {
+            // Read off the rain that is really there, a texel at a time in world blocks.
+            double blocksPerPanel = range / RadarEchoField.SCOPE_RADIUS;
+            float reach = (float) (RadarEchoField.fieldReachBlocks(field) / blocksPerPanel);
+            forEachTexel(centreX, centreZ, reach, scale, (index, dx, dz) -> {
+                float dbz = (float) RadarEchoField.reflectivityAtWorld(storm, field, storm.x() + dx * blocksPerPanel, storm.z() + dz * blocksPerPanel);
+                if (dbz >= RadarEchoField.ECHO_FLOOR_DBZ) {
+                    float value = Mth.clamp((dbz + 5.0F) / 80.0F, 0.01F, 1.0F);
+                    if (value > out[index]) {
+                        out[index] = value;
+                    }
+                }
+            });
+            return;
+        }
         float size = RadarEchoField.returnSize(storm, range);
         if (size <= 0.0F) {
             return;
@@ -227,7 +275,42 @@ final class RadarFieldTexture {
         });
     }
 
-    private static void compositeVelocity(float[] out, RadarStormSnapshot storm, float centreX, float centreZ, float scale, int range) {
+    private static void compositeVelocity(float[] out, RadarStormSnapshot storm, float centreX, float centreZ, float scale, int range,
+                                          double originX, double originZ) {
+        if (storm.hasLineField()) {
+            double blocksPerPanel = range / RadarEchoField.SCOPE_RADIUS;
+            float reach = (float) (RadarEchoField.lineReachBlocks(storm) / blocksPerPanel);
+            double radarX = originX + 0.5D;
+            double radarZ = originZ + 0.5D;
+            forEachTexel(centreX, centreZ, reach, scale, (index, dx, dz) -> {
+                float v = RadarEchoField.lineVelocityAtWorld(storm, storm.x() + dx * blocksPerPanel, storm.z() + dz * blocksPerPanel, radarX, radarZ);
+                if (!Float.isNaN(v) && Math.abs(v) >= RadarEchoField.VELOCITY_FLOOR_MPS) {
+                    float value = Mth.clamp((v + 64.0F) / 128.0F, 0.01F, 1.0F);
+                    if (out[index] == 0.0F || Math.abs(value - 0.5F) > Math.abs(out[index] - 0.5F)) {
+                        out[index] = value;
+                    }
+                }
+            });
+            return;
+        }
+        PrecipitationField.Geometry field = RadarEchoField.fieldOf(storm);
+        if (field != null) {
+            // The wind in the storm along the beam from the radar, wherever there is rain to measure it in.
+            double blocksPerPanel = range / RadarEchoField.SCOPE_RADIUS;
+            float reach = (float) (RadarEchoField.fieldReachBlocks(field) / blocksPerPanel);
+            double radarX = originX + 0.5D;
+            double radarZ = originZ + 0.5D;
+            forEachTexel(centreX, centreZ, reach, scale, (index, dx, dz) -> {
+                float v = RadarEchoField.radialVelocityAtWorld(storm, field, storm.x() + dx * blocksPerPanel, storm.z() + dz * blocksPerPanel, radarX, radarZ);
+                if (!Float.isNaN(v) && Math.abs(v) >= RadarEchoField.VELOCITY_FLOOR_MPS) {
+                    float value = Mth.clamp((v + 64.0F) / 128.0F, 0.01F, 1.0F);
+                    if (out[index] == 0.0F || Math.abs(value - 0.5F) > Math.abs(out[index] - 0.5F)) {
+                        out[index] = value;
+                    }
+                }
+            });
+            return;
+        }
         float size = Math.max(RadarEchoField.returnSize(storm, range), 0.030F);
         float length = Math.max(0.001F, Mth.sqrt(centreX * centreX + centreZ * centreZ));
         float beamX = centreX / length;

@@ -335,6 +335,11 @@ public final class Config {
     /** Scales how much rain wraps the mesocyclone. 0 = no wrapping, 1 = as the storm's own RFD implies. */
     public static final ModConfigSpec.DoubleValue SUPERCELL_PRECIPITATION_HOOK_SCALE;
 
+    /**
+     * The chance that a supercell is a rain-wrapped one, from 0 to 1, or -1 to leave it to each storm's own moisture.
+     */
+    public static final ModConfigSpec.DoubleValue SUPERCELL_RAIN_WRAP_CHANCE;
+
     /** Scales how rain-free the inflow notch is. Higher = a crisper clear slot around the funnel. */
     public static final ModConfigSpec.DoubleValue SUPERCELL_PRECIPITATION_NOTCH_CLARITY;
     public static final ModConfigSpec.BooleanValue SUPERCELL_STRUCTURE_GUST_FRONT_PARTICLES;
@@ -1660,6 +1665,8 @@ public final class Config {
                 .define("precipitationField", true);
         SUPERCELL_PRECIPITATION_HOOK_SCALE = BUILDER.comment("How much of a storm's rain wraps around its mesocyclone. 0 = the rain stays in the forward flank and the vortex is never rain-wrapped, 1 = as much as the storm's own rear-flank downdraft implies, above 1 wraps it harder. Raising this makes rain-wrapped tornadoes more common and hides funnels more often.")
                 .defineInRange("hookScale", 1.0D, 0.0D, 2.0D);
+        SUPERCELL_RAIN_WRAP_CHANCE = BUILDER.comment("The chance that a supercell is rain-wrapped: a high-precipitation storm whose rain closes round its tornado and hides it. -1 (the default) leaves it to each storm's own moisture, so wet airmasses wrap their tornadoes more often than dry ones. 0 to 1 sets it outright instead: 0 = never, 0.25 = about one storm in four, 1 = every one. Each storm rolls once and keeps the result for its life. A storm that does not roll a wrap can still have some rain round its back, as a classic supercell does, but never round the funnel. Needs supercell precipitation enabled.")
+                .defineInRange("rainWrapChance", -1.0D, -1.0D, 1.0D);
         SUPERCELL_PRECIPITATION_NOTCH_CLARITY = BUILDER.comment("How rain-free the inflow notch is - the clear slot that opens toward the funnel from the inflow side, which is what lets you see a tornado inside a raining storm. 0 = no notch, the rain closes right around the vortex; 1 = a crisp slot; above 1 scours it wider and further out. Only affects storms with structure (supercells).")
                 .defineInRange("notchClarity", 1.0D, 0.0D, 1.5D);
         SUPERCELL_STRUCTURE_GUST_FRONT_PARTICLES = BUILDER.define("gustFrontParticles", true);
@@ -1690,7 +1697,7 @@ public final class Config {
                 .define("stableNorthUp", true);
         RADAR_CONFIRMED_CIRCULATION_MARKER = BUILDER.comment("Draws confirmed tornado/satellite/landspout circulations at server-authoritative positions.")
                 .define("confirmedCirculationMarker", true);
-        RADAR_VORTEX_ICONS = BUILDER.comment("Draws the velocity-product signature icons a real radar operator reads: a filled magenta triangle for a tornadic vortex signature, and a smaller amber diamond for a mesocyclone that has not tightened into one. A TVS needs a gate-to-gate couplet of about 155 mph, or a confirmed tornado already on the ground with a couplet of about 115 mph; the diamond covers the weaker rotation a supercell shows while it is still organising. They are drawn at the couplet, not the storm centre, and replace the plain ring this display used to put there.")
+        RADAR_VORTEX_ICONS = BUILDER.comment("Draws the signature icons a real radar overlay uses: a red inverted triangle for a tornadic vortex signature, the same triangle in yellow for an elevated one - tornadic rotation in the storm with nothing on the ground yet - and a yellow circle for a mesocyclone. They follow the tornado detection algorithm's own gates, read as the gate-to-gate velocity difference: 36 m/s for a TVS, or 25 m/s for a tornado already on the ground. A TVS is drawn at the tornado, where its couplet is in the velocity product, and the others at the mesocyclone.")
                 .define("vortexSignatureIcons", true);
         PORTABLE_RADAR_LINK_RANGE_BLOCKS = BUILDER.comment("How far a portable radar reaches for a weather radar to link to, in blocks. The handheld shows the nearest weather radar block's own picture - its product, its range and its live returns - and only falls back to a sweep of the player's own position when no weather radar is within this distance.")
                 .defineInRange("portableLinkRangeBlocks", 512, 16, 8192);

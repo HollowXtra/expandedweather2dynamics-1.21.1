@@ -1426,7 +1426,7 @@ public final class DynamicStormState {
             // and as the funnel flares, narrows and changes morphology. The per-tentacle hug
             // factor is fixed at spawn, so following the wall never jitters the radius.
             float wallRadius = Mth.lerp(vortex.heightFraction(), wallRadiusGround, wallRadiusTop);
-            vortex.targetOrbitRadius = Math.max(2.0F, wallRadius * vortex.wallHugFactor());
+            vortex.targetOrbitRadius = Math.max(2.0F, wallRadius * vortex.wallHugFactorAt(gameTime));
         }
     }
 
@@ -1864,15 +1864,19 @@ public final class DynamicStormState {
         // (radiusOfBase + radiusIncreasePerLayer * layer), so the wall at the tentacle's
         // height is interpolated between the live base and top wall radii and the tube
         // base sits right on it with a small fixed outward hug.
-        float spawnHeightFraction = 0.38F + random.nextFloat() * 0.40F;
-        // Most tentacles ride UP the taper and curl up with it; the rest sink and droop,
-        // which is what real horizontal vortices do as they tighten into the wall.
-        float driftDirection = random.nextFloat() < 0.72F ? 1.0F : -1.0F;
-        float heightDrift = driftDirection * (0.0010F + random.nextFloat() * 0.0018F);
-        float wallHugFactor = 0.82F + random.nextFloat() * 0.26F;
+        long id = allocateHorizontalVortexId();
+        boolean helical = HorizontalVortex.isHelical(id);
+        // A horizontal vortex is born low, out in the tornado's outer circulation where the inflow rolls along the ground,
+        // and is drawn in: it tightens onto the wall, climbs and wraps as it is ingested (see wallHugFactorAt). They used
+        // to appear already stuck to the funnel half way up, which is the end of that life rather than the start of it.
+        // A helical vortex is the other kind: a thin tube wound round the funnel from near the ground to high up the
+        // column, sitting on the wall for its whole life. Its middle is half way up, and its wrap carries it the rest.
+        float spawnHeightFraction = helical ? 0.40F + random.nextFloat() * 0.08F : 0.04F + random.nextFloat() * 0.28F;
+        float heightDrift = helical ? 0.0F : 0.0015F + random.nextFloat() * 0.0020F;
+        float wallHugFactor = helical ? 0.98F + random.nextFloat() * 0.10F : 1.30F + random.nextFloat() * 0.55F;
         float wallRadius = Mth.lerp(spawnHeightFraction, wallRadiusGround, wallRadiusTop);
         float orbitRadius = Math.max(2.0F, wallRadius * wallHugFactor);
-        int life = nextIntInclusive(55, multiVortexActive ? 190 : 145);
+        int life = helical ? nextIntInclusive(160, 320) : nextIntInclusive(70, multiVortexActive ? 200 : 160);
         // Some tubes TEAR OFF. At a randomised point in their life they lose their grip on the
         // wall and are flung clear of the tornado, drifting away as a free-roaming tube before
         // they die - what chaser footage actually shows horizontal vortices doing. A torn-off
@@ -1882,13 +1886,13 @@ public final class DynamicStormState {
                 * (multiVortexActive ? 1.25F : 1.0F), 0.0F, 1.0F);
         long detachTick = 0L;
         long freeTicks = 0L;
-        if (random.nextFloat() < breakOffChance) {
+        if (!helical && random.nextFloat() < breakOffChance) {
             detachTick = gameTime + Math.round(life * (0.42F + random.nextFloat() * 0.34F));
             freeTicks = nextIntInclusive(Math.max(24, Config.HORIZONTAL_VORTICES_BREAK_OFF_FREE_TICKS.get() / 2),
                     Math.max(25, Config.HORIZONTAL_VORTICES_BREAK_OFF_FREE_TICKS.get()));
         }
         return new HorizontalVortex(
-                allocateHorizontalVortexId(),
+                id,
                 gameTime,
                 gameTime + life + freeTicks,
                 detachTick,
@@ -1897,7 +1901,7 @@ public final class DynamicStormState {
                 orbitRadius,
                 orbitRadius,
                 0.40F + random.nextFloat() * (multiVortexActive ? 0.55F : 0.42F),
-                0.085F + random.nextFloat() * 0.075F,
+                helical ? 0.050F + random.nextFloat() * 0.030F : 0.095F + random.nextFloat() * 0.080F,
                 spawnHeightFraction,
                 heightDrift,
                 wallHugFactor,
@@ -2773,6 +2777,16 @@ public final class DynamicStormState {
             clearSidewinderTag();
             targetTrunkNeckFraction = 0.40F + random.nextFloat() * 0.14F;
             targetTrunkCurveStrength = Mth.clamp(0.40F + random.nextFloat() * 0.25F, 0.0F, 0.85F);
+        } else if (targetFunnelMorphology == FunnelMorphology.NEEDLE || targetFunnelMorphology == FunnelMorphology.BARREL
+                || targetFunnelMorphology == FunnelMorphology.HOURGLASS) {
+            // Straight shapes: the axis barely bends.
+            clearSidewinderTag();
+            targetTrunkNeckFraction = 0.45F + random.nextFloat() * 0.12F;
+            targetTrunkCurveStrength = Mth.clamp(0.22F + random.nextFloat() * 0.18F, 0.0F, 0.55F);
+        } else if (targetFunnelMorphology == FunnelMorphology.SNAKE) {
+            clearSidewinderTag();
+            targetTrunkNeckFraction = 0.50F + random.nextFloat() * 0.20F;
+            targetTrunkCurveStrength = Mth.clamp(1.20F + random.nextFloat() * 0.45F, 0.0F, 1.70F);
         } else {
             targetTrunkNeckFraction = 0.50F;
             targetTrunkCurveStrength = 1.0F;
@@ -2809,7 +2823,11 @@ public final class DynamicStormState {
             if (!extraShapes) {
                 return FunnelMorphology.DEFAULT;
             }
-            return storm.levelCurIntensityStage >= StormObject.STATE_STAGE3 && shapeFlavour(3) > 0.60D ? FunnelMorphology.CORKSCREW : FunnelMorphology.ROPE;
+            if (storm.levelCurIntensityStage >= StormObject.STATE_STAGE3 && shapeFlavour(3) > 0.60D) {
+                return FunnelMorphology.CORKSCREW;
+            }
+            double thin = shapeFlavour(7);
+            return thin < 0.25D ? FunnelMorphology.NEEDLE : thin < 0.50D ? FunnelMorphology.SNAKE : FunnelMorphology.ROPE;
         }
         if (aspect < broadEdge) {
             if (Config.FLOATER_TORNADOES_ENABLED.get() && storm.isGrowing
@@ -2819,19 +2837,23 @@ public final class DynamicStormState {
             if (canTrunk && shapeFlavour(4) < Config.TORNADO_ELEPHANT_TRUNK_CHANCE.get() * 4.0D) {
                 return FunnelMorphology.ELEPHANT_TRUNK;
             }
+            if (extraShapes && shapeFlavour(8) < 0.18D) {
+                return FunnelMorphology.HOURGLASS;
+            }
             return extraShapes && shapeFlavour(5) > 0.55D ? FunnelMorphology.CONE : FunnelMorphology.DEFAULT;
         }
         if (!extraShapes) {
             return FunnelMorphology.DEFAULT;
         }
-        return shapeFlavour(6) < 0.30D ? FunnelMorphology.BOWL : FunnelMorphology.STOVEPIPE;
+        double broad = shapeFlavour(6);
+        return broad < 0.30D ? FunnelMorphology.BOWL : broad < 0.58D ? FunnelMorphology.BARREL : FunnelMorphology.STOVEPIPE;
     }
 
     /** 0 for the thin shapes, 2 for the broad ones, 1 for everything between. */
     private static int shapeBand(FunnelMorphology shape) {
         return switch (shape) {
-            case ROPE, DRILL_BIT, CORKSCREW -> 0;
-            case STOVEPIPE, BOWL, WEDGE -> 2;
+            case ROPE, DRILL_BIT, CORKSCREW, NEEDLE, SNAKE -> 0;
+            case STOVEPIPE, BOWL, WEDGE, BARREL -> 2;
             default -> 1;
         };
     }
@@ -3291,12 +3313,44 @@ public final class DynamicStormState {
          * funnel - not straight arms poking out of it, so every tube gets its own wrap span.
          */
         public float wrapDegrees() {
-            return 135.0F + hashUnit(0x51ED270BL) * 185.0F;
+            // A helical vortex goes one and a half to two and a half times round the funnel; a horizontal one part way.
+            return helical() ? 560.0F + hashUnit(0x51ED270BL) * 340.0F : 135.0F + hashUnit(0x51ED270BL) * 185.0F;
         }
 
         /** How much of the funnel's height the tube climbs while it wraps around it. */
         public float climbFraction() {
-            return 0.08F + hashUnit(0x2F1B3C7DL) * 0.16F;
+            return helical() ? 0.62F + hashUnit(0x2F1B3C7DL) * 0.18F : 0.10F + hashUnit(0x2F1B3C7DL) * 0.20F;
+        }
+
+        /** The share of tubes that are helical vortices, wound up the funnel rather than rolling in at its foot. */
+        private static final float HELICAL_SHARE = 0.22F;
+
+        /** Whether a tube with this id is a helical vortex. Read off the id, so the server and every client agree. */
+        public static boolean isHelical(long id) {
+            long h = id * 0x9E3779B97F4A7C15L + 0x7E11CA1L;
+            h ^= (h >>> 33);
+            h *= 0xFF51AFD7ED558CCDL;
+            h ^= (h >>> 33);
+            return ((h >>> 40) & 0xFFFFFFL) / (float) 0x1000000 < HELICAL_SHARE;
+        }
+
+        public boolean helical() {
+            return isHelical(id);
+        }
+
+        /**
+         * How far out from the wall the tube sits at a moment, as a multiple of the wall's radius. A horizontal vortex is
+         * born out in the outer circulation and drawn in onto the wall over its attached life, which is the ingestion a
+         * real one goes through; a helical one sits on the wall throughout.
+         */
+        public float wallHugFactorAt(long gameTime) {
+            if (helical()) {
+                return wallHugFactor;
+            }
+            long end = detachTick > 0L ? detachTick : expireTick;
+            float t = Mth.clamp((gameTime - spawnTick) / (float) Math.max(1L, end - spawnTick), 0.0F, 1.0F);
+            float drawn = t * t * (3.0F - 2.0F * t) * 0.85F;
+            return Mth.lerp(drawn, wallHugFactor, 1.0F);
         }
 
         /** Stable per-tentacle random in [0,1) derived from its id, so both sides agree. */

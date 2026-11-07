@@ -1,7 +1,9 @@
 package com.imbet.client;
 
 import com.imbet.Config;
+import com.imbet.radar.RadarPrecipitation;
 import com.imbet.radar.RadarStormSnapshot;
+import com.imbet.weather.PrecipitationField;
 import com.imbet.weather.SpcRisk;
 import com.imbet.weather.TornadoSizeModel;
 import net.minecraft.util.Mth;
@@ -186,77 +188,108 @@ final class RadarEchoField {
     static final int SIGNATURE_NONE = 0;
     /** A mesocyclone: organised rotation that has not tightened into a tornadic signature. */
     static final int SIGNATURE_MESO = 1;
-    /** A tornadic vortex signature: a gate-to-gate couplet strong enough to be marked as tornadic. */
+    /** A tornadic vortex signature: a gate-to-gate couplet at a circulation that reaches the ground. */
     static final int SIGNATURE_TVS = 2;
+    /** An elevated TVS: tornadic-strength rotation in the storm with nothing on the ground under it yet. */
+    static final int SIGNATURE_ETVS = 3;
 
     /**
-     * The couplet strength, in m/s, at which the scope raises a tornadic vortex signature.
+     * The gate-to-gate velocity difference, in m/s, that makes a couplet tornadic.
      *
-     * <p>Sized against what {@code RadarService} actually reports, so the gates fall where the weather does:
-     * a vortex's couplet is its own wind times the rotational factor (about 0.46), so 32 m/s is a gate-to-gate
-     * shear of roughly 155 mph and 19 m/s - the mesocyclone gate - is around 90 mph. A real TVS algorithm is
-     * looking for a couplet of that order in the mid-levels before it flags one, which is why it means a
-     * genuinely violent circulation rather than any tornado at all.
+     * <p>These are the operational tornado detection algorithm's own numbers, read as delta-V - the inbound and outbound
+     * speeds either side of the vortex added together, which is twice the rotational speed {@code RadarService} reports.
+     * A circulation that clears 36 m/s through its depth is a TVS; one already known to be on the ground needs only
+     * 25 m/s at the lowest level. The old gates were set on the rotational speed instead, so only a violent tornado - over
+     * 150 mph - ever showed one, where a real radar flags most tornadoes from the low end of the scale up.
      */
-    static final float TVS_COUPLET_MPS = 32.0F;
+    static final float TVS_DELTA_V = 36.0F;
+    static final float TVS_LOW_LEVEL_DELTA_V = 25.0F;
 
-    /**
-     * The lower couplet a confirmed tornado needs to be marked as a TVS.
-     *
-     * <p>A tornado is already known to be on the ground, so the signature is a warning aid rather than a
-     * maybe: from about 115 mph the couplet is unmistakable and the icon is what an operator would be looking
-     * at. Below it the circulation stays a mesocyclone on the scope, which is the honest reading - a weak
-     * tornado's couplet can genuinely be hard to separate from its parent mesocyclone.
-     */
-    static final float TVS_CONFIRMED_COUPLET_MPS = 24.0F;
-
-    /** The couplet at which rotation reads as an organised mesocyclone rather than noise. */
-    static final float MESO_COUPLET_MPS = 19.0F;
+    /** The delta-V at which rotation reads as an organised mesocyclone rather than noise. */
+    static final float MESO_DELTA_V = 20.0F;
 
     /** The structure strength that marks a mesocyclone on a storm whose couplet is not resolved at range. */
-    static final float MESO_STRUCTURE_STRENGTH = 0.45F;
+    static final float MESO_STRUCTURE_STRENGTH = 0.40F;
 
     /** The icon half-width and height, in panel units, so an icon is one size at every range. */
     static final float SIGNATURE_HALF = 0.021F;
     static final float SIGNATURE_HEIGHT = 0.036F;
 
-    /** Magenta for a tornado signature, amber for a mesocyclone, over a near-black outline. */
-    static final int TVS_ICON_COLOR = 0xFFF13CE8;
-    static final int MESO_ICON_COLOR = 0xFFF2C24A;
+    /**
+     * The colours the WSR-88D's own overlays use: a red inverted triangle for a TVS, the same triangle in yellow for an
+     * elevated one, and a yellow circle for a mesocyclone, each over a near-black outline.
+     */
+    static final int TVS_ICON_COLOR = 0xFFE3262C;
+    static final int ETVS_ICON_COLOR = 0xFFF4DD3C;
+    static final int MESO_ICON_COLOR = 0xFFF4DD3C;
     static final int SIGNATURE_OUTLINE_COLOR = 0xF00B0409;
 
     /**
-     * Which signature a return carries: none, a mesocyclone, or a tornadic vortex signature.
+     * Which signature a return carries.
      *
-     * <p>Both displays ask here so a handheld and a radar block cannot disagree about which storm is
-     * flagged: the same gate, the same icon, the same place on the scope.
+     * <p>Both displays ask here so a handheld and a radar block cannot disagree about which storm is flagged: the same
+     * gate, the same icon, the same place on the scope - a TVS at the circulation, where the couplet in the velocity
+     * product is, and an elevated TVS or a mesocyclone at the mesocyclone.
      */
     static int vortexSignatureTier(RadarStormSnapshot storm) {
-        float couplet = Math.abs((float) storm.rotationMps());
-        if (couplet >= TVS_COUPLET_MPS
-                || (storm.hasConfirmedCirculation() && couplet >= TVS_CONFIRMED_COUPLET_MPS)) {
-            return SIGNATURE_TVS;
+        if (!mesocyclonic(storm)) {
+            return SIGNATURE_NONE;
         }
-        if (couplet >= MESO_COUPLET_MPS || storm.mesoStrength() >= MESO_STRUCTURE_STRENGTH) {
+        float deltaV = Math.abs((float) storm.rotationMps()) * 2.0F;
+        if (storm.vortex()) {
+            if (deltaV >= TVS_DELTA_V || (storm.hasConfirmedCirculation() && deltaV >= TVS_LOW_LEVEL_DELTA_V)) {
+                return SIGNATURE_TVS;
+            }
+            return SIGNATURE_MESO;
+        }
+        if (deltaV >= TVS_DELTA_V) {
+            return SIGNATURE_ETVS;
+        }
+        if (deltaV >= MESO_DELTA_V || storm.mesoStrength() >= MESO_STRUCTURE_STRENGTH) {
             return SIGNATURE_MESO;
         }
         return SIGNATURE_NONE;
     }
 
-    /** How large a tier's icon is: a TVS is the more serious marker, so it is the larger one. */
+    /**
+     * Whether a return's rotation is the kind the detection algorithms flag. They look for shear that is deep - through
+     * several of the radar's tilts - and wide enough for the beam to resolve, which is a mesocyclone and the tornado under
+     * it. A gustnado, a dust devil, a fire whirl or a landspout spins in the lowest few hundred metres, tens of metres
+     * across: the beam overshoots or averages it away, and real radars almost never flag one. A waterspout counts only
+     * when it hangs from a rotating storm; a fair-weather one is as shallow as a landspout.
+     */
+    static boolean mesocyclonic(RadarStormSnapshot storm) {
+        return switch (storm.label()) {
+            case "Gustnado", "Dust Devil", "Snow Devil", "Fire Whirl", "Lava Whirl", "Steam Devil", "Landspout", "Funnel Cloud" -> false;
+            case "Waterspout" -> storm.mesoStrength() >= 0.20F || storm.structureStrength() >= 0.20F;
+            default -> true;
+        };
+    }
+
+    /** Whether a tier is drawn at the circulation rather than at the mesocyclone. */
+    static boolean drawnAtCirculation(int tier) {
+        return tier == SIGNATURE_TVS;
+    }
+
+    /** How large a tier's icon is. */
     static float signatureHalf(int tier) {
-        return tier == SIGNATURE_TVS ? SIGNATURE_HALF : SIGNATURE_HALF * 0.72F;
+        return tier == SIGNATURE_MESO ? SIGNATURE_HALF * 0.80F : SIGNATURE_HALF;
     }
 
     /** The icon colour for a tier. */
     static int signatureColor(int tier) {
-        return tier == SIGNATURE_TVS ? TVS_ICON_COLOR : MESO_ICON_COLOR;
+        return switch (tier) {
+            case SIGNATURE_TVS -> TVS_ICON_COLOR;
+            case SIGNATURE_ETVS -> ETVS_ICON_COLOR;
+            default -> MESO_ICON_COLOR;
+        };
     }
 
     /** The tag a display prints beside the icon, or an empty string for no signature. */
     static String signatureLabel(int tier) {
         return switch (tier) {
             case SIGNATURE_TVS -> "TVS";
+            case SIGNATURE_ETVS -> "ETVS";
             case SIGNATURE_MESO -> "MESO";
             default -> "";
         };
@@ -519,6 +552,285 @@ final class RadarEchoField {
             case 1 -> withAlpha(0x8FD05F, 188);
             default -> withAlpha(0x40505A, 160);
         };
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The products drawn from what is really there: the storm's own rain field, and the wind in it.
+    // ------------------------------------------------------------------------------------------------
+
+    /** The storm's precipitation field, unpacked once for a draw, or null for a return with none. */
+    static PrecipitationField.Geometry fieldOf(RadarStormSnapshot storm) {
+        return storm.hasPrecipitationField() ? RadarPrecipitation.geometry(storm.precipitation()) : null;
+    }
+
+    /** How far from the storm's centre its field reaches, in blocks: the trailing rain runs about two radii downwind. */
+    static double fieldReachBlocks(PrecipitationField.Geometry field) {
+        return Math.max(16.0D, field.radius()) * 2.5D;
+    }
+
+    /**
+     * Reflectivity at a world position, in dBZ, read off the rain that is really falling there.
+     *
+     * <p>The field is the one the rain in the world is drawn from, so the forward-flank core, the hook wrapping the tornado
+     * and the clear notch are where the curtains and the clear slot actually are. Two things are laid over it that the
+     * field does not carry: the ragged outline and embedded cells of a real echo - the field is read through a small warp,
+     * so the parts keep their places and only their edges tear - and the two returns that are not rain at all, the hail
+     * core beside the updraft and the debris ball lofted by a strong tornado.
+     */
+    static double reflectivityAtWorld(RadarStormSnapshot storm, PrecipitationField.Geometry field, double worldX, double worldZ) {
+        float[] packed = storm.precipitation();
+        double dx = worldX - storm.x();
+        double dz = worldZ - storm.z();
+        double forward = dx * RadarPrecipitation.forwardX(packed) + dz * RadarPrecipitation.forwardZ(packed);
+        double right = dx * RadarPrecipitation.rightX(packed) + dz * RadarPrecipitation.rightZ(packed);
+        double radius = Math.max(8.0D, field.radius());
+        float u = (float) (forward / radius);
+        float v = (float) (right / radius);
+        double warpForward = forward + echoNoise(storm.id() ^ 0x31L, u * 2.4F, v * 2.4F, 3) * radius * 0.11D;
+        double warpRight = right + echoNoise(storm.id() ^ 0x77L, u * 2.4F + 7.0F, v * 2.4F, 3) * radius * 0.11D;
+        double density = PrecipitationField.densityAtLocal(field, warpForward, warpRight);
+        double dbz = ECHO_FLOOR_DBZ - 1.0D;
+        if (density > 0.006D) {
+            double peak = Mth.clamp(storm.reflectivityDbz() + 4.0D, 38.0D, 66.0D);
+            double cells = echoNoise(storm.id(), u * 3.6F, v * 3.6F, 3);
+            // Most of a real echo is light and moderate rain round a much smaller heavy core, so the field is mapped with
+            // contrast: thin rain reads green, the bulk yellow, and only the densest of the core reaches the reds.
+            dbz = 10.0D + (peak - 10.0D) * Math.pow(density, 1.15D) + cells * (4.0D + 6.0D * density);
+            if (storm.hailStrength() > 0.25F) {
+                double hailForward = field.coreForward() + (field.mesoForward() - field.coreForward()) * 0.38D;
+                double hailRight = field.coreRight() + (field.mesoRight() - field.coreRight()) * 0.38D;
+                double q = (square(forward - hailForward) + square(right - hailRight)) / square(radius * 0.17D);
+                if (q < 1.0D) {
+                    dbz += (1.0D - q) * (5.0D + 11.0D * storm.hailStrength()) * Math.min(1.0D, density * 2.0D);
+                }
+            }
+        }
+        if (storm.vortex() && storm.windMph() >= 120.0D) {
+            double ball = Math.max(6.0D, storm.width() * 0.60D);
+            double q = (square(worldX - storm.circulationX()) + square(worldZ - storm.circulationZ())) / square(ball);
+            if (q < 1.0D) {
+                double debris = 50.0D + Math.min(16.0D, (storm.windMph() - 120.0D) / 9.0D)
+                        + echoNoise(storm.id() ^ 0xD36BL, u * 14.0F, v * 14.0F, 1) * 5.0D;
+                dbz = Math.max(dbz, debris - q * 8.0D);
+            }
+        }
+        return dbz;
+    }
+
+    /**
+     * Radial velocity at a world position, in m/s, outbound positive - or NaN where there is no echo to measure it in.
+     *
+     * <p>A velocity product is the wind toward or away from the radar, so this builds the wind and takes its component
+     * along the beam. The storm moves in its environment's wind; low-level air is drawn in from the forward right through
+     * the notch toward the mesocyclone; the rear-flank downdraft throws air out round the back of it, and the
+     * forward-flank core's cold air spreads out of the rain. Over that turns the mesocyclone, broad and a sixth of the
+     * storm across, and inside it the tornado, tight and fast. Taken along the beam, a vortex is a couplet - inbound on
+     * one side, outbound on the other, across the beam - and a tornado's is gate to gate, right where the tornado is.
+     * Where there is no rain the radar has nothing to measure, so the product is blank there, except at the tornado,
+     * where the debris is the target.
+     */
+    static float radialVelocityAtWorld(RadarStormSnapshot storm, PrecipitationField.Geometry field, double worldX, double worldZ,
+                                       double radarX, double radarZ) {
+        double beamX = worldX - radarX;
+        double beamZ = worldZ - radarZ;
+        double beam = Math.sqrt(beamX * beamX + beamZ * beamZ);
+        if (beam < 1.0D) {
+            return Float.NaN;
+        }
+        beamX /= beam;
+        beamZ /= beam;
+        float[] packed = storm.precipitation();
+        double forwardX = RadarPrecipitation.forwardX(packed);
+        double forwardZ = RadarPrecipitation.forwardZ(packed);
+        double rightX = RadarPrecipitation.rightX(packed);
+        double rightZ = RadarPrecipitation.rightZ(packed);
+        double dx = worldX - storm.x();
+        double dz = worldZ - storm.z();
+        double forward = dx * forwardX + dz * forwardZ;
+        double right = dx * rightX + dz * rightZ;
+        double radius = Math.max(8.0D, field.radius());
+        double density = PrecipitationField.densityAtLocal(field, forward, right);
+        double toVortex = storm.vortex()
+                ? Math.sqrt(square(worldX - storm.circulationX()) + square(worldZ - storm.circulationZ()))
+                : Double.MAX_VALUE;
+        double vortexCore = Math.max(5.0D, storm.width() * 0.5D);
+        if (density < 0.01D && toVortex > vortexCore * 3.0D) {
+            return Float.NaN;
+        }
+        double sign = storm.rotationMps() < 0.0D ? -1.0D : 1.0D;
+        // The environment's wind, along the storm's motion.
+        double environment = 12.0D + storm.structureStrength() * 6.0D;
+        double alongForward = environment;
+        double alongRight = 0.0D;
+        double fromMesoForward = forward - field.mesoForward();
+        double fromMesoRight = right - field.mesoRight();
+        double mesoDistance = Math.max(1.0D, Math.hypot(fromMesoForward, fromMesoRight));
+        // Inflow through the notch, toward the mesocyclone.
+        double inflow = (8.0D + 10.0D * storm.mesoStrength())
+                * Math.exp(-(square(forward - field.notchForward()) + square(right - field.notchRight())) / square(radius * 0.45D));
+        alongForward -= fromMesoForward / mesoDistance * inflow;
+        alongRight -= fromMesoRight / mesoDistance * inflow;
+        // The rear-flank downdraft, out from behind the mesocyclone.
+        double rearFlank = (6.0D + 16.0D * storm.structureStrength())
+                * Math.exp(-(square(forward - field.rearFlankForward()) + square(right - field.rearFlankRight())) / square(radius * 0.40D));
+        alongForward += fromMesoForward / mesoDistance * rearFlank;
+        alongRight += fromMesoRight / mesoDistance * rearFlank;
+        // The forward-flank core's outflow.
+        double fromCoreForward = forward - field.coreForward();
+        double fromCoreRight = right - field.coreRight();
+        double coreDistance = Math.max(1.0D, Math.hypot(fromCoreForward, fromCoreRight));
+        double outflow = 5.0D * field.coreStrength() * Math.exp(-square(coreDistance) / square(radius * 0.55D));
+        alongForward += fromCoreForward / coreDistance * outflow;
+        alongRight += fromCoreRight / coreDistance * outflow;
+        double windX = alongForward * forwardX + alongRight * rightX;
+        double windZ = alongForward * forwardZ + alongRight * rightZ;
+        // The mesocyclone, as a Rankine vortex.
+        double mesoX = worldX - storm.mesoX();
+        double mesoZ = worldZ - storm.mesoZ();
+        double mesoRadius = Math.max(1.0D, Math.sqrt(mesoX * mesoX + mesoZ * mesoZ));
+        double mesoCore = radius * 0.16D;
+        double mesoPeak = 8.0D + storm.mesoStrength() * 26.0D;
+        // A real vortex's wind falls off faster outside its core than a pure 1/r, which is what keeps a couplet a couplet
+        // rather than the whole storm. Read as 1/r the two vortices' outer flow split the entire echo into green and red.
+        double mesoSpeed = mesoRadius <= mesoCore ? mesoPeak * mesoRadius / mesoCore : mesoPeak * Math.pow(mesoCore / mesoRadius, 0.9D);
+        windX += -mesoZ / mesoRadius * mesoSpeed * sign;
+        windZ += mesoX / mesoRadius * mesoSpeed * sign;
+        // The tornado, tight inside it.
+        if (storm.vortex() && toVortex > 0.5D) {
+            double tornadoX = worldX - storm.circulationX();
+            double tornadoZ = worldZ - storm.circulationZ();
+            double peak = Math.abs(storm.rotationMps());
+            double speed = toVortex <= vortexCore ? peak * toVortex / vortexCore
+                    : peak * Math.pow(vortexCore / toVortex, 1.6D) * Mth.clamp(1.0D - (toVortex - vortexCore * 6.0D) / (vortexCore * 4.0D), 0.0D, 1.0D);
+            windX += -tornadoZ / toVortex * speed * sign;
+            windZ += tornadoX / toVortex * speed * sign;
+        }
+        double radial = windX * beamX + windZ * beamZ;
+        radial += echoNoise(storm.id() ^ 0x5EEDL, (float) (worldX / 40.0D), (float) (worldZ / 40.0D), 2) * 2.5D;
+        return (float) radial;
+    }
+
+    private static double square(double value) {
+        return value * value;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // A squall line: a long, thin band rather than a cell.
+    // ------------------------------------------------------------------------------------------------
+
+    /** How far from the line's middle its echo reaches, in blocks. */
+    static double lineReachBlocks(RadarStormSnapshot storm) {
+        float[] p = storm.precipitation();
+        return Math.hypot(p[2] - p[0], p[3] - p[1]) * 0.5D + p[4] * 4.6D + p[5];
+    }
+
+    /**
+     * Where a point is against the line: how far along it (0 to 1), how far ahead of its leading edge in blocks - the edge
+     * bowed forward in the middle - and how far past its ends.
+     */
+    private static double[] lineFrame(RadarStormSnapshot storm, double worldX, double worldZ) {
+        float[] p = storm.precipitation();
+        double lineX = p[2] - p[0];
+        double lineZ = p[3] - p[1];
+        double lengthSqr = Math.max(1.0D, lineX * lineX + lineZ * lineZ);
+        double length = Math.sqrt(lengthSqr);
+        double t = ((worldX - p[0]) * lineX + (worldZ - p[1]) * lineZ) / lengthSqr;
+        double along = Mth.clamp(t, 0.0D, 1.0D);
+        double onLineX = p[0] + lineX * along;
+        double onLineZ = p[1] + lineZ * along;
+        double ahead = (worldX - onLineX) * p[6] + (worldZ - onLineZ) * p[7];
+        double beyond = t < 0.0D ? -t * length : t > 1.0D ? (t - 1.0D) * length : 0.0D;
+        // The same bow the world's rain, shelf and gust front are laid along, so the line on the scope is where the line is.
+        double bow = p[5] * Math.sin(Math.PI * along);
+        return new double[] {along, ahead - bow, beyond};
+    }
+
+    /**
+     * A squall line's reflectivity at a world position.
+     *
+     * <p>A narrow convective line of heavy cells strung along its length, sharpest on its leading edge; behind it a weaker
+     * transition zone, and then the broad, light trailing stratiform rain that fills the deck for a long way back. Behind
+     * the apex of a bowing line the rear inflow jet cuts a notch into that stratiform rain, and at the line's cyclonic end
+     * the rain curls round behind it into a comma head.
+     */
+    static double lineReflectivityAtWorld(RadarStormSnapshot storm, double worldX, double worldZ) {
+        float[] p = storm.precipitation();
+        double[] frame = lineFrame(storm, worldX, worldZ);
+        double along = frame[0];
+        double ahead = frame[1];
+        double beyond = frame[2];
+        double thickness = Math.max(16.0D, p[4]);
+        float u = (float) (worldX / thickness);
+        float v = (float) (worldZ / thickness);
+        double cells = echoNoise(storm.id(), u * 1.3F, v * 1.3F, 3);
+        double strung = echoNoise(storm.id() ^ 0x1E5L, (float) (along * 9.0D), 0.5F, 2);
+        double peak = Mth.clamp(storm.reflectivityDbz() + 6.0D, 45.0D, 66.0D);
+        double core = thickness * 0.30D;
+        double edge = ahead > 0.0D ? ahead / (core * 0.55D) : ahead / core;
+        double convective = (peak + strung * 7.0D) * Math.exp(-edge * edge);
+        double behind = -ahead;
+        double bowShare = Mth.clamp(p[5] / 130.0D, 0.0D, 1.0D);
+        double stratiform = 0.0D;
+        double transition = core * 0.8D;
+        if (behind > transition) {
+            // Heaviest a little way behind the transition zone - the bright band, where the snow falling out of the deck
+            // melts - and lighter from there back. The region is deepest behind the middle of the line, where the rear
+            // inflow feeds it, and thins toward the ends, with a ragged back edge: a lens behind the line, not a box.
+            double length = Math.hypot(p[2] - p[0], p[3] - p[1]);
+            double depth = Math.min(thickness * 2.4D, length * 0.32D) * Math.pow(Math.sin(Math.PI * along), 0.6D)
+                    * (0.85D + 0.30D * echoNoise(storm.id() ^ 0x57A7L, (float) (along * 5.0D), 0.25F, 2));
+            double rise = smoothstepD(Mth.clamp((behind - transition) / (thickness * 0.55D), 0.0D, 1.0D));
+            double into = Math.max(0.0D, behind - transition - thickness * 0.55D) / Math.max(1.0D, depth);
+            double fall = into < 1.0D ? 1.0D - 0.42D * into : 0.58D * Math.exp(-square((into - 1.0D) * 2.6D));
+            stratiform = (34.0D + cells * 4.0D) * rise * fall;
+            double notch = Math.exp(-square((along - 0.5D) / 0.12D) - square((behind - thickness * 1.2D) / (thickness * 0.6D)));
+            stratiform -= notch * 16.0D * bowShare;
+        }
+        // The comma head, behind the cyclonic end: the end on the left of the line's track, which is the northern end of a
+        // line moving east. Left of a heading (x, z) is (z, -x), with north at negative z.
+        boolean startIsCyclonic = (p[0] - p[2]) * p[7] - (p[1] - p[3]) * p[6] > 0.0D;
+        double endX = startIsCyclonic ? p[0] : p[2];
+        double endZ = startIsCyclonic ? p[1] : p[3];
+        double headX = endX - p[6] * thickness * 1.5D;
+        double headZ = endZ - p[7] * thickness * 1.5D;
+        double head = (30.0D + cells * 5.0D) * Math.exp(-(square(worldX - headX) + square(worldZ - headZ)) / square(thickness * 1.7D));
+        double endFade = Math.exp(-square(beyond / (thickness * 1.2D)));
+        return Math.max(Math.max(convective, stratiform) * endFade, head) + cells * 3.0D;
+    }
+
+    /**
+     * A squall line's radial velocity at a world position, or NaN where it has no echo. The line moves with its
+     * environment's wind; its cold outflow surges forward under the leading edge; and behind a bowing line the rear inflow
+     * jet runs forward into it, strongest behind the apex of the bow - which is what drives the bow in the first place.
+     */
+    static float lineVelocityAtWorld(RadarStormSnapshot storm, double worldX, double worldZ, double radarX, double radarZ) {
+        if (lineReflectivityAtWorld(storm, worldX, worldZ) < ECHO_FLOOR_DBZ) {
+            return Float.NaN;
+        }
+        double beamX = worldX - radarX;
+        double beamZ = worldZ - radarZ;
+        double beam = Math.sqrt(beamX * beamX + beamZ * beamZ);
+        if (beam < 1.0D) {
+            return Float.NaN;
+        }
+        float[] p = storm.precipitation();
+        double[] frame = lineFrame(storm, worldX, worldZ);
+        double along = frame[0];
+        double ahead = frame[1];
+        double thickness = Math.max(16.0D, p[4]);
+        double bowShare = Mth.clamp(p[5] / 130.0D, 0.0D, 1.0D);
+        double environment = 14.0D;
+        double outflow = 16.0D * Math.exp(-square((ahead + thickness * 0.09D) / (thickness * 0.6D)));
+        double rearInflow = 22.0D * bowShare * Math.exp(-square((along - 0.5D) / 0.18D))
+                * Math.exp(-square((-ahead - thickness * 1.6D) / (thickness * 1.2D)));
+        double speed = environment + outflow + rearInflow;
+        double radial = (p[6] * speed * beamX + p[7] * speed * beamZ) / beam;
+        radial += echoNoise(storm.id() ^ 0x5EEDL, (float) (worldX / 40.0D), (float) (worldZ / 40.0D), 2) * 2.5D;
+        return (float) radial;
+    }
+
+    private static double smoothstepD(double t) {
+        return t * t * (3.0D - 2.0D * t);
     }
 
     // ------------------------------------------------------------------------------------------------

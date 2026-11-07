@@ -81,6 +81,9 @@ public final class OceanWaveRenderer {
     /** How far above the sand the film of a swash sits, so it does not fight the block it is lying on. */
     private static final float SWASH_FILM = 0.02F;
 
+    /** How much of a climb each block across the sand counts as, so a level beach is run up like a gentle one. */
+    private static final float SWASH_BEACH_SLOPE = 0.45F;
+
     /** The sea state the run-up is at its configured size at, in blocks of crest height. */
     private static final float RUN_UP_REFERENCE_AMPLITUDE = 0.9F;
 
@@ -618,7 +621,9 @@ public final class OceanWaveRenderer {
         // The step the sea can climb is its own share of a real swell, and the knob's reach is spent above it.
         // Both are behind the switch and behind the knob: surf off, or a run-up of nothing, is no swash at all
         // rather than a swash on the one row of sand the swash always used to wet whatever the settings said.
-        float reach = enabled && runUp > 0.0F ? BEACH_STEP * swellShare + runUp * scale : 0.0F;
+        // The run-up is the swell's own: a calm sea barely wets the sand, and a storm sea runs well up the beach. It used to
+        // carry a floor, so even still water laid a band of white film several blocks up every beach.
+        float reach = enabled && runUp > 0.0F ? BEACH_STEP * swellShare + runUp * scale * swellShare : 0.0F;
         float foam = enabled ? (float) Mth.clamp(Config.OCEAN_WAVES_SURF_FOAM.get(), 0.0D, 1.0D) : 0.0F;
         return new Surf(
                 enabled,
@@ -650,6 +655,11 @@ public final class OceanWaveRenderer {
         float fadeStart = radius * 0.66F;
         float fadeSpan = Math.max(1.0F, radius - fadeStart);
         Surf surf = surfSettings();
+        // Whitecaps are the wind breaking the crests, so they need wind: none on a calm sea, starting at a moderate
+        // breeze and full in a gale. They used to come from the crest's height alone, so still water was flecked white.
+        float maxAmplitude = Math.max(0.1F, Config.OCEAN_WAVES_MAX_AMPLITUDE_BLOCKS.get().floatValue());
+        float seaState = Mth.clamp((OceanWaveField.peakHeight() / maxAmplitude - 0.22F) / 0.40F, 0.0F, 1.0F);
+        foamStrength *= seaState * seaState * (3.0F - 2.0F * seaState);
 
         for (int i = 0; i < shoreCellCount; i++) {
             ShoreCell shore = shoreCells[i];
@@ -720,10 +730,13 @@ public final class OceanWaveRenderer {
                         float crestFoam = sample.crest() <= foamThreshold ? 0.0F
                                 : Mth.clamp((sample.crest() - foamThreshold) / Math.max(0.001F, 1.0F - foamThreshold), 0.0F, 1.0F)
                                 * foamStrength;
-                        float shadeCrest = 0.5F + (sample.crest() - 0.5F) * clip;
-                        gridColor[index] = colorFor(gridTint[index], shadeCrest, Math.max(crestFoam, surfFoam), alpha);
+                        // Toward the edge the shading settles to flat water as well as the alpha fading, so the
+                        // surface meets the plain sea beyond it without a line.
+                        float shadeCrest = 0.5F + (sample.crest() - 0.5F) * clip * fade;
+                        gridColor[index] = colorFor(gridTint[index], shadeCrest, Math.max(crestFoam, surfFoam) * fade, alpha);
                     }
-                    gridWaveY[index] = gridSurfaceY[index] + drawn;
+                    // And it lies down onto the still water: drawn at full height out to the edge, it ended on a step.
+                    gridWaveY[index] = gridSurfaceY[index] + drawn * fade;
                     continue;
                 }
 
@@ -748,17 +761,61 @@ public final class OceanWaveRenderer {
                 double anchorX = gridOriginX + (double) (anchor % count) * step;
                 double anchorZ = gridOriginZ + (double) (anchor / count) * step;
                 float phase = OceanWaveField.surfaceAt(anchorX, anchorZ, time).crest();
-                // The waterline advances with each crest and drains back between them. The profile is what
-                // turns that into a waterline rather than a fade: the swash is a single depth that has run a
-                // certain way up the sand, so it wets everything below where it got to and nothing above it.
-                float reach = surf.runUpReach() * (0.3F + 0.7F * phase);
-                float coverage = Mth.clamp((reach - above) / Math.max(0.6F * above, 0.25F), 0.0F, 1.0F);
+                // How far the swash has to climb to get here: up, and across. Most beaches in the game are level, a
+                // block over the water, and measured only upward every sample of one is the same climb - the wash lay
+                // over the whole beach at once as a flat slab with a ruler-straight edge. Across the sand counts as a
+                // gentle slope, so the wash thins out and stops a few blocks in, wherever the beach is.
+                double sampleX = gridOriginX + (double) (index % count) * step;
+                double sampleZ = gridOriginZ + (double) (index / count) * step;
+                float across = (float) Math.hypot(sampleX - anchorX, sampleZ - anchorZ);
+                float climb = above + across * SWASH_BEACH_SLOPE;
+                // The waterline advances with each crest and drains back between them, and no two stretches of it
+                // arrive together: each bit of shore runs up on its own part of the wave train, which is what makes
+                // the edge ragged. The profile turns that into a waterline rather than a fade: the swash is a single
+                // depth that has run a certain way up the sand, so it wets everything below where it got to and
+                // nothing above it.
+                float along = shoreNoise(sampleX, sampleZ, time);
+                float reach = surf.runUpReach() * (0.3F + 0.7F * phase) * (0.60F + 0.65F * along);
+                float coverage = Mth.clamp((reach - climb) / Math.max(0.6F * climb, 0.25F), 0.0F, 1.0F);
+                // Sand is only sampled inside the lattice cells that hold water, so the wash cannot run past the edge of
+                // its cell. It thins out across the cell instead, so where that edge does cut it, little is left to cut.
+                float acrossShare = Mth.clamp(across / Math.max(1.0F, cell * 0.8F), 0.0F, 1.0F);
+                coverage *= 1.0F - acrossShare * acrossShare * (3.0F - 2.0F * acrossShare);
                 gridWaveY[index] = gridLandTop[index] + SWASH_FILM;
-                int swashAlpha = Math.round(alpha * coverage);
+                // A swash is a thin sheet of water running up the sand with a line of foam along its leading edge, not a
+                // white sheet: clear and wet behind the edge, foamy at it. It used to be drawn at least half white all
+                // the way up, which laid a grey slab along every beach.
+                int swashAlpha = Math.round(alpha * coverage * 0.62F);
+                float foamLine = 4.0F * coverage * (1.0F - coverage);
                 gridColor[index] = swashAlpha <= 2 ? 0
-                        : colorFor(gridTint[index], 0.5F, Math.max(surf.foam() * 0.9F, 0.55F + 0.45F * coverage), swashAlpha);
+                        : colorFor(gridTint[index], 0.55F, surf.foam() * (0.10F + 0.70F * foamLine), swashAlpha);
             }
         }
+    }
+
+    /**
+     * How far up the sand this stretch of shore's swash gets, from 0 to 1: a smooth value noise a few blocks across that
+     * drifts slowly, so neighbouring stretches arrive and drain at different moments. The wave field cannot give this -
+     * where its crests run parallel to the shore, every point along it is at the same phase.
+     */
+    private static float shoreNoise(double x, double z, float time) {
+        double u = x / 4.5D + time * 0.07D;
+        double v = z / 4.5D - time * 0.05D;
+        int ix = Mth.floor(u);
+        int iz = Mth.floor(v);
+        float fx = (float) (u - ix);
+        float fz = (float) (v - iz);
+        fx = fx * fx * (3.0F - 2.0F * fx);
+        fz = fz * fz * (3.0F - 2.0F * fz);
+        return Mth.lerp(fz, Mth.lerp(fx, latticeHash(ix, iz), latticeHash(ix + 1, iz)),
+                Mth.lerp(fx, latticeHash(ix, iz + 1), latticeHash(ix + 1, iz + 1)));
+    }
+
+    private static float latticeHash(int x, int z) {
+        long h = x * 73856093L ^ z * 19349663L;
+        h = (h ^ (h >>> 13)) * 0x5BD1E995L;
+        h ^= h >>> 15;
+        return (h >>> 8 & 0xFFFFL) / 65535.0F;
     }
 
     /** One vertex colour: the biome tint, shaded by the wave phase, with the given amount of foam. */

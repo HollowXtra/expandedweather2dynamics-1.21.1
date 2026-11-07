@@ -185,7 +185,24 @@ public final class SupercellStructureService {
                 character += 0.05F; // a fresh merge inherits the partner's moisture budget
             }
         }
-        return Mth.clamp(character, 0.0F, 1.0F);
+        return Mth.clamp(applyRainWrapChance(storm, character), 0.0F, 1.0F);
+    }
+
+    /**
+     * The configured rain-wrap chance, if one is set: each storm rolls once, by its id, and a storm that rolls a wrap is
+     * made a high-precipitation storm while one that does not is held under that line. Its character keeps the rest of
+     * its moisture, so a wrapped storm is still wetter or drier than another wrapped one, and so is an unwrapped one.
+     */
+    private static float applyRainWrapChance(StormObject storm, float character) {
+        double chance = Config.SUPERCELL_RAIN_WRAP_CHANCE.get();
+        if (chance < 0.0D) {
+            return character;
+        }
+        float highPrecipitation = highPrecipitationThreshold();
+        boolean wrapped = unitHash(storm.ID, 0x2A1F0B5EL) < chance;
+        return wrapped
+                ? Math.max(character, Math.min(1.0F, highPrecipitation + 0.10F))
+                : Math.min(character, Math.max(0.0F, highPrecipitation - 0.04F));
     }
 
     private static float unitHash(long id, long salt) {
@@ -292,6 +309,11 @@ public final class SupercellStructureService {
     }
 
     /** The rain of a storm with no supercell structure: a shield around it, densest at its core. */
+    /** A small round core of rain, for a cell that is part of something larger rather than a storm of its own. */
+    public static PrecipitationField.Geometry embeddedCellField(double radius) {
+        return ordinaryStormField(radius);
+    }
+
     private static PrecipitationField.Geometry ordinaryStormField(double radius) {
         return new PrecipitationField.Geometry(radius, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D,
                 0.85D, 0.0D, 0.0D, 0.30D, 0.25D);
@@ -391,7 +413,10 @@ public final class SupercellStructureService {
             if (hail >= 0.50F && ffd <= 0.52F && !storm.isPrecipitating()) {
                 return SupercellMode.LP;
             }
-            if ((storm.isPrecipitating() && ffd >= 0.62F && rfd >= 0.38F) || ffd >= 0.78F) {
+            // With a rain-wrap chance set the storm's own roll decides whether it is wrapped, so a strong forward flank
+            // alone does not make it an HP storm: one that rolled a wrap is already over the line above.
+            boolean rolledByChance = Config.SUPERCELL_RAIN_WRAP_CHANCE.get() >= 0.0D;
+            if (!rolledByChance && ((storm.isPrecipitating() && ffd >= 0.62F && rfd >= 0.38F) || ffd >= 0.78F)) {
                 return SupercellMode.HP;
             }
             return SupercellMode.CLASSIC;

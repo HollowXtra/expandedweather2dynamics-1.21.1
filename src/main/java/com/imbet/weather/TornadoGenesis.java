@@ -104,24 +104,34 @@ public final class TornadoGenesis {
         if (progress <= 0.0F) {
             return start;
         }
-        // Deliberately concave. The old mid-timeline values (0.55 at touchdown, 0.78 a moment
-        // later) let Weather2's fast-moving stage ladder carry a young storm straight past 150 mph
-        // the instant it was labelled tornadic. The wind now stays under the damage floor for most
-        // of the timeline and only reaches the top of the scale as the funnel actually matures: an
-        // EF5's stage wind is 321 mph, and 0.45 of it at touchdown is 144, still under 150.
-        if (progress < organizingEnd) {
-            return Mth.lerp(smoothstep(progress / organizingEnd), start, 0.12F);
+        if (progress >= 1.0F) {
+            return 1.0F;
         }
-        if (progress < touchdown) {
-            return Mth.lerp(smoothstep(rampWithin(progress, organizingEnd, touchdown)), 0.12F, 0.45F);
-        }
-        if (progress < matureStart) {
-            return Mth.lerp(smoothstep(rampWithin(progress, touchdown, matureStart)), 0.45F, 0.60F);
-        }
-        if (progress < 1.0F) {
-            return Mth.lerp(smoothstep(rampWithin(progress, matureStart, 1.0F)), 0.60F, 1.0F);
-        }
-        return 1.0F;
+        // Exponential, then saturating. A tornado spins up the way any instability grows: slowly while it is organising,
+        // then faster and faster as it tightens - stretching makes it spin faster, and spinning faster stretches it more -
+        // until it runs out of what is feeding it and levels off at the storm's own strength. That is the logistic curve,
+        // whose early part is a plain exponential. The midpoint sits a little after touchdown, so the wind is still low at
+        // the moment the funnel reaches the ground (an EF5's stage wind is 321 mph, and this is about a third of it there)
+        // and the rush comes as the vortex matures. The old ramp was four smoothsteps end to end, each flat at both ends,
+        // so a forming tornado grew, paused, grew and paused again.
+        float midpoint = Math.min(0.92F, touchdown + 0.12F);
+        return Mth.lerp(logisticGrowth(progress, midpoint, WIND_GROWTH_RATE), start, 1.0F);
+    }
+
+    /** How sharply the wind's growth turns from slow to fast, per whole timeline. */
+    private static final float WIND_GROWTH_RATE = 9.0F;
+    /** The same for the width, which grows more gently and a little later than the wind. */
+    private static final float WIDTH_GROWTH_RATE = 7.0F;
+
+    /**
+     * A logistic curve over the timeline, rescaled so that it is exactly 0 at the start and 1 at the end: exponential
+     * growth at first, turning over at {@code midpoint} and levelling off toward the end.
+     */
+    static float logisticGrowth(float progress, float midpoint, float rate) {
+        double low = 1.0D / (1.0D + Math.exp(rate * midpoint));
+        double high = 1.0D / (1.0D + Math.exp(-rate * (1.0D - midpoint)));
+        double value = 1.0D / (1.0D + Math.exp(-rate * (Mth.clamp(progress, 0.0F, 1.0F) - midpoint)));
+        return (float) Mth.clamp((value - low) / (high - low), 0.0D, 1.0D);
     }
 
     /**
@@ -139,19 +149,13 @@ public final class TornadoGenesis {
         if (progress <= 0.0F) {
             return 0.22F;
         }
-        if (progress < organizingEnd) {
-            return Mth.lerp(smoothstep(progress / organizingEnd), 0.22F, 0.34F);
+        if (progress >= 1.0F) {
+            return 1.0F;
         }
-        if (progress < touchdown) {
-            return Mth.lerp(smoothstep(rampWithin(progress, organizingEnd, touchdown)), 0.34F, 0.58F);
-        }
-        if (progress < matureStart) {
-            return Mth.lerp(smoothstep(rampWithin(progress, touchdown, matureStart)), 0.58F, 0.74F);
-        }
-        if (progress < 1.0F) {
-            return Mth.lerp(smoothstep(rampWithin(progress, matureStart, 1.0F)), 0.74F, 1.0F);
-        }
-        return 1.0F;
+        // The same exponential-then-saturating growth as the wind, a little later and gentler: a funnel thickens as the
+        // vortex it is the visible part of strengthens, and goes on widening after the wind has done most of its growing.
+        float midpoint = Math.min(0.94F, touchdown + 0.18F);
+        return Mth.lerp(logisticGrowth(progress, midpoint, WIDTH_GROWTH_RATE), 0.22F, 1.0F);
     }
 
     /**

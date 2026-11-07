@@ -4,6 +4,7 @@ import com.imbet.Config;
 import com.imbet.weather.AddonWeatherEventService;
 import com.imbet.weather.DynamicStormController;
 import com.imbet.weather.DynamicStormState;
+import com.imbet.weather.PrecipitationField;
 import com.imbet.weather.SpcIntensity;
 import com.imbet.weather.SpcRisk;
 import com.imbet.weather.StormClassifier;
@@ -49,7 +50,7 @@ public final class RadarService {
                 if (!drawsEcho(snapshot)) {
                     continue;
                 }
-                snapshots.add(fromPhysicalSnapshot(radarPos, snapshot));
+                snapshots.add(fromPhysicalSnapshot(radarPos, snapshot, manager));
             }
             snapshots.sort(Comparator.comparingInt(RadarStormSnapshot::severity).reversed());
             return snapshots;
@@ -146,7 +147,9 @@ public final class RadarService {
                         state.hailCoreStrength(),
                         SupercellStructureService.modeFor(storm, state).ordinal(),
                         structure.mesocyclone().x,
-                        structure.mesocyclone().z
+                        structure.mesocyclone().z,
+                        // The rain itself, so the scope draws the echo from where it is really falling.
+                        radarField(storm, state, structure)
                 ));
                 if (dynamicVortex) {
                     for (DynamicStormState.TornadoCirculationState satellite : state.satelliteTornadoes()) {
@@ -254,7 +257,7 @@ public final class RadarService {
         return snapshot.precipitating() || snapshot.confirmedCirculation();
     }
 
-    private static RadarStormSnapshot fromPhysicalSnapshot(Vec3 radarPos, WeatherPhysicalSnapshot snapshot) {
+    private static RadarStormSnapshot fromPhysicalSnapshot(Vec3 radarPos, WeatherPhysicalSnapshot snapshot, WeatherManagerServer manager) {
         SpcRisk risk = riskForSnapshot(snapshot);
         boolean confirmed = snapshot.confirmedCirculation();
         boolean vortex = snapshot.trackableVortex();
@@ -306,8 +309,42 @@ public final class RadarService {
                 snapshot.hailStrength(),
                 snapshot.structureMode(),
                 snapshot.structureMesocyclone().x,
-                snapshot.structureMesocyclone().z
+                snapshot.structureMesocyclone().z,
+                precipitationFor(snapshot, manager)
         );
+    }
+
+    /**
+     * The precipitation field of the storm a snapshot describes, for the scope to draw its echo from - or nothing, for a
+     * snapshot that is not a storm of its own. A satellite's id is counted separately from the storms', so a storm is only
+     * taken as the snapshot's when it is also standing where the snapshot says it is.
+     */
+    private static float[] precipitationFor(WeatherPhysicalSnapshot snapshot, WeatherManagerServer manager) {
+        if (manager == null || snapshot.stormPosition() == null) {
+            return new float[0];
+        }
+        // A squall line is an event, not a storm object: it carries the line itself.
+        if (snapshot.subtype() == StormSubtype.SQUALL_LINE) {
+            return manager.getWorld() instanceof ServerLevel level ? AddonWeatherEventService.radarLineField(level, snapshot.sourceId()) : new float[0];
+        }
+        if (!(manager.getStormObjectByID(snapshot.sourceId()) instanceof StormObject storm) || storm.pos == null
+                || storm.pos.distanceToSqr(snapshot.stormPosition()) > 1.0D) {
+            return new float[0];
+        }
+        DynamicStormState state = DynamicStormController.stateFor(storm);
+        return radarField(storm, state, SupercellStructureService.sample(storm, state));
+    }
+
+    /**
+     * The rain field a storm's echo is drawn from. A cell that belongs to a squall line is one of the cells the line is made
+     * of: its echo is the line's own, drawn from the line's field, so the cell adds only a small core embedded in it - a round
+     * shield of its own the size of a storm would draw the line as a string of beads.
+     */
+    private static float[] radarField(StormObject storm, DynamicStormState state, SupercellStructureService.StructureSample structure) {
+        PrecipitationField.Geometry field = AddonWeatherEventService.isSquallLineHelperStorm(storm)
+                ? SupercellStructureService.embeddedCellField(30.0D)
+                : SupercellStructureService.precipitationGeometry(storm, state);
+        return RadarPrecipitation.pack(field, structure.forward(), structure.right());
     }
 
     public static int powerFor(List<RadarStormSnapshot> snapshots) {
