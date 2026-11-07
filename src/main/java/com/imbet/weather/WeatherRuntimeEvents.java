@@ -60,6 +60,8 @@ public final class WeatherRuntimeEvents {
         // Volcanoes run on every tick rather than on the weather scan: a lava front, a lahar and a collapsing
         // column are the level's own events, and none of them have anything to do with where the storms are.
         VolcanoService.tick(level);
+        // The sky's and the land's big moments: eclipse forecasts, and the advancements for being there.
+        SpectacleService.tick(level);
         ForecastReadout.tick(level);
         TornadoTrackService.tick(level);
         // The chase log reads the same snapshots the survey does and runs beside it, on its own interval:

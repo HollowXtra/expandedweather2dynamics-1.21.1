@@ -525,22 +525,29 @@ public abstract class TornadoFunnelSimpleMixin {
         double baseY = base.y;
         double topY = top == null ? baseY + 64.0D : Math.max(baseY + 1.0D, top.y);
         float heightFraction = (float) Mth.clamp((layer.getPos().y - baseY) / Math.max(1.0D, topY - baseY), 0.0D, 1.0D);
-        expandedweather2dynamics$applyFunnelTint(level, storm, base, layer.getListParticles(), heightFraction, formation);
-        expandedweather2dynamics$applyFunnelTint(level, storm, base, layer.getListParticlesExtra(), heightFraction, formation);
+        Vec3 centre = layer.getPos();
+        expandedweather2dynamics$applyFunnelTint(level, storm, base, centre, layer.getListParticles(), heightFraction, formation);
+        expandedweather2dynamics$applyFunnelTint(level, storm, base, centre, layer.getListParticlesExtra(), heightFraction, formation);
     }
 
     @Unique
-    private void expandedweather2dynamics$applyFunnelTint(ClientLevel level, StormObject storm, Vec3 footPos, List<PivotingParticle> particles, float heightFraction, float formation) {
+    private void expandedweather2dynamics$applyFunnelTint(ClientLevel level, StormObject storm, Vec3 footPos, Vec3 centre, List<PivotingParticle> particles, float heightFraction, float formation) {
         if (particles == null || particles.isEmpty()) {
             return;
         }
+        double spinSign = DynamicStormController.visualRotationSign(storm);
         for (PivotingParticle particle : particles) {
             if (particle == null || !particle.isAlive()) {
                 continue;
             }
             ClientWeatherEffects.FunnelTint tint = ClientWeatherEffects.funnelColumnTint(
                     level, storm, footPos, heightFraction, formation, ClientWeatherEffects.funnelParticleShade(particle));
-            particle.setColor(tint.red(), tint.green(), tint.blue());
+            // Lit by the sun from the side the particle is on, so the funnel is a lit tube rather than a flat grey shape.
+            Vec3 position = particle.getPos();
+            float[] light = position == null || centre == null ? new float[] {1.0F, 1.0F, 1.0F}
+                    : ClientWeatherEffects.funnelLight(level, position.x - centre.x, position.z - centre.z, heightFraction, spinSign);
+            particle.setColor(Mth.clamp(tint.red() * light[0], 0.0F, 1.0F), Mth.clamp(tint.green() * light[1], 0.0F, 1.0F),
+                    Mth.clamp(tint.blue() * light[2], 0.0F, 1.0F));
         }
     }
 

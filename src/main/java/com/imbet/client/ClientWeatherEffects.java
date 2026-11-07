@@ -1859,17 +1859,64 @@ public final class ClientWeatherEffects {
         }
     }
 
+    /**
+     * A wildfire, drawn from photographs of real ones: a front of flame along the edge it is burning out into, embers
+     * popping off it, and a smoke plume that is dense and tan-brown close to the fire, paler grey-tan as it climbs, and
+     * leaning off with the wind as it spreads - the column a fire puts up, rather than a cluster of dark puffs sitting on
+     * it. At night the smoke just above the front is lit orange from below.
+     */
     private static void spawnWildfireVisual(ClientLevel level, AddonWeatherEvent event) {
-        int count = Mth.clamp((int) (event.radius() / 45.0F), 1, 4);
-        for (int i = 0; i < count; i++) {
-            Vec3 pos = randomFireWeatherParticle(level, event, 0.0D, Math.max(10.0D, event.radius()));
-            Vec3 velocity = new Vec3((level.random.nextDouble() - 0.5D) * 0.035D, 0.035D + level.random.nextDouble() * 0.095D, (level.random.nextDouble() - 0.5D) * 0.035D);
-            if (!spawnWeather2Particle(level, pos, velocity, ParticleArt.cloud256(), 6.0F + level.random.nextFloat() * 9.0F, 0.50F, 0.48F, 0.46F, 0.13F, 80, 0.05F)) {
-                level.addParticle(ParticleTypes.LARGE_SMOKE, pos.x, pos.y, pos.z, velocity.x, velocity.y, velocity.z);
+        double radius = Math.max(10.0D, event.radius());
+        Vec3 centre = event.position();
+        Vec3 wind = event.motion() != null && event.motion().horizontalDistanceSqr() > 1.0E-6D
+                ? new Vec3(event.motion().x, 0.0D, event.motion().z).normalize()
+                : new Vec3(Math.cos(event.id() * 0.618D), 0.0D, Math.sin(event.id() * 0.618D));
+        Vec3 across = new Vec3(-wind.z, 0.0D, wind.x);
+
+        // The flame front: fire along the edge, low, with sparks and the odd ember thrown up off it.
+        int flames = Mth.clamp((int) (radius / 5.0D), 8, 30);
+        for (int i = 0; i < flames; i++) {
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            double distance = radius * (0.80D + 0.20D * level.random.nextDouble());
+            Vec3 base = new Vec3(centre.x + Math.cos(angle) * distance, centre.y, centre.z + Math.sin(angle) * distance);
+            double y = visualY(level, base, 0.2D + level.random.nextDouble() * 1.6D);
+            level.addParticle(level.random.nextFloat() < 0.65F ? ParticleTypes.FLAME : ParticleTypes.SMALL_FLAME,
+                    base.x, y, base.z, wind.x * 0.02D, 0.03D + level.random.nextDouble() * 0.06D, wind.z * 0.02D);
+            if (level.random.nextFloat() < 0.07F) {
+                level.addParticle(ParticleTypes.LAVA, base.x, y + 0.5D, base.z, 0.0D, 0.0D, 0.0D);
             }
-            if (level.random.nextFloat() < 0.24F) {
-                level.addParticle(ParticleTypes.FLAME, pos.x, pos.y + 0.15D, pos.z, velocity.x * 0.30D, velocity.y * 0.18D, velocity.z * 0.30D);
-            }
+        }
+
+        // The plume, built up its whole height rather than left to rise from the ground, so a fire stands a column over
+        // it from the first moment it is seen: lower and tighter for a small fire, taller and wider for a big one.
+        double top = Mth.clamp(60.0D + radius * 0.65D, 60.0D, 160.0D);
+        int smoke = Mth.clamp((int) (radius / 16.0D), 3, 10);
+        for (int i = 0; i < smoke; i++) {
+            double rise = Math.pow(level.random.nextDouble(), 1.3D);
+            double height = 2.0D + rise * top;
+            double spread = radius * (0.35D + 0.5D * level.random.nextDouble()) * (0.6D + rise * 0.8D);
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            Vec3 base = centre.add(Math.cos(angle) * spread, 0.0D, Math.sin(angle) * spread)
+                    .add(wind.scale(height * 0.65D))
+                    .add(across.scale((level.random.nextDouble() - 0.5D) * height * 0.3D));
+            Vec3 pos = new Vec3(base.x, visualY(level, base, height), base.z);
+            Vec3 velocity = wind.scale(0.05D + level.random.nextDouble() * 0.04D).add(0.0D, 0.05D + 0.06D * (1.0D - rise), 0.0D);
+            float lit = SunShading.lit(level, Math.cos(angle), 0.3D + rise * 0.5D, Math.sin(angle));
+            float[] grey = SunShading.cloudColour(level, Mth.lerp((float) rise, 0.62F, 0.86F), lit, 0.58F);
+            float size = (float) (10.0D + rise * 34.0D + level.random.nextDouble() * 10.0D);
+            float alpha = Mth.lerp((float) rise, 0.50F, 0.30F);
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), size,
+                    grey[0], grey[1] * 0.92F, grey[2] * 0.80F, alpha, 160 + level.random.nextInt(80), 0.08F, ParticleTypes.LARGE_SMOKE);
+        }
+
+        // Low over the front the smoke takes the fire's own light, which at night is the fire's glow on its plume.
+        for (int i = 0; i < 2; i++) {
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            double distance = radius * (0.78D + 0.22D * level.random.nextDouble());
+            Vec3 base = new Vec3(centre.x + Math.cos(angle) * distance, centre.y, centre.z + Math.sin(angle) * distance);
+            Vec3 pos = new Vec3(base.x, visualY(level, base, 1.5D + level.random.nextDouble() * 4.0D), base.z);
+            spawnStructureParticle(level, pos, new Vec3(0.0D, 0.05D, 0.0D), ParticleArt.cloud256(), 6.0F + level.random.nextFloat() * 6.0F,
+                    1.0F, 0.56F, 0.30F, 0.32F, 40, 0.04F, ParticleTypes.SMOKE);
         }
     }
 
@@ -1879,8 +1926,15 @@ public final class ClientWeatherEffects {
             double height = 18.0D + Math.pow(level.random.nextDouble(), 0.62D) * 120.0D;
             Vec3 pos = randomFireWeatherParticle(level, event, height, event.radius());
             Vec3 velocity = new Vec3((level.random.nextDouble() - 0.5D) * 0.030D, 0.016D + level.random.nextDouble() * 0.055D, (level.random.nextDouble() - 0.5D) * 0.030D);
-            float tone = level.random.nextFloat();
-            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), 18.0F + level.random.nextFloat() * 20.0F, Mth.lerp(tone, 0.30F, 0.62F), Mth.lerp(tone, 0.30F, 0.58F), Mth.lerp(tone, 0.32F, 0.62F), 0.34F, 130, 0.02F, ParticleTypes.CLOUD);
+            // A pyrocumulus: the cloud a big fire's heat builds over its smoke - bright white cauliflower where the sun
+            // is on its top, grey-tan and smoky lower down. Drawn dark grey all through it was a cloud of soot.
+            float up = (float) Mth.clamp((height - 18.0D) / 120.0D, 0.0D, 1.0D);
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            float lit = SunShading.lit(level, Math.cos(angle), 0.2D + up * 0.8D, Math.sin(angle));
+            float[] colour = SunShading.cloudColour(level, Mth.lerp(up, 0.62F, 0.97F), lit, 0.60F);
+            float smoky = 1.0F - up;
+            spawnStructureParticle(level, pos, velocity, ParticleArt.cloud256(), 18.0F + level.random.nextFloat() * 20.0F,
+                    colour[0], colour[1] * (1.0F - 0.06F * smoky), colour[2] * (1.0F - 0.16F * smoky), 0.40F, 130, 0.02F, ParticleTypes.CLOUD);
         }
     }
 
@@ -2853,7 +2907,30 @@ public final class ClientWeatherEffects {
         hash ^= hash >>> 17;
         hash *= 0x9E3779B1;
         hash ^= hash >>> 13;
-        return 0.44F + ((hash >>> 8) & 0xFFFF) / 65535.0F * 0.46F;
+        // A narrower spread than Weather2's own 0.1 to 0.7: wide, the mottle was a salt-and-pepper speckle over the
+        // whole funnel; narrow, it is a texture on a smooth tube, and the light below gives the tube its form.
+        return 0.66F + ((hash >>> 8) & 0xFFFF) / 65535.0F * 0.24F;
+    }
+
+    /**
+     * The light on one funnel particle, as a colour to multiply its tint by: the side of the funnel facing the sun pale
+     * and a little warm, the side away from it blue-grey, and faint helical bands winding up it and turning with the
+     * spin, so the rotation reads even in a still frame. Lit only by height and a random grey, a funnel had no form at
+     * all and read as a flat grey cut-out.
+     *
+     * @param outwardX the particle's horizontal direction out from the funnel's axis
+     * @param outwardZ likewise
+     * @param heightFraction how far up the funnel, 0 at the foot
+     * @param spinSign which way the funnel turns
+     */
+    public static float[] funnelLight(ClientLevel level, double outwardX, double outwardZ, float heightFraction, double spinSign) {
+        double length = Math.sqrt(outwardX * outwardX + outwardZ * outwardZ);
+        double nx = length > 1.0E-4D ? outwardX / length : 0.0D;
+        double nz = length > 1.0E-4D ? outwardZ / length : 0.0D;
+        float lit = SunShading.lit(level, nx, 0.15D, nz);
+        double angle = Math.atan2(nz, nx);
+        float band = 0.93F + 0.07F * (float) Math.sin(angle - heightFraction * 16.0D * spinSign + level.getGameTime() * 0.12D * spinSign);
+        return SunShading.cloudColour(level, band, lit, 0.62F);
     }
 
     /** One-entry memo for {@link #funnelColumnTint}: the foot tone can only change once per tick. */

@@ -17,6 +17,11 @@ public final class AdvancementAwarder {
     public static final String FLY_SOUNDING = "fly_sounding";
     public static final String TORNADO_INTERCEPT = "tornado_intercept";
     public static final String TORNADO_PROBE = "tornado_probe";
+    public static final String TOTALITY = "totality";
+    public static final String BLOOD_MOON = "blood_moon";
+    public static final String VOLCANIC_LIGHTNING = "volcanic_lightning";
+    public static final String HABOOB = "haboob";
+    public static final String FRONT_PAGE = "front_page";
 
     private AdvancementAwarder() {
     }

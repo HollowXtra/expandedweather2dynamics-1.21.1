@@ -54,6 +54,7 @@ uniform float ShadowStrength; // 1 while the Earth's shadow is on the body being
 uniform float ShadowOffset;  // how far the shadow's axis is from the body's centre, in body radii, signed
 uniform float ShadowUmbra;   // the umbra's radius, in body radii; the penumbra runs half again as far out
 uniform vec3 ShadowTint;     // the colour of the umbra: sunlight filtered through the world's own air
+uniform vec4 UvRect;         // the part of the texture this body is drawn from: u0, v0, u1, v1 (the moon is one tile of an atlas)
 
 in vec2 vUv;
 in vec4 vColor;
@@ -84,7 +85,13 @@ void main() {
         // them. All this stage does is scale the part of that picture which is past the edge, and multiply the
         // light it is drawn with in - and hand the alpha on, because the alpha is the picture: it is the disc's
         // coverage, the glow's falloff and the phase's terminator, and both passes scale their colour by it.
-        float r = length(vUv - 0.5) * 2.0;
+        // Where the fragment is on the body's own square, 0 to 1 across it. The texture coordinates are not that for
+        // the moon: it is one tile of a four-by-two atlas, so its coordinates are a corner of the sheet, and measured
+        // from the sheet's middle nearly the whole moon read as "past the limb" - dimmed to the glow setting - except
+        // a circle round the atlas's centre, which cut a curved edge across the phases. The Earth's shadow was placed
+        // in the same wrong frame.
+        vec2 local = (vUv - UvRect.xy) / max(UvRect.zw - UvRect.xy, vec2(1.0e-4));
+        float r = length(local - 0.5) * 2.0;
         float lim = clamp(Limb, 0.02, 1.0);
         float mask = r > lim ? clamp(Glow, 0.0, 4.0) : 1.0;
         vec4 body = texture(Sampler0, vUv);
@@ -100,13 +107,23 @@ void main() {
         // of one shows - and it is scaled by the body's own alpha, so nothing behind the moon is touched at all.
         vec3 shade = vec3(1.0);
         if (ShadowStrength > 0.0) {
-            vec2 place = (vUv - 0.5) * 2.0 / lim;
+            vec2 place = (local - 0.5) * 2.0 / lim;
             float axis = length(place - vec2(ShadowOffset, 0.0));
-            float cover = 1.0 - smoothstep(ShadowUmbra, ShadowUmbra * 1.45, axis);
-            // The middle of the shadow is where the light that got through crossed the most air, so the umbra is
-            // at its brightest on the axis and dims toward its own edge.
-            vec3 umbra = ShadowTint * (1.0 - 0.40 * smoothstep(0.0, ShadowUmbra, axis));
-            shade = mix(vec3(1.0), umbra, cover * ShadowStrength);
+            // Two shadows, as a photograph of one shows. The penumbra is only part of the sun blocked, so it is a grey
+            // dimming, faint at its outer edge and deepening toward the umbra - not red. The umbra's edge is soft but
+            // distinct, and inside it is the sunlight bent through the world's whole atmosphere: darkest copper
+            // toward the axis, where that light crossed the most air, and brighter orange toward its edge.
+            float umbraCover = 1.0 - smoothstep(ShadowUmbra * 0.95, ShadowUmbra * 1.05, axis);
+            float pen = 1.0 - smoothstep(ShadowUmbra, ShadowUmbra + 1.0, axis);
+            vec3 penumbra = vec3(1.0 - 0.62 * pen * pen);
+            vec3 umbra = ShadowTint * mix(0.55, 1.20, smoothstep(0.0, ShadowUmbra, axis));
+            // Just inside the umbra's edge, light that crossed the ozone high up arrives bluish: the turquoise band
+            // seen on the moon at the start and end of totality.
+            // Squared by hand: pow() of a negative base is undefined in GLSL, and inside the band it is negative.
+            float band = (axis - ShadowUmbra * 0.92) / (ShadowUmbra * 0.06);
+            float fringe = exp(-band * band);
+            umbra += vec3(0.03, 0.12, 0.14) * fringe;
+            shade = mix(vec3(1.0), mix(penumbra, umbra, umbraCover), ShadowStrength);
         }
         fragColor = vec4(body.rgb * vColor.rgb * Gain * shade,
                 clamp(alpha * vColor.a, 0.0, 1.0)) * ColorModulator;

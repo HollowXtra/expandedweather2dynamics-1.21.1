@@ -164,7 +164,7 @@ public final class CelestialRenderer {
      * about a ten-thousandth as bright as a full moon, which no screen shows, so this is the same colour at a
      * brightness a player can actually see: a dark copper, and by far the reddest thing in the night sky.
      */
-    private static final float[] UMBRA_TINT = {0.40F, 0.12F, 0.10F};
+    private static final float[] UMBRA_TINT = {0.52F, 0.18F, 0.12F};
 
     /** A pure additive pass, which is what a light source in the sky is. */
     private static final RenderType SUN = body("sun", SUN_TEXTURE, true);
@@ -361,6 +361,14 @@ public final class CelestialRenderer {
         pose.mulPose(Axis.YP.rotationDegrees(-90.0F));
         pose.mulPose(Axis.XP.rotationDegrees((float) (timeOfDay * 360.0D)));
         Matrix4f sky = pose.last().pose();
+        // The same frame without the camera in it: where a body is against the horizon is a fact about the world, not
+        // about where the player is looking. Asked of the camera's frame, "above the horizon" was "above the middle of
+        // the screen", so looking up past the sun or the moon put it in the lower half of the view and faded it out as
+        // if it had set - the bodies vanished whenever they were looked at from below.
+        PoseStack world = new PoseStack();
+        world.mulPose(Axis.YP.rotationDegrees(-90.0F));
+        world.mulPose(Axis.XP.rotationDegrees((float) (timeOfDay * 360.0D)));
+        Matrix4f horizon = world.last().pose();
 
         // The lunar eclipse, read from the same shared schedule as the solar one and against the moon's own
         // phase, because only a full moon can be eclipsed. With the feature off the chance is asked for as zero,
@@ -388,8 +396,8 @@ public final class CelestialRenderer {
             drawBand(sky, alpha);
         }
 
-        float sunHorizon = horizonFade(sky, 0.0F, SKY_DISTANCE);
-        float moonHorizon = horizonFade(sky, 0.0F, -SKY_DISTANCE);
+        float sunHorizon = horizonFade(horizon, 0.0F, SKY_DISTANCE);
+        float moonHorizon = horizonFade(horizon, 0.0F, -SKY_DISTANCE);
         if (bodies && canSeeSky && sunHorizon > 0.01F) {
             // The sun: white in the middle, only faintly warm at the limb, and wearing the glare the picture
             // was drawn with - a tight bloom on the limb, the forward-scattered aureole and a wide faint haze.
@@ -424,7 +432,7 @@ public final class CelestialRenderer {
             setUniform("ShadowStrength", 0.0F);
         }
         if (eclipse.active() && coverage > 0.005F && canSeeSky && sunHorizon > 0.01F) {
-            drawEclipse(sky, sunHalf, coverage, visibility * sunHorizon);
+            drawEclipse(sky, sunHalf, coverage, eclipse.progress() >= 0.5D, visibility * sunHorizon);
         }
     }
 
@@ -441,7 +449,10 @@ public final class CelestialRenderer {
             setUniform("ShadowStrength", 0.0F);
             return;
         }
-        setUniform("ShadowStrength", 1.0F);
+        // The faint outer penumbra already reaches the moon at first contact of the umbra, so the shadow eases in and
+        // out over the ends of the window rather than switching on with part of the moon already dimmed.
+        float progress = (float) lunar.progress();
+        setUniform("ShadowStrength", smoothstep(0.0F, 0.10F, progress) * smoothstep(0.0F, 0.10F, 1.0F - progress));
         setUniform("ShadowOffset", (float) CelestialSky.lunarShadowOffsetMoonRadii(lunar.progress()));
         setUniform("ShadowUmbra", (float) CelestialSky.UMBRA_RADII);
         setUniform("ShadowTint", UMBRA_TINT[0], UMBRA_TINT[1], UMBRA_TINT[2]);
@@ -461,8 +472,11 @@ public final class CelestialRenderer {
      * are drawn with {@link #ART_GLOW} because both are already only light: there is no disc in them for the
      * glow dial to be told apart from.
      */
-    private static void drawEclipse(Matrix4f sky, float sunHalf, float coverage, float light) {
-        float offset = (float) (CelestialSky.moonOffsetSunRadii(coverage) * sunHalf);
+    private static void drawEclipse(Matrix4f sky, float sunHalf, float coverage, boolean leaving, float light) {
+        // The moon crosses the sun: in from one side, out of the other. Read off the coverage alone the offset had no
+        // sign, so the moon slid in, stopped, and backed out the way it came.
+        float side = leaving ? -1.0F : 1.0F;
+        float offset = (float) (CelestialSky.moonOffsetSunRadii(coverage) * sunHalf) * side;
         float occultHalf = sunHalf * Config.CELESTIAL_ECLIPSE_MOON_SCALE.get().floatValue();
 
         // The moon: opaque, near-black, and sized against the sun. Drawn over the sun rather than adding to it,
@@ -472,7 +486,10 @@ public final class CelestialRenderer {
 
         float corona = Config.CELESTIAL_ECLIPSE_CORONA.get().floatValue();
         if (corona > 0.0F) {
-            float near = smoothstep(0.55F, 0.995F, coverage);
+            // The corona is a millionth of the sun's brightness: it is drowned while any photosphere shows at all, and
+            // comes out only in the last moments before totality. Ramped in from half coverage it was a halo round
+            // a partial eclipse, which no one has ever seen.
+            float near = smoothstep(0.955F, 0.998F, coverage);
             if (near > 0.01F) {
                 drawBody(ECLIPSE_CORONA, sky, SKY_DISTANCE, sunHalf * 1.04F, offset, ART_GLOW, 1.0F,
                         corona * near * light);
@@ -482,7 +499,9 @@ public final class CelestialRenderer {
         if (Config.CELESTIAL_ECLIPSE_DIAMOND_RING.get()) {
             float closeness = 1.0F - Math.abs(coverage - 0.982F) / 0.018F;
             if (closeness > 0.0F) {
-                drawBody(ECLIPSE_RING, sky, SKY_DISTANCE, sunHalf * 0.22F, -sunHalf * 0.92F, ART_GLOW, 1.0F,
+                // The bead is the last of the sun on the side the moon has not yet covered on the way in, and the first
+                // of it on the side the moon is uncovering on the way out - opposite limbs, not the same one twice.
+                drawBody(ECLIPSE_RING, sky, SKY_DISTANCE, sunHalf * 0.22F, -side * sunHalf * 0.92F, ART_GLOW, 1.0F,
                         closeness * light);
             }
         }
@@ -521,6 +540,8 @@ public final class CelestialRenderer {
         setUniform("Limb", BODY_LIMB);
         setUniform("Glow", glow);
         setUniform("Gain", gain);
+        // Which part of the texture is the body, so the program can tell where on the body each fragment is.
+        setUniform("UvRect", u0, v0, u1, v1);
         setUniform("ColorModulator", 1.0F, 1.0F, 1.0F, 1.0F);
         BufferBuilder builder = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS,
                 DefaultVertexFormat.POSITION_TEX_COLOR);

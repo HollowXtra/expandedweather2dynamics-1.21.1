@@ -1,0 +1,22 @@
+{
+  "parent": "expandedweather2dynamics:detect_tornado",
+  "display": {
+    "icon": {
+      "id": "expandedweather2dynamics:camera"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.front_page.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.front_page.description"
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

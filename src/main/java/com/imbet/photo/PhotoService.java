@@ -140,6 +140,9 @@ public final class PhotoService {
                 occluded, samples, insideCore, raining, lightning, level.getDayTime());
         PhotoShot shot = PhotoShot.of(frame, PhotoScore.of(frame), level.getGameTime());
         PhotoAlbumSavedData.get(level).record(player, shot, Config.PHOTO_ALBUM_SIZE.get());
+        if (shot.grade() == PhotoScore.Grade.EXCELLENT) {
+            com.imbet.weather.AdvancementAwarder.award(player, com.imbet.weather.AdvancementAwarder.FRONT_PAGE);
+        }
         if (Config.PHOTO_ANNOUNCE.get()) {
             player.sendSystemMessage(Component.literal(PhotoReadout.filedLine(shot)).withStyle(gradeColor(shot.grade())));
             player.sendSystemMessage(Component.literal(PhotoReadout.partsLine(shot)).withStyle(ChatFormatting.GRAY));

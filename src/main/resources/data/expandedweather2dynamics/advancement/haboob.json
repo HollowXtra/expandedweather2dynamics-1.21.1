@@ -1,0 +1,22 @@
+{
+  "parent": "expandedweather2dynamics:use_anemometer",
+  "display": {
+    "icon": {
+      "id": "minecraft:sand"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.haboob.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.haboob.description"
+    },
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "parent": "expandedweather2dynamics:use_radar",
+  "display": {
+    "icon": {
+      "id": "minecraft:lightning_rod"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.volcanic_lightning.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.volcanic_lightning.description"
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

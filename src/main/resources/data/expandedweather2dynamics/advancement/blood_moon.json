@@ -1,0 +1,22 @@
+{
+  "parent": "expandedweather2dynamics:use_radar",
+  "display": {
+    "icon": {
+      "id": "minecraft:red_dye"
+    },
+    "title": {
+      "translate": "advancements.expandedweather2dynamics.blood_moon.title"
+    },
+    "description": {
+      "translate": "advancements.expandedweather2dynamics.blood_moon.description"
+    },
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true
+  },
+  "criteria": {
+    "trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

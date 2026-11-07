@@ -401,8 +401,12 @@ public final class AddonVortexParticleRenderer {
         private static double radiusFor(VortexKind kind, double baseRadius, double wind, double fraction) {
             double eased = smoothstep(fraction);
             return switch (kind) {
-                case WATERSPOUT -> Mth.lerp(eased, Math.max(0.35D, baseRadius * 0.16D), Mth.clamp(baseRadius * 0.72D + wind * 0.010D, 2.2D, 6.8D));
-                case LANDSPOUT -> Mth.lerp(eased, Math.max(0.30D, baseRadius * 0.18D), Mth.clamp(baseRadius * 1.45D + wind * 0.016D, 3.6D, 12.0D));
+                // A spout is a rope, not a cone: thin and nearly even all the way up, flaring like a trumpet only where it
+                // meets the cloud, and a waterspout a little wider again at the water where its spray ring stands.
+                case WATERSPOUT -> ropeRadius(fraction, Mth.clamp(baseRadius * 0.22D + wind * 0.004D, 0.7D, 2.2D),
+                        Mth.clamp(baseRadius * 0.90D + wind * 0.010D, 3.0D, 8.0D), 1.2D);
+                case LANDSPOUT -> ropeRadius(fraction, Mth.clamp(baseRadius * 0.25D + wind * 0.005D, 0.9D, 2.6D),
+                        Mth.clamp(baseRadius * 1.20D + wind * 0.014D, 3.5D, 10.0D), 0.5D);
                 // The tip is the thinnest part of any funnel, and a funnel cloud's tip is a tuft of
                 // ragged condensation rather than a wall on the ground.
                 case FUNNEL_CLOUD -> Mth.lerp(eased, Math.max(0.20D, baseRadius * 0.09D), Mth.clamp(baseRadius * 0.98D + wind * 0.013D, 2.6D, 9.4D));
@@ -412,6 +416,14 @@ public final class AddonVortexParticleRenderer {
                 case LAVA_WHIRL -> LavaWhirlVisual.radiusFor(baseRadius, wind, fraction);
                 case STEAM_DEVIL -> SteamDevilVisual.radiusFor(baseRadius, wind, fraction);
             };
+        }
+
+        /** A rope's width up its height: even through the middle with a slow ripple, a trumpet into the cloud, a little foot. */
+        private static double ropeRadius(double fraction, double rope, double top, double foot) {
+            double ripple = 1.0D + 0.12D * Math.sin(fraction * Math.PI * 3.0D);
+            double flare = Math.pow(smoothstep((fraction - 0.78D) / 0.22D), 1.4D);
+            double base = foot * (1.0D - smoothstep(fraction / 0.07D));
+            return rope * ripple * (1.0D + base) + (top - rope) * flare;
         }
 
         private static double gustnadoRadius(double baseRadius, double wind, double fraction) {
@@ -442,6 +454,18 @@ public final class AddonVortexParticleRenderer {
         }
 
         private static Vec3 shearOffset(VortexKind kind, Vec3 motion, double fraction, double height) {
+            if (kind == VortexKind.WATERSPOUT || kind == VortexKind.LANDSPOUT) {
+                // A spout is rarely straight: it bows, often in a gentle S, and leans back toward the cloud base as the
+                // storm above drifts on. A straight cone standing bolt upright is the one shape the photographs never show.
+                Vec3 forward = motion == null || motion.horizontalDistanceSqr() < 1.0E-6D ? new Vec3(1.0D, 0.0D, 0.0D)
+                        : new Vec3(motion.x, 0.0D, motion.z).normalize();
+                Vec3 cross = new Vec3(-forward.z, 0.0D, forward.x);
+                double amplitude = Mth.clamp(height * 0.10D, 2.0D, 7.0D);
+                double bow = Math.sin(fraction * Math.PI) * amplitude;
+                double ess = Math.sin(fraction * Math.PI * 2.0D) * amplitude * 0.40D;
+                double lean = Math.pow(fraction, 1.6D) * amplitude * 0.8D;
+                return forward.scale(bow * 0.6D + lean).add(cross.scale(ess + bow * 0.4D));
+            }
             if (motion == null || motion.horizontalDistanceSqr() < 1.0E-6D) {
                 return Vec3.ZERO;
             }
@@ -590,6 +614,10 @@ public final class AddonVortexParticleRenderer {
                 particle.setFullAlphaTarget(alpha);
                 if (core) {
                     particle.setColor(tone.coreRed, tone.coreGreen, tone.coreBlue);
+                } else if (kind == VortexKind.LANDSPOUT && fraction < 0.32D) {
+                    // A landspout's foot is the dust it is lifting, tan and opaque, giving way to grey condensation above.
+                    float dust = (float) (1.0D - smoothstep(fraction / 0.32D));
+                    particle.setColor(Mth.lerp(dust, tone.red, 0.66F), Mth.lerp(dust, tone.green, 0.57F), Mth.lerp(dust, tone.blue, 0.46F));
                 } else {
                     particle.setColor(tone.red, tone.green, tone.blue);
                 }
@@ -788,9 +816,12 @@ public final class AddonVortexParticleRenderer {
                 puff.setPosY(y);
                 puff.setPosZ(pz);
                 puff.setScale(scale);
-                // Dark underneath, lit on top.
-                float shade = tower ? 0.80F : 0.46F;
-                puff.setColor(shade, shade, shade * 1.04F);
+                // A shower cloud: a flat grey base, and over it a tower lit by the sun on the side it is on. Drawn dark all
+                // through, it read as a cloud of smoke hanging over the spout.
+                float[] shade = tower
+                        ? SunShading.cloudColour(level, 0.95F, SunShading.lit(level, Math.cos(angle), 0.4D + up * 0.6D, Math.sin(angle)), 0.62F)
+                        : SunShading.cloudColour(level, 0.62F, 0.5F, 1.0F);
+                puff.setColor(shade[0], shade[1], shade[2]);
                 float alpha = (tower ? 0.55F : 0.72F) * fade;
                 puff.setAlpha(alpha);
                 puff.setFullAlphaTarget(alpha);
@@ -819,10 +850,11 @@ public final class AddonVortexParticleRenderer {
 
         private static SurfaceTone from(ClientLevel level, BlockPos pos, VortexKind kind) {
             if (kind == VortexKind.WATERSPOUT) {
-                return new SurfaceTone(0.62F, 0.70F, 0.82F, 0.44F, 0.50F, 0.60F, false);
+                // Condensation: a pale white-grey rope, not the blue of the water under it.
+                return new SurfaceTone(0.84F, 0.86F, 0.89F, 0.66F, 0.69F, 0.74F, false);
             }
             if (kind == VortexKind.LANDSPOUT) {
-                return new SurfaceTone(0.56F, 0.55F, 0.52F, 0.34F, 0.31F, 0.27F, false);
+                return new SurfaceTone(0.76F, 0.76F, 0.76F, 0.52F, 0.50F, 0.47F, false);
             }
             if (kind == VortexKind.FUNNEL_CLOUD) {
                 // It is built of condensed water, not of whatever it is hanging over, so it keeps
