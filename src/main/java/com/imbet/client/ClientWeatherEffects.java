@@ -1785,6 +1785,10 @@ public final class ClientWeatherEffects {
                 spawnWildfireVisual(level, event);
                 continue;
             }
+            if (event.type() == StormSubtype.FIRE_WHIRL) {
+                // The whirl's dust and smoke are drawn by the loop below like any whirl's; this is the fire in it.
+                spawnFireWhirlFlames(level, event);
+            }
             if (event.type() == StormSubtype.FLAMMAGENITUS) {
                 spawnFlammagenitusVisual(level, event);
                 continue;
@@ -1829,9 +1833,16 @@ public final class ClientWeatherEffects {
                         level.addParticle(ParticleTypes.POOF, pos.x, pos.y, pos.z, gustVelocity.x, gustVelocity.y, gustVelocity.z);
                     }
                 } else if (event.type() == StormSubtype.FIRE_WHIRL) {
+                    // The whirl's smoke: dark grey to black, spun up above the flames. The flame itself is drawn by
+                    // spawnFireWhirlFlames, so low in the column the smoke is thin and lets the fire show; drawn there in
+                    // rust colours it was a solid brown column with the fire hidden inside it.
+                    double above = pos.y - event.position().y;
+                    if (above < event.radius() * 2.6D && level.random.nextFloat() < 0.7F) {
+                        continue;
+                    }
                     Vec3 fireVelocity = new Vec3(velocity.x * 0.76D, 0.045D + level.random.nextDouble() * 0.085D, velocity.z * 0.76D);
-                    float heat = level.random.nextFloat();
-                    if (!spawnWeather2Particle(level, pos, fireVelocity, ParticleArt.cloud256(), 5.8F + level.random.nextFloat() * 6.8F, Mth.lerp(heat, 0.28F, 0.82F), Mth.lerp(heat, 0.22F, 0.43F), Mth.lerp(heat, 0.18F, 0.24F), 0.58F, 54, 0.18F)) {
+                    float soot = level.random.nextFloat();
+                    if (!spawnWeather2Particle(level, pos, fireVelocity, ParticleArt.cloud256(), 4.2F + level.random.nextFloat() * 4.6F, Mth.lerp(soot, 0.16F, 0.42F), Mth.lerp(soot, 0.15F, 0.40F), Mth.lerp(soot, 0.14F, 0.38F), 0.40F, 54, 0.18F)) {
                         level.addParticle(ParticleTypes.LARGE_SMOKE, pos.x, pos.y, pos.z, fireVelocity.x, fireVelocity.y, fireVelocity.z);
                     }
                     if (level.random.nextFloat() < 0.18F) {
@@ -1873,16 +1884,26 @@ public final class ClientWeatherEffects {
                 : new Vec3(Math.cos(event.id() * 0.618D), 0.0D, Math.sin(event.id() * 0.618D));
         Vec3 across = new Vec3(-wind.z, 0.0D, wind.x);
 
-        // The flame front: fire along the edge, low, with sparks and the odd ember thrown up off it.
-        int flames = Mth.clamp((int) (radius / 5.0D), 8, 30);
+        // The flame front: tongues of fire along the edge it is burning out into - knee high at the edge of a grass fire,
+        // taller where a big fire is running - flickering, leaning with the wind, and their own light at night. Sparks and
+        // the odd ember are thrown up off it. The game's own flame was a speck a few pixels across and was not drawn at
+        // all past thirty-two blocks, so a fire front read as a thin orange line or as nothing.
+        int flames = Mth.clamp((int) (radius / 2.4D), 14, 60);
+        double flameScale = Mth.clamp(1.0D + radius / 70.0D, 1.0D, 2.4D);
         for (int i = 0; i < flames; i++) {
             double angle = level.random.nextDouble() * Math.PI * 2.0D;
-            double distance = radius * (0.80D + 0.20D * level.random.nextDouble());
+            // Hotter and deeper on the downwind side, where the fire is running.
+            double downwind = Math.max(0.0D, Math.cos(angle) * wind.x + Math.sin(angle) * wind.z);
+            double distance = radius * (0.82D + 0.18D * level.random.nextDouble());
             Vec3 base = new Vec3(centre.x + Math.cos(angle) * distance, centre.y, centre.z + Math.sin(angle) * distance);
-            double y = visualY(level, base, 0.2D + level.random.nextDouble() * 1.6D);
-            level.addParticle(level.random.nextFloat() < 0.65F ? ParticleTypes.FLAME : ParticleTypes.SMALL_FLAME,
-                    base.x, y, base.z, wind.x * 0.02D, 0.03D + level.random.nextDouble() * 0.06D, wind.z * 0.02D);
-            if (level.random.nextFloat() < 0.07F) {
+            double size = (1.1D + level.random.nextDouble() * 1.4D) * flameScale * (1.0D + 0.6D * downwind);
+            double y = visualY(level, base, size * 0.42D);
+            level.addAlwaysVisibleParticle(com.imbet.registry.ModParticles.WILDFIRE_FLAME.get(), true,
+                    base.x, y, base.z, wind.x * 0.015D, -size, wind.z * 0.015D);
+            if (level.random.nextFloat() < 0.18F) {
+                level.addParticle(ParticleTypes.SMALL_FLAME, base.x, y, base.z, wind.x * 0.02D, 0.05D + level.random.nextDouble() * 0.06D, wind.z * 0.02D);
+            }
+            if (level.random.nextFloat() < 0.06F) {
                 level.addParticle(ParticleTypes.LAVA, base.x, y + 0.5D, base.z, 0.0D, 0.0D, 0.0D);
             }
         }
@@ -1917,6 +1938,40 @@ public final class ClientWeatherEffects {
             Vec3 pos = new Vec3(base.x, visualY(level, base, 1.5D + level.random.nextDouble() * 4.0D), base.z);
             spawnStructureParticle(level, pos, new Vec3(0.0D, 0.05D, 0.0D), ParticleArt.cloud256(), 6.0F + level.random.nextFloat() * 6.0F,
                     1.0F, 0.56F, 0.30F, 0.32F, 40, 0.04F, ParticleTypes.SMOKE);
+        }
+    }
+
+    /**
+     * The fire in a fire whirl: flame drawn up into a spinning column, thick and wide at the foot and tapering into the
+     * smoke above it, whipped round with the spin and climbing as it goes - the flame tornado a fire this hot can put
+     * up, rather than a dust devil in the colours of a fire.
+     */
+    private static void spawnFireWhirlFlames(ClientLevel level, AddonWeatherEvent event) {
+        Vec3 centre = event.position();
+        double radius = Math.max(1.5D, event.radius());
+        double height = Mth.clamp(radius * 5.0D + event.maxWindMph() * 0.18D, 14.0D, 48.0D);
+        double fireHeight = height * 0.55D;
+        double spin = 0.06D + event.maxWindMph() * 0.0012D;
+        long time = level.getGameTime();
+        int count = Mth.clamp((int) (10 + event.maxWindMph() * 0.12D), 10, 26);
+        for (int i = 0; i < count; i++) {
+            double rise = Math.pow(level.random.nextDouble(), 1.4D);
+            double h = rise * fireHeight;
+            // Wide at the foot where it is drawing the fire in, narrowing up the column.
+            double r = radius * (1.15D - 0.70D * rise) * (0.7D + 0.3D * level.random.nextDouble());
+            double angle = level.random.nextDouble() * Math.PI * 2.0D + time * spin;
+            Vec3 base = new Vec3(centre.x + Math.cos(angle) * r, centre.y, centre.z + Math.sin(angle) * r);
+            double y = visualY(level, base, h + 0.4D);
+            double size = (1.4D + level.random.nextDouble() * 1.6D) * (1.2D - 0.5D * rise) * Mth.clamp(radius / 3.0D, 0.8D, 2.2D);
+            double tangentX = -Math.sin(angle) * spin * 1.4D;
+            double tangentZ = Math.cos(angle) * spin * 1.4D;
+            level.addAlwaysVisibleParticle(com.imbet.registry.ModParticles.WILDFIRE_FLAME.get(), true,
+                    base.x, y, base.z, tangentX, -size, tangentZ);
+        }
+        // Burning debris carried round and flung out of it.
+        if (level.random.nextFloat() < 0.4F) {
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            level.addParticle(ParticleTypes.LAVA, centre.x + Math.cos(angle) * radius, visualY(level, centre, level.random.nextDouble() * fireHeight), centre.z + Math.sin(angle) * radius, 0.0D, 0.0D, 0.0D);
         }
     }
 

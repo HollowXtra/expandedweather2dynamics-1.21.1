@@ -24,6 +24,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.core.Direction;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
 import weather2.ServerTickHandler;
 import weather2.config.ConfigMisc;
@@ -638,9 +640,12 @@ public final class AddonWeatherEventService {
             return null;
         }
         SpcRisk risk = fireWeatherRiskAt(level, BlockPos.containing(wildfire.position()));
+        // A big fire makes its own whirls: the bigger the burn, the more heat it puts up and the more of them spin up off
+        // it, so the chance scales with the fire's size as well as with the day's fire weather.
+        double size = Mth.clamp(wildfire.radius() / 40.0D, 0.5D, 3.0D);
         double chance = Config.naturalSpawnChance(
-                Config.FIRE_WHIRL_SPAWN_CHANCE.get() * (0.70D + risk.severity() * 0.24D));
-        if (risk.severity() < SpcRisk.SLIGHT.severity() || level.random.nextDouble() > chance) {
+                Config.FIRE_WHIRL_SPAWN_CHANCE.get() * (0.70D + risk.severity() * 0.24D) * size);
+        if (risk.severity() < SpcRisk.MARGINAL.severity() || level.random.nextDouble() > chance) {
             return null;
         }
         Vec3 pos = surfacePos(level, wildfire.position().add(randomOffset(level, 4.0D, Math.max(18.0D, wildfire.radius() * 0.70D))));
@@ -741,8 +746,64 @@ public final class AddonWeatherEventService {
         }
         int attempts = Mth.clamp((int) (event.radius() / 7.0F), 4, 18);
         for (int i = 0; i < attempts; i++) {
-            Vec3 target = event.position().add(randomOffset(level, 0.0D, event.radius()));
-            tryIgniteSurface(level, BlockPos.containing(target));
+            // Mostly at the front, the edge the fire is burning out into, and only a little behind it.
+            double angle = level.random.nextDouble() * Math.PI * 2.0D;
+            double distance = event.radius() * (level.random.nextFloat() < 0.8F ? 0.80D + level.random.nextDouble() * 0.28D : level.random.nextDouble());
+            BlockPos column = BlockPos.containing(event.position().x + Math.cos(angle) * distance, event.position().y,
+                    event.position().z + Math.sin(angle) * distance);
+            // The ground and what stands on it both: lit only when the ground would not take, a grass fire never climbed
+            // into a single tree, because grass always takes.
+            tryIgniteSurface(level, column);
+            igniteFuelInColumn(level, column);
+        }
+        igniteEntitiesAtFront(level, event.position(), event.radius() * 0.78D, event.radius() * 1.08D);
+    }
+
+    /** How far up a burning column is read for fuel: the height of a tree, so a fire climbs into the canopy and walls. */
+    private static final int FIRE_CLIMB_BLOCKS = 14;
+
+    /**
+     * Sets fire to something burnable in a column at the fire front - a trunk, a canopy, a wooden wall, a hay bale - by
+     * lighting the first free face beside it. Lighting only the ground under the sky left every tree and every building
+     * standing untouched in the middle of a burn.
+     */
+    private static boolean igniteFuelInColumn(ServerLevel level, BlockPos column) {
+        if (!level.isLoaded(column)) {
+            return false;
+        }
+        int top = level.getHeight(Heightmap.Types.WORLD_SURFACE, column.getX(), column.getZ());
+        int bottom = Math.max(level.getMinBuildHeight(), top - FIRE_CLIMB_BLOCKS - 2);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int y = top; y >= bottom; y--) {
+            cursor.set(column.getX(), y, column.getZ());
+            BlockState state = level.getBlockState(cursor);
+            if (state.isAir() || !state.isFlammable(level, cursor, Direction.UP)) {
+                continue;
+            }
+            for (Direction face : Direction.values()) {
+                BlockPos beside = cursor.relative(face);
+                if (level.getBlockState(beside).isAir() && !level.isRainingAt(beside)) {
+                    BlockGrabSafety.safeSetBlock(level, beside, Blocks.FIRE.defaultBlockState(), 3);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Sets alight whatever is standing in the flames at the front. */
+    private static void igniteEntitiesAtFront(ServerLevel level, Vec3 centre, double innerRadius, double outerRadius) {
+        AABB box = new AABB(centre.x - outerRadius, centre.y - 6.0D, centre.z - outerRadius,
+                centre.x + outerRadius, centre.y + 12.0D, centre.z + outerRadius);
+        for (LivingEntity entity : level.getEntitiesOfClass(LivingEntity.class, box)) {
+            double distance = Math.hypot(entity.getX() - centre.x, entity.getZ() - centre.z);
+            if (distance < innerRadius || distance > outerRadius || entity.fireImmune() || entity.isInWaterRainOrBubble()) {
+                continue;
+            }
+            if (entity instanceof net.minecraft.world.entity.player.Player player && (player.isCreative() || player.isSpectator())) {
+                continue;
+            }
+            entity.igniteForSeconds(4.0F);
         }
     }
 
@@ -756,8 +817,13 @@ public final class AddonWeatherEventService {
         int attempts = event.maxWindMph() >= 90.0F ? 4 : 2;
         for (int i = 0; i < attempts; i++) {
             Vec3 target = event.position().add(randomOffset(level, 0.0D, Math.max(5.0D, event.radius() * 1.8D)));
-            tryIgniteSurface(level, BlockPos.containing(target));
+            BlockPos column = BlockPos.containing(target);
+            // The ground and what stands on it both: lit only when the ground would not take, a grass fire never climbed
+            // into a single tree, because grass always takes.
+            tryIgniteSurface(level, column);
+            igniteFuelInColumn(level, column);
         }
+        igniteEntitiesAtFront(level, event.position(), 0.0D, Math.max(4.0D, event.radius() * 1.4D));
     }
 
     private static void detectSquallLine(ServerLevel level, List<AddonWeatherEvent> events, List<StormObject> cells, long gameTime) {

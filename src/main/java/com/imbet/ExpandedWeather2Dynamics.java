@@ -23,6 +23,7 @@ public final class ExpandedWeather2Dynamics {
 
     public ExpandedWeather2Dynamics(IEventBus modEventBus, ModContainer modContainer) {
         ModContent.register(modEventBus);
+        com.imbet.registry.ModParticles.register(modEventBus);
         // The village jobs register their own point-of-interest types and professions, and their trades
         // listen on the game bus, because a profession is a registry entry and a trade list is an event.
         com.imbet.registry.ModVillagers.register(modEventBus);

@@ -182,6 +182,11 @@ public class ExpandedWeather2DynamicsClient {
     }
 
     @SubscribeEvent
+    static void registerParticles(net.neoforged.neoforge.client.event.RegisterParticleProvidersEvent event) {
+        event.registerSpriteSet(com.imbet.registry.ModParticles.WILDFIRE_FLAME.get(), com.imbet.client.WildfireFlameParticle.Provider::new);
+    }
+
+    @SubscribeEvent
     static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
         event.registerBlockEntityRenderer(ModContent.RADAR_BLOCK_ENTITY.get(), RadarPanelRenderer::new);
         event.registerBlockEntityRenderer(ModContent.ANEMOMETER_BLOCK_ENTITY.get(), AnemometerRenderer::new);
