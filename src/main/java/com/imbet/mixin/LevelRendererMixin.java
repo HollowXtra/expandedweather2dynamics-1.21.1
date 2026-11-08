@@ -97,11 +97,13 @@ public abstract class LevelRendererMixin {
      * blanked, and when {@link CelestialRenderer#shouldHideVanilla} says no, which it does if the round
      * bodies are off, the program failed to load or the dimension has no normal sky, the vanilla textures
      * are bound exactly as before and the sun and moon are the game's own. Exactly the two binds this method
-     * makes are expected; a change in that count is reported rather than taking the game down.
+     * makes are expected; a change in that count is reported rather than taking the game down. Nothing is
+     * required: a sky mod that already redirects or rewrites these binds would otherwise stop the game at
+     * load, and losing the blank texture only means the game's own sun and moon show behind the round ones.
      */
     @Redirect(method = "renderSky(Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;FLnet/minecraft/client/Camera;ZLjava/lang/Runnable;)V",
             at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/RenderSystem;setShaderTexture(ILnet/minecraft/resources/ResourceLocation;)V"),
-            require = 2, expect = 2)
+            require = 0, expect = 2)
     private static void expandedweather2dynamics$hideVanillaCelestial(int index, ResourceLocation location) {
         RenderSystem.setShaderTexture(index,
                 CelestialRenderer.shouldHideVanilla(location) ? CelestialRenderer.blankTexture() : location);

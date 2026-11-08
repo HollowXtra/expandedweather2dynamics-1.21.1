@@ -15,34 +15,6 @@ import weather2.weathersystem.storm.TornadoHelper;
 
 @Mixin(value = TornadoHelper.class, remap = false)
 public abstract class TornadoHelperMixin {
-    /**
-     * Silences Weather2's own tornado wind, so the mod's roar is the only one.
-     *
-     * <p>Weather2's wind is not one sound to replace but three sets picked by loudness -
-     * {@code WeatherUtilSound.snd_wind_far}, {@code snd_wind_close} and {@code snd_tornado_dmg_close} - and this
-     * method is the only place any of them is played. Cancelling it is therefore exactly "no Weather2 wind" and
-     * nothing else: its siren blocks, destruction and sandstorm audio are all played by other classes and keep
-     * working.
-     *
-     * <p>The reason to replace rather than layer is that the two do not agree about anything. Ours is a
-     * continuous loop anchored at the funnel whose own falloff runs to the wall and out to hundreds of blocks;
-     * Weather2's is a player-locked sample retriggered on the two-second world-time cycle, fading in a straight
-     * line to silence at 120 blocks and only while the player is outdoors. Played together they double up, and
-     * the faster retrigger beats against the roar.
-     *
-     * <p>It only stands Weather2 down while the replacement is actually going to play: with the immersion
-     * system or the roar switched off, Weather2's wind is left alone rather than the tornado falling silent.
-     */
-    @Inject(method = "soundUpdates", at = @At("HEAD"), cancellable = true)
-    private void expandedweather2dynamics$replaceWeather2Wind(boolean nearTornado, boolean insideTornado,
-                                                              CallbackInfo ci) {
-        if (Config.TORNADO_IMMERSION_REPLACE_WEATHER2_WIND.get()
-                && Config.TORNADO_IMMERSION_ENABLED.get()
-                && Config.TORNADO_IMMERSION_ROAR_SOUND.get()) {
-            ci.cancel();
-        }
-    }
-
     @Inject(method = "getTornadoBaseSize", at = @At("RETURN"), cancellable = true)
     private void expandedweather2dynamics$variableWidth(CallbackInfoReturnable<Integer> cir) {
         TornadoHelper helper = (TornadoHelper) (Object) this;

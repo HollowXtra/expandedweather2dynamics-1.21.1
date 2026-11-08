@@ -7,7 +7,6 @@
     "LightningBoltWeatherNewMixin",
     "PacketNBTFromServerMixin",
     "StormObjectMixin",
-    "TornadoFunnelSimpleMixin",
     "TornadoHelperMixin",
     "WeatherManagerServerMixin"
   ],
@@ -26,7 +25,10 @@
     "LightningBoltRendererMixin",
     "LightningBoltWeatherNewRendererMixin",
     "LivingEntityRendererMixin",
+    "StormObjectClientMixin",
     "StormObjectCloudDeckMixin",
+    "TornadoFunnelSimpleMixin",
+    "TornadoHelperClientMixin",
     "Weather2SceneEnhancerMixin"
   ],
   "injectors": {

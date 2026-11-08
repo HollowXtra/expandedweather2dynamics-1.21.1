@@ -8,7 +8,6 @@ import com.imbet.weather.StormLifecycleService;
 import com.imbet.weather.TornadoDamageModel;
 import com.imbet.weather.AdvancementAwarder;
 import com.imbet.weather.BlockGrabSafety;
-import com.imbet.client.StormSwirlMirror;
 import com.imbet.weather.WindSteeringManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -18,7 +17,6 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
-import extendedrenderer.particle.entity.EntityRotFX;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -28,9 +26,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import weather2.weathersystem.storm.StormObject;
 
-import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Map;
 import weather2.weathersystem.storm.LightningBoltWeatherNew;
 
 @Mixin(value = StormObject.class, remap = false)
@@ -117,145 +112,6 @@ public abstract class StormObjectMixin {
             storm.canBeDeadly = false;
             expandedweather2dynamics$airRefusedDeadly = true;
         }
-    }
-
-    @Inject(method = "tickRender", at = @At("TAIL"))
-    private void expandedweather2dynamics$sculptCloudMass(float partialTick, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
-        // RESHAPE ITSELF decides whether there is anything to do: the classic look stands the
-        // cauliflower silhouette down but keeps the hurricane shield, which has its own switch.
-        com.imbet.client.StormDeckCauliflower.reshape((StormObject) (Object) this);
-        com.imbet.client.ClientWeatherEffects.dropFakeDebris((StormObject) (Object) this);
-    }
-
-    /**
-     * Mirrors Weather2's own cloud and dust swarms into the state its tick expects to find, and mirrors
-     * them back on the way out.
-     *
-     * <p>The pairing is the whole mechanism, so both halves have to hold: this one negates the swarms'
-     * tangential motion, Weather2's loops then add their own (always cyclonic) impulses, and the RETURN
-     * below negates the result - which leaves those impulses as the only mirrored part, because the
-     * swarm's positions do not change across the tick. Only one of the two would cancel the swirl
-     * instead of reversing it. See {@link StormSwirlMirror} for why the sign cannot be fixed at the
-     * spin's own read.
-     */
-    @Inject(method = "tickClient", at = @At("HEAD"))
-    private void expandedweather2dynamics$mirrorSwarmBeforeWeather2(CallbackInfo ci) {
-        StormSwirlMirror.before((StormObject) (Object) this);
-    }
-
-    @Inject(method = "tickClient", at = @At("RETURN"))
-    private void expandedweather2dynamics$applyWindSpeedVisualSpin(CallbackInfo ci) {
-        StormObject storm = (StormObject) (Object) this;
-        // The other half of the mirror: Weather2 has just swirled the deck and the dust its own way, and
-        // this puts the state it left behind back into the anti-cyclonic frame the next tick will read.
-        StormSwirlMirror.after(storm);
-        DynamicStormController.applyClientVisualSpin(storm);
-        expandedweather2dynamics$scaleClassicFunnel(storm);
-    }
-
-    /**
-     * Base scale and the factor last written for one funnel particle, so the dynamic width can be
-     * re-applied every tick without compounding.
-     */
-    @Unique
-    private Map<EntityRotFX, float[]> expandedweather2dynamics$classicFunnelScales;
-
-    /**
-     * Carries this mod's dynamic size onto the revived 1.12.2 funnel.
-     *
-     * <p>Weather2's funnel particles know nothing about the dynamic width: each is spawned once at a
-     * fixed scale and its spread comes only from the storm's own size field. Applying that width to the
-     * funnel was the layer funnel's job, through its per-layer radius scale, and the layer funnel is
-     * stood down in classic mode - so without this pass a classic tornado would keep drawing a column of
-     * one width while its own state said it was a mile across. The classic look is meant to change how the
-     * tornado is drawn, not to take the dynamic size away.
-     *
-     * <p>Scale, not position, is the lever: Weather2 drives these particles' positions itself every tick
-     * and overwriting them would fight its swirl, while a bigger puff widens the column the way a wider
-     * funnel really looks. The factor is derived from the state's own width multiplier, the same number
-     * that scales the tornado's base size, so the drawn column and the damage swath stay in step - and it
-     * is deliberately a mild, saturating one. See the band's own note below for why the raw multiplier is
-     * the wrong thing to multiply a 37-block puff by.
-     */
-    @Unique
-    private void expandedweather2dynamics$scaleClassicFunnel(StormObject storm) {
-        if (!Config.weather2OwnScatter() || !Config.VARIABLE_WIDTHS_ENABLED.get()) {
-            return;
-        }
-        List<EntityRotFX> particles = storm.listParticlesFunnel;
-        if (particles == null || particles.isEmpty()) {
-            expandedweather2dynamics$classicFunnelScales = null;
-            return;
-        }
-        Map<EntityRotFX, float[]> scales = expandedweather2dynamics$classicFunnelScales;
-        if (scales == null) {
-            scales = new IdentityHashMap<>();
-            expandedweather2dynamics$classicFunnelScales = scales;
-        }
-        DynamicStormState state = DynamicStormController.stateFor(storm);
-        // Deliberately a narrow band, and deliberately sub-linear. Weather2's own funnel puffs are already
-        // 22.5 to 37.5 blocks across and all spawn inside a radius that only grows with the storm's stage,
-        // so puff size is a saturating lever: scaling it by the raw width multiplier (which runs into the
-        // tens on a mile-wide tornado) drew 200-block quads and the funnel read as a wall of slabs filling
-        // the sky. The square root keeps a wider storm visibly wider - a 4x wider swath draws puffs about
-        // 1.6x across - while leaving Weather2's own footprint, which is what makes a classic funnel a
-        // funnel, in charge of the shape. The rest of the read is appearance: opacity, tone and the
-        // per-stage spread Weather2 already applies.
-        float factor = Mth.clamp((float) Math.sqrt(Mth.clamp(state.widthMultiplier(), 0.25F, 64.0F)), 0.85F, 1.6F);
-        scales.keySet().removeIf(particle -> particle == null || !particle.isAlive());
-        for (EntityRotFX particle : particles) {
-            if (particle == null || !particle.isAlive()) {
-                continue;
-            }
-            float current = particle.getScale();
-            float[] record = scales.get(particle);
-            // If the particle's scale is not the one we last wrote, Weather2 has just created it (or set
-            // it for its own reasons), so that value is its base. Re-reading on mismatch is what keeps the
-            // width from compounding into a runaway with every tick.
-            float base = record == null || Math.abs(current - record[0] * record[1]) > 0.02F ? current : record[0];
-            float scaled = Mth.clamp(base * factor, 0.05F, 80.0F);
-            if (Math.abs(scaled - current) > 0.001F) {
-                particle.setScale(scaled);
-            }
-            record = record == null ? new float[2] : record;
-            record[0] = base;
-            record[1] = factor;
-            scales.put(particle, record);
-        }
-    }
-
-    /**
-     * Revives Weather2's own 1.12.2 tornado funnel.
-     *
-     * <p>The old funnel was never removed from the port - it is still compiled into 2.8.6 and still in
-     * this very method, the entire block that fills {@code listParticlesFunnel} with cloud256 fog puffs
-     * and then spins and orients them around the base. It is simply unreachable: the port wrapped it in
-     * {@code if (!tornadoV2)} with a local {@code boolean tornadoV2 = true}, and put the layer funnel
-     * ({@code TornadoFunnelSimple}) in its place. So the field of giant soft puffs that <em>was</em> the
-     * 1.12.2 tornado cannot spawn at all, which is why no amount of standing this mod's own storm layer
-     * down ever brought the old tornado back - the thing we were uncovering was the replacement.
-     *
-     * <p>This flips that flag for the classic look, so the tornado that gets drawn is Weather2's own
-     * 1.12.2 funnel, running Weather2's own already-compiled code rather than a reimplementation of it.
-     *
-     * <p>Targeted by the local's name, which the dependency ships a LocalVariableTable for (slot 13,
-     * {@code Z}). A renamed or removed flag fails the injection loudly at load instead of quietly
-     * leaving the old funnel off - the failure this line should have.
-     *
-     * <p>Tropical systems are deliberately exempt. Weather2's own condition for this block is
-     * {@code isTornadoFormingOrGreater() || attrib_waterSpout}, and that tag is exactly what put a
-     * tornado funnel in the middle of a hurricane before - reviving the block on that condition alone
-     * would bring the bug back. A real waterspout is not a tropical system by this test, so it keeps
-     * its classic funnel; a hurricane keeps its shield and no point funnel.
-     */
-    @ModifyVariable(method = "tickClient", at = @At(value = "STORE"), name = "tornadoV2", remap = false)
-    private boolean expandedweather2dynamics$reviveClassicFunnel(boolean tornadoV2) {
-        if (!Config.weather2OwnScatter()) {
-            return tornadoV2;
-        }
-        // In classic mode this is the only funnel on screen. In the combined look it is the foot of the layered
-        // one, which is why the layered funnel is not stood down there - the two together are the point.
-        return DynamicStormController.isTropicalSystem((StormObject) (Object) this);
     }
 
     @Inject(method = "getAdjustedAngle", at = @At("RETURN"), cancellable = true)

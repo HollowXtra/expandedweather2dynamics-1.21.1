@@ -4,6 +4,12 @@ What changed in this release, written for the people who play it rather than for
 source. The long version of every one of these - what was wrong, what it was measured against, and what is
 still an honest unknown - is in the README.
 
+## 1.07.1
+
+**Servers start again.** A dedicated server with this mod would not start. It stopped while loading mods, either with a `ClassNotFoundException` for `EntityRotFX` or with "Could not locate method metadata for tickClient", so nobody could join it. A server strips Weather2's client-only parts out of its storms, and some of this mod's hooks into those parts were loaded on servers as well, where there was nothing for them to attach to. They now load on the client only. A server starts, makes a new world, and lets players in while tornadoes, wildfires, fire whirls, squall lines and waterspouts run. Single-player was not affected.
+
+**A sky mod can no longer stop the game from loading.** The hook that hides the game's own sun and moon behind this mod's round ones was required, so another mod that also changes how the sun and moon textures are drawn would have stopped the game at startup. The hook is optional now. With such a mod installed, the game's own sun and moon may show behind the round ones instead.
+
 ## 1.07
 
 **You can see the tornado.** Several things were hiding it at once, and they are all gone. A dark cloud spawned just above your head whenever a severe storm was within 700 blocks. Weather2's deck sagged far down over the funnel. Rain curtains and scud were drawn as dark smoke right around it. The dread fog closed in to 170 blocks when the tornado was 300 away, and vanilla's clouds cut bright slabs through the underside of the storm. Rain is now drawn as rain, and the air around a funnel is kept clear.
