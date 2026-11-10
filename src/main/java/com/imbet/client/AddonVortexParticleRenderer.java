@@ -128,6 +128,8 @@ public final class AddonVortexParticleRenderer {
         private VortexKind lastKind;
         /** The cloud a spout hangs from. See tickParentCloud. */
         private final List<EntityRotFX> parentCloud = new ArrayList<>();
+        /** Where each parent-cloud puff was put last tick, so it interpolates from its own slot rather than the wind's. */
+        private final List<Vec3> parentCloudSlots = new ArrayList<>();
         private double parentCloudHeight;
         private Vec3 base;
         private long lastSeenTick;
@@ -768,6 +770,7 @@ public final class AddonVortexParticleRenderer {
                 puff.remove();
             }
             parentCloud.clear();
+            parentCloudSlots.clear();
         }
 
         /**
@@ -809,12 +812,29 @@ public final class AddonVortexParticleRenderer {
                 double y = Math.max(tower ? baseY + 8.0D + up * spread * 0.9D : baseY + (i % 3) * 2.5D, baseY + scale * 0.8D);
                 double px = base.x + Math.cos(angle) * radius;
                 double pz = base.z + Math.sin(angle) * radius;
-                puff.setPrevPosX(puff.getPosX());
-                puff.setPrevPosY(puff.getPosY());
-                puff.setPrevPosZ(puff.getPosZ());
+                // The puff moves from the slot it held last tick to this one, and only that. As a weather particle it
+                // is also pushed by the wind in its own tick, and its speed keeps building: interpolating from where
+                // the wind had shoved it drew every puff sliding back from a growing offset once a tick, and the whole
+                // cloud flickered between shapes. Its speed is cleared so the wind cannot carry it between our ticks.
+                Vec3 last = i < parentCloudSlots.size() ? parentCloudSlots.get(i) : null;
+                Vec3 slot = new Vec3(px, y, pz);
+                if (last == null) {
+                    last = slot;
+                }
+                puff.setMotionX(0.0D);
+                puff.setMotionY(0.0D);
+                puff.setMotionZ(0.0D);
+                puff.setPrevPosX(last.x);
+                puff.setPrevPosY(last.y);
+                puff.setPrevPosZ(last.z);
                 puff.setPosX(px);
                 puff.setPosY(y);
                 puff.setPosZ(pz);
+                if (i < parentCloudSlots.size()) {
+                    parentCloudSlots.set(i, slot);
+                } else {
+                    parentCloudSlots.add(slot);
+                }
                 puff.setScale(scale);
                 // A shower cloud: a flat grey base, and over it a tower lit by the sun on the side it is on. Drawn dark all
                 // through, it read as a cloud of smoke hanging over the spout.

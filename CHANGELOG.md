@@ -4,6 +4,12 @@ What changed in this release, written for the people who play it rather than for
 source. The long version of every one of these - what was wrong, what it was measured against, and what is
 still an honest unknown - is in the README.
 
+## 1.07.3
+
+**Clouds stay put when you walk.** Most of the cloud over your head was not being drawn, and which parts were missing changed every time you moved or turned. Weather2 skips any cloud puff whose box is outside your view, but a puff's box covered only the top middle quarter of what it draws, and puffs this mod moves - the sculpted supercell deck, a spout's parent cloud - kept the box from where they were born. Measured walking under a supercell, between 45 and 86 per cent of the puffs that were on screen were being skipped. Each puff is now tested by what it actually draws, where it actually is, so the deck over you is all there and stays there. It costs about five per cent of the frame rate under a full storm.
+
+**Waterspout and landspout clouds no longer flicker.** The cloud a spout hangs from flickered between shapes every frame. Weather2's wind pushed its puffs each tick and this mod pulled them back, and each was drawn sliding back from wherever the wind had shoved it. The puffs now move only from their own last place to their new one, so the cloud holds its shape, and it is drawn whole instead of in pieces.
+
 ## 1.07.2
 
 **The game starts on AMD graphics cards.** On AMD cards the game could not get past loading. The tornado whiteout's shader named one of its functions `noise3`, which is also the name of a function built into the shader language. NVIDIA's compiler let that pass, but AMD's refuses it, and one shader that would not compile stopped the whole mod from loading, so the game dropped its resource packs and tried again without ever starting. The function has its own name now. Every shader in the mod was also checked against the language's built-in and reserved names, and compiled with the reference GLSL compiler.
