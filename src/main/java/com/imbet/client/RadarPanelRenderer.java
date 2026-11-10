@@ -84,7 +84,7 @@ public class RadarPanelRenderer implements BlockEntityRenderer<RadarBlockEntity>
         if (!program) {
             // The face goes down first: the map, the returns and the markers are all drawn over it, and the
             // buffer keeps the order the vertices went in.
-            RenderQuads.topQuadUv(consumer, pose, 0.055F, 0.055F, 0.945F, 0.945F, y, PanelRenderPath.screenPass(SCOPE_PASS));
+            RenderQuads.topQuadUv(consumer, pose, 0.055F, 0.055F, 0.945F, 0.945F, y, PanelRenderPath.screenPass(RadarShader.radarPanel(), SCOPE_PASS));
             drawRadarMapGrid(consumer, pose, y + 0.001F);
         }
         for (RadarStormSnapshot storm : storms) {

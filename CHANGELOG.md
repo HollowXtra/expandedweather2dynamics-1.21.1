@@ -4,6 +4,12 @@ What changed in this release, written for the people who play it rather than for
 source. The long version of every one of these - what was wrong, what it was measured against, and what is
 still an honest unknown - is in the README.
 
+## 1.07.2
+
+**The game starts on AMD graphics cards.** On AMD cards the game could not get past loading. The tornado whiteout's shader named one of its functions `noise3`, which is also the name of a function built into the shader language. NVIDIA's compiler let that pass, but AMD's refuses it, and one shader that would not compile stopped the whole mod from loading, so the game dropped its resource packs and tried again without ever starting. The function has its own name now. Every shader in the mod was also checked against the language's built-in and reserved names, and compiled with the reference GLSL compiler.
+
+**One broken shader can no longer stop the game.** If one of this mod's shaders will not compile on someone's graphics driver, only that effect is turned off, with an error in the log, and the rest of the game loads. The sun and moon fall back to the game's own, the radar and instrument faces to a flat plate, and the dust veil, rain volumes, inflow and soft clouds are simply not drawn.
+
 ## 1.07.1
 
 **Servers start again.** A dedicated server with this mod would not start. It stopped while loading mods, either with a `ClassNotFoundException` for `EntityRotFX` or with "Could not locate method metadata for tickClient", so nobody could join it. A server strips Weather2's client-only parts out of its storms, and some of this mod's hooks into those parts were loaded on servers as well, where there was nothing for them to attach to. They now load on the client only. A server starts, makes a new world, and lets players in while tornadoes, wildfires, fire whirls, squall lines and waterspouts run. Single-player was not affected.

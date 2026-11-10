@@ -63,7 +63,7 @@ float noise(vec2 p) {
 // cell coordinates only need to be *consistent*, not small - the sin-hash loses precision at a few
 // thousand blocks from the origin and simply returns a different fixed value per cell, which for noise
 // is the same thing as a different seed.
-float noise3(vec3 p) {
+float noiseVolume(vec3 p) {
     float z = floor(p.z);
     float f = p.z - z;
     float a = noise(p.xy + vec2(z * 37.0, z * 17.0));
@@ -129,7 +129,7 @@ void main() {
     // but being carried past. Two octaves, coarse and fine: the coarse one is the slabs of the wall, the
     // fine one the grain within them.
     vec3 q = worldPos - vec3(dir.x, 0.0, dir.y) * (2.2 + violence * 5.5) * GameTime;
-    float churn = noise3(q * 0.55) * 0.62 + noise3(q * 1.45) * 0.38;
+    float churn = noiseVolume(q * 0.55) * 0.62 + noiseVolume(q * 1.45) * 0.38;
 
     // World-scaled, so the lanes are a fixed width in blocks rather than a fixed width in pixels: the
     // numbers are chosen for a lane every block or so and a clump of boards every few blocks, which is
@@ -138,7 +138,7 @@ void main() {
     float streaks = streakField(planar * 0.09, dir, GameTime * (1.0 + violence * 3.0), 0.30 + violence * 0.65)
             * (0.20 + violence * 1.05) * debris;
     float silhouette = debrisSilhouette(planar * 0.075, dir, violence, debris, GameTime);
-    float grit = noise3(worldPos * 3.4 + vec3(dir.x, 0.0, dir.y) * GameTime * (4.0 + violence * 5.0));
+    float grit = noiseVolume(worldPos * 3.4 + vec3(dir.x, 0.0, dir.y) * GameTime * (4.0 + violence * 5.0));
 
     // Two shapes on top of the noise. A wall of dust is heaviest low and thins with height, which is what
     // makes looking up and looking down differ. And the shell fades over the last fraction of the box, so

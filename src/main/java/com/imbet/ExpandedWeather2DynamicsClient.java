@@ -223,16 +223,40 @@ public class ExpandedWeather2DynamicsClient {
                 ModContent.HILO_SIREN_BLOCK_ITEM.get());
     }
 
+    /**
+     * Builds this mod's own programs, each on its own.
+     *
+     * <p>A program one graphics driver will not compile turns its own effect off instead of stopping the game.
+     * An exception thrown out of this event fails the mod's loading, and the game then drops its resource
+     * packs and tries again, so on that driver it can never start: an AMD driver refusing one line of the
+     * tornado whiteout's noise was enough to keep players out entirely. Every user of these programs already
+     * checks for one that is missing - the sun and moon fall back to the game's own, the panels to a flat
+     * plate, the veils and volumes simply are not drawn - so a failure is logged once and the rest load.
+     */
     @SubscribeEvent
-    static void registerShaders(RegisterShadersEvent event) throws IOException {
-        RadarShader.register(event);
-        SoftPuffs.register(event);
-        RadarScopeShader.register(event);
-        InstrumentPanelShader.register(event);
-        LightningBoltShader.register(event);
-        RainVolumeShader.register(event);
-        TornadoInflowShader.register(event);
-        TornadoWhiteoutShader.register(event);
-        CelestialRenderer.register(event);
+    static void registerShaders(RegisterShadersEvent event) {
+        registerShader(event, "radar_panel", RadarShader::register);
+        registerShader(event, "soft_puff", SoftPuffs::register);
+        registerShader(event, "radar_scope", RadarScopeShader::register);
+        registerShader(event, "instrument_panel", InstrumentPanelShader::register);
+        registerShader(event, "lightning_bolt", LightningBoltShader::register);
+        registerShader(event, "rain_volume", RainVolumeShader::register);
+        registerShader(event, "tornado_inflow", TornadoInflowShader::register);
+        registerShader(event, "tornado_whiteout", TornadoWhiteoutShader::register);
+        registerShader(event, "celestial", CelestialRenderer::register);
+    }
+
+    @FunctionalInterface
+    private interface ShaderRegistration {
+        void register(RegisterShadersEvent event) throws IOException;
+    }
+
+    private static void registerShader(RegisterShadersEvent event, String name, ShaderRegistration registration) {
+        try {
+            registration.register(event);
+        } catch (Exception e) {
+            ExpandedWeather2Dynamics.LOGGER.error("Expanded Weather2 Dynamics: the {} shader did not compile on this"
+                    + " graphics driver, so that effect is turned off. Please report this with your log.", name, e);
+        }
     }
 }

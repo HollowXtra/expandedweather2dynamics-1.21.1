@@ -151,6 +151,9 @@ public final class TornadoWhiteoutShader {
     }
 
     public static void register(RegisterShadersEvent event) throws IOException {
+        // Cleared first: if this program fails to compile, the one the last load built is closed with the rest of
+        // the old shaders, and every user of it checks for null rather than drawing with a dead program.
+        shader = null;
         ResourceLocation id = ResourceLocation.fromNamespaceAndPath(ExpandedWeather2Dynamics.MODID, "tornado_whiteout");
         event.registerShader(
                 new ShaderInstance(event.getResourceProvider(), id, DefaultVertexFormat.POSITION_TEX_COLOR),
